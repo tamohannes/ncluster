@@ -82,6 +82,11 @@ def ssh_pool_gc_loop():
         time.sleep(30)
 
 
+def _shell_quote(s):
+    """Quote a string for use as a single argument to bash -lc."""
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
 def ssh_run(cluster_name, command):
     return _ssh_exec(cluster_name, command, SSH_TIMEOUT)
 
@@ -91,12 +96,14 @@ def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
 
 
 def _ssh_exec(cluster_name, command, timeout_sec):
+    # Wrap in bash -lc to handle clusters with non-bash default shells (e.g. csh)
+    wrapped = f"bash -lc {_shell_quote(command)}"
     lock = _get_cluster_lock(cluster_name)
     for attempt in (1, 2):
         with lock:
             client = _get_pooled_client(cluster_name, force_new=(attempt == 2))
         try:
-            _, stdout, stderr = client.exec_command(command, timeout=timeout_sec)
+            _, stdout, stderr = client.exec_command(wrapped, timeout=timeout_sec)
             out = stdout.read().decode().strip()
             err = stderr.read().decode().strip()
             with _ssh_pool_lock:
