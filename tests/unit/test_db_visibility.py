@@ -35,13 +35,29 @@ class TestUpsertJob:
         assert row["board_visible"] == 1
 
     @pytest.mark.unit
-    def test_dismiss_then_reupsert_preserves_dismiss(self, fresh_db):
+    def test_terminal_pins_even_after_regular_upsert(self, fresh_db):
+        """Job polled as RUNNING (board_visible=0), then finalized → must be pinned."""
+        job = {"jobid": "100", "name": "eval-math", "state": "RUNNING"}
+        upsert_job("test-cluster", job, terminal=False)
+        con = get_db()
+        row = con.execute("SELECT board_visible FROM job_history WHERE job_id='100'").fetchone()
+        assert row["board_visible"] == 0
+
+        upsert_job("test-cluster", {**job, "state": "FAILED"}, terminal=True)
+        row = con.execute("SELECT board_visible FROM job_history WHERE job_id='100'").fetchone()
+        con.close()
+        assert row["board_visible"] == 1
+
+    @pytest.mark.unit
+    def test_dismiss_stays_dismissed(self, fresh_db):
+        """User dismiss via set_board_visible=0 is respected."""
         job = {"jobid": "100", "name": "eval-math", "state": "FAILED"}
         upsert_job("test-cluster", job, terminal=True)
         dismiss_job("test-cluster", "100")
-        upsert_job("test-cluster", {**job, "state": "FAILED"}, terminal=True)
-        pinned = get_board_pinned("test-cluster")
-        assert not any(p["job_id"] == "100" for p in pinned)
+        con = get_db()
+        row = con.execute("SELECT board_visible FROM job_history WHERE job_id='100'").fetchone()
+        con.close()
+        assert row["board_visible"] == 0
 
     @pytest.mark.unit
     def test_set_board_visible_overrides(self, fresh_db):

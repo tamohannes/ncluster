@@ -140,7 +140,7 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     elif set_board_visible is not None:
         bv = set_board_visible
     elif terminal:
-        bv = 1 if current_visible != 0 else 0
+        bv = 1
     else:
         bv = current_visible if current_visible is not None else 0
 
