@@ -16,11 +16,12 @@ from .config import (
     _log_content_cache, _dir_list_cache, _progress_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC,
     reload_config, settings_response,
+    get_project_color,
 )
 from .db import (
     normalize_job_times_local, get_board_pinned,
     dismiss_job, dismiss_by_state_prefix,
-    get_history, get_db,
+    get_history, get_projects, get_db,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
 from .mounts import (
@@ -82,6 +83,9 @@ def api_jobs():
                 pct = _cache_get(_progress_cache, (name, j.get("jobid")), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+            proj = j.get("project", "")
+            if proj:
+                j["project_color"] = get_project_color(proj)
 
     def cluster_sort_key(item):
         name, data = item
@@ -245,6 +249,9 @@ def api_jobs_cluster(cluster):
                 pct = _cache_get(_progress_cache, (cluster, j.get("jobid")), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+            proj = j.get("project", "")
+            if proj:
+                j["project_color"] = get_project_color(proj)
     if cluster != "local":
         data["mount"] = cluster_mount_status(cluster)
     return jsonify(data)
@@ -313,7 +320,22 @@ def api_stats(cluster, job_id):
 def api_history():
     cluster = request.args.get("cluster", "all")
     limit = int(request.args.get("limit", 200))
-    return jsonify(get_history(cluster, limit))
+    project = request.args.get("project", "")
+    rows = get_history(cluster, limit, project=project)
+    for r in rows:
+        proj = r.get("project", "")
+        if proj:
+            r["project_color"] = get_project_color(proj)
+    return jsonify(rows)
+
+
+@api.route("/api/projects")
+def api_projects():
+    from .config import get_project_color as _color
+    projects = get_projects()
+    for p in projects:
+        p["color"] = _color(p["project"])
+    return jsonify(projects)
 
 
 @api.route("/api/log_files/<cluster>/<job_id>")
@@ -570,6 +592,8 @@ def api_settings_post():
             merged[key] = patch[key]
     if "clusters" in patch:
         merged["clusters"] = patch["clusters"]
+    if "projects" in patch:
+        merged["projects"] = patch["projects"]
 
     try:
         reload_config(merged)

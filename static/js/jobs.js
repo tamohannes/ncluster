@@ -2,9 +2,12 @@ function showTab(tab) {
   currentTab = tab;
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
   document.getElementById('history-view').classList.toggle('active', tab === 'history');
+  document.getElementById('projects-view').classList.toggle('active', tab === 'projects');
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
+  document.getElementById('tab-projects').classList.toggle('active', tab === 'projects');
   if (tab === 'history') loadHistory();
+  if (tab === 'projects') loadProjects();
 }
 
 function applySidebarState() {
@@ -194,7 +197,9 @@ function renderCard(name, data) {
     const groupEntries = groupJobsByDependency(jobs);
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
-      const groupLabel = `${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+      const _proj = groupJobs[0]?.project || '';
+      const _projLabel = _proj ? ` <span class="group-project">(${_proj})</span>` : '';
+      const groupLabel = `${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>${_projLabel}`;
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -233,7 +238,8 @@ function renderCard(name, data) {
       const nameCls = hasGpu ? '' : ' name-cpu';
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>`;
 
-      return `<tr class="${rowClass}">
+      const projBg = j.project_color ? `background:${j.project_color}` : '';
+      return `<tr class="${rowClass}" style="${projBg}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
         <td>${stateChip(j.state, j.progress)} ${depBadge}</td>

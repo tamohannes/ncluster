@@ -42,6 +42,8 @@ function _buildHistGroups(rows) {
     depends_on: r.depends_on || [],
     dependents: r.dependents || [],
     dep_details: r.dep_details || [],
+    project: r.project || '',
+    project_color: r.project_color || '',
     _cluster: r.cluster,
     _pinned: true,
   }));
@@ -90,7 +92,9 @@ function _renderHistPage() {
   let html = '';
   pageGroups.forEach((g, gidx) => {
     const groupJobs = g.jobs;
-    const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+    const _proj = groupJobs[0]?.project || '';
+    const _projLabel = _proj ? ` <span class="group-project">(${_proj})</span>` : '';
+    const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>${_projLabel}`;
 
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;
@@ -117,7 +121,8 @@ function _renderHistPage() {
 
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
-      html += `<tr class="hist-compact ${pinKind}${bgClass}">
+      const projBg = j.project_color ? `background:${j.project_color}` : '';
+      html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${projBg}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>

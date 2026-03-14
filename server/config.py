@@ -123,6 +123,57 @@ TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL
 PINNABLE_TERMINAL_STATES = TERMINAL_STATES | {"COMPLETED", "COMPLETING"}
 RESULT_DIR_NAMES = ["eval-logs", "eval-results", "tmp-eval-results"]
 
+# ─── Projects ────────────────────────────────────────────────────────────────
+
+PROJECTS = _CONFIG.get("projects", {})
+
+_PROJECT_PALETTE = [
+    "#e8f4fd", "#fef3e2", "#e8f5e9", "#fce4ec",
+    "#ede7f6", "#fff8e1", "#e0f2f1", "#fbe9e7",
+    "#e3f2fd", "#f3e5f5", "#e8eaf6", "#fff3e0",
+]
+
+
+def extract_project(job_name):
+    """Return project key if job_name starts with a configured prefix, else ''."""
+    if not job_name:
+        return ""
+    for name, cfg in PROJECTS.items():
+        prefix = cfg.get("prefix", "")
+        if prefix and job_name.startswith(prefix):
+            return name
+    return ""
+
+
+def get_project_color(project_name):
+    """Return the color for a project, auto-assigning from palette if needed."""
+    if not project_name or project_name not in PROJECTS:
+        return ""
+    cfg = PROJECTS[project_name]
+    if cfg.get("color"):
+        return cfg["color"]
+    used = {p.get("color") for p in PROJECTS.values() if p.get("color")}
+    for c in _PROJECT_PALETTE:
+        if c not in used:
+            cfg["color"] = c
+            _persist_projects()
+            return c
+    cfg["color"] = _PROJECT_PALETTE[len(PROJECTS) % len(_PROJECT_PALETTE)]
+    _persist_projects()
+    return cfg["color"]
+
+
+def _persist_projects():
+    """Write current PROJECTS back into _CONFIG and save to disk."""
+    _CONFIG["projects"] = PROJECTS
+    if os.path.isfile(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "w") as fh:
+                json.dump(_CONFIG, fh, indent=2)
+                fh.write("\n")
+        except Exception:
+            pass
+
 
 def _dir_label(path):
     base = os.path.basename(path.rstrip("/"))
@@ -191,10 +242,14 @@ def reload_config(new_cfg):
     MOUNT_MAP.clear()
     MOUNT_MAP.update(_load_mount_map())
 
+    PROJECTS.clear()
+    PROJECTS.update(new_cfg.get("projects", {}))
+
 
 def settings_response():
     """Build the settings payload for GET /api/settings."""
     cfg = dict(_CONFIG)
     cfg["ssh_timeout"] = SSH_TIMEOUT
     cfg["cache_fresh_sec"] = CACHE_FRESH_SEC
+    cfg["projects"] = dict(PROJECTS)
     return cfg

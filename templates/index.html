@@ -16,6 +16,7 @@
     <div class="nav-tabs-wrap">
       <button class="nav-tab active" id="tab-live" onclick="showTab('live')">Live</button>
       <button class="nav-tab" id="tab-history" onclick="showTab('history')">History</button>
+      <button class="nav-tab" id="tab-projects" onclick="showTab('projects')">Projects</button>
     </div>
     <div class="countdown-badge" style="display:none">refresh in <b id="cd">30</b>s</div>
     <div class="nav-section">
@@ -71,6 +72,28 @@
           </table>
         </div>
         <div class="hist-pagination" id="hist-pagination"></div>
+      </main>
+    </div>
+
+    <!-- Projects view -->
+    <div class="projects-view" id="projects-view">
+      <main>
+        <div id="projects-list"></div>
+        <div id="project-detail" style="display:none">
+          <div class="project-detail-head">
+            <button class="btn" onclick="closeProjectDetail()">← all projects</button>
+            <span class="project-detail-title" id="project-detail-title"></span>
+          </div>
+          <div class="history-table-wrap">
+            <table id="project-hist-table">
+              <thead><tr>
+                <th>Cluster</th><th>ID</th><th>Name</th>
+                <th>State</th><th>Logs</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
+              </tr></thead>
+              <tbody id="project-hist-body"></tbody>
+            </table>
+          </div>
+        </div>
       </main>
     </div>
 
@@ -161,6 +184,7 @@
         <div class="settings-nav-item" data-section="sec-mounts" onclick="showSettingsSection(this)">Mounts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
         <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
+        <div class="settings-nav-item" data-section="sec-projects" onclick="showSettingsSection(this)">Projects</div>
         <div class="settings-nav-item" data-section="sec-filters" onclick="showSettingsSection(this)">Process Filters</div>
       </div>
       <div class="settings-content">
@@ -198,6 +222,14 @@
           </label>
           <button class="btn" style="margin-top:8px;width:100%" onclick="saveAdvancedSettings()">save</button>
         </div>
+        <div class="settings-section" id="sec-projects">
+          <div class="settings-sub-label">Project Prefixes &amp; Colors</div>
+          <div id="project-editor" style="max-height:45vh;overflow-y:auto"></div>
+          <div style="display:flex;gap:5px;margin-top:8px">
+            <button class="btn" style="flex:1" onclick="addProjectRow()">+ add project</button>
+            <button class="btn" style="flex:1" onclick="saveProjects()">save projects</button>
+          </div>
+        </div>
         <div class="settings-section" id="sec-filters">
           <div class="settings-sub-label">Local Process Filters</div>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="nemo-skills, nemo_skills, ..."></label>
@@ -217,6 +249,7 @@
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>
 <script src="{{ url_for('static', filename='js/logs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/projects.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 </body>
 </html>

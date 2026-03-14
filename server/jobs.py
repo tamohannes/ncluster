@@ -17,6 +17,7 @@ from .config import (
     _log_index_cache, _log_content_cache, _stats_cache, _progress_cache,
     _prefetch_last, _warm_lock,
     LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, PREFETCH_MIN_GAP_SEC,
+    extract_project,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
 from .db import upsert_job, get_db
@@ -56,6 +57,9 @@ def parse_squeue_output(out):
             children_map.setdefault(pid, []).append(j["jobid"])
     for j in jobs:
         j["dependents"] = children_map.get(j["jobid"], [])
+
+    for j in jobs:
+        j["project"] = extract_project(j.get("name", ""))
 
     jobs.sort(key=lambda j: j.get("submitted") or j.get("started") or "", reverse=True)
     jobs.sort(key=lambda j: STATE_ORDER.get(j.get("state", "").upper(), 99))

@@ -27,6 +27,46 @@ class TestApiHistory:
         resp = client.get("/api/history?limit=3")
         assert len(resp.get_json()) == 3
 
+    def test_get_history_project_filter(self, client, db_path, monkeypatch):
+        from server.config import PROJECTS
+        monkeypatch.setitem(PROJECTS, "testproj", {"prefix": "testproj_"})
+        upsert_job("c", {"jobid": "1", "name": "testproj_eval", "state": "COMPLETED"})
+        upsert_job("c", {"jobid": "2", "name": "other_eval", "state": "COMPLETED"})
+        resp = client.get("/api/history?project=testproj")
+        data = resp.get_json()
+        assert all(r.get("project") == "testproj" for r in data)
+        assert len(data) == 1
+
+    def test_history_includes_project_color(self, client, db_path, monkeypatch):
+        from server.config import PROJECTS
+        monkeypatch.setitem(PROJECTS, "colorproj", {"prefix": "colorproj_", "color": "#aabbcc"})
+        upsert_job("c", {"jobid": "1", "name": "colorproj_eval", "state": "COMPLETED"})
+        resp = client.get("/api/history")
+        data = resp.get_json()
+        matching = [r for r in data if r.get("project") == "colorproj"]
+        assert len(matching) >= 1
+        assert matching[0].get("project_color") == "#aabbcc"
+
+
+@pytest.mark.integration
+class TestApiProjects:
+    def test_get_projects_empty(self, client, db_path):
+        resp = client.get("/api/projects")
+        assert resp.status_code == 200
+        assert isinstance(resp.get_json(), list)
+
+    def test_get_projects_with_data(self, client, db_path, monkeypatch):
+        from server.config import PROJECTS
+        monkeypatch.setitem(PROJECTS, "myproj", {"prefix": "myproj_", "color": "#e8f4fd"})
+        upsert_job("c", {"jobid": "1", "name": "myproj_eval", "state": "COMPLETED"})
+        upsert_job("c", {"jobid": "2", "name": "myproj_judge", "state": "FAILED"})
+        resp = client.get("/api/projects")
+        data = resp.get_json()
+        matching = [p for p in data if p["project"] == "myproj"]
+        assert len(matching) == 1
+        assert matching[0]["job_count"] == 2
+        assert matching[0]["color"] == "#e8f4fd"
+
 
 @pytest.mark.integration
 class TestApiCleanup:

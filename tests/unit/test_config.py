@@ -5,7 +5,10 @@ import os
 import time
 import pytest
 
-from server.config import _cache_get, _cache_set, _warm_lock, _load_mount_map, settings_response
+from server.config import (
+    _cache_get, _cache_set, _warm_lock, _load_mount_map, settings_response,
+    extract_project, get_project_color, PROJECTS,
+)
 
 
 class TestCacheGetSet:
@@ -70,3 +73,58 @@ class TestSettingsResponse:
         assert "port" in resp
         assert "ssh_timeout" in resp
         assert "cache_fresh_sec" in resp
+        assert "projects" in resp
+
+
+class TestExtractProject:
+    @pytest.mark.unit
+    def test_matching_prefix(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "artsiv", {"prefix": "artsiv_"})
+        assert extract_project("artsiv_eval-math") == "artsiv"
+
+    @pytest.mark.unit
+    def test_no_match(self):
+        assert extract_project("random-job-name") == ""
+
+    @pytest.mark.unit
+    def test_empty_name(self):
+        assert extract_project("") == ""
+
+    @pytest.mark.unit
+    def test_none_name(self):
+        assert extract_project(None) == ""
+
+    @pytest.mark.unit
+    def test_multiple_prefixes(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "artsiv", {"prefix": "artsiv_"})
+        monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle-"})
+        assert extract_project("hle-eval-math") == "hle"
+        assert extract_project("artsiv_eval-code") == "artsiv"
+
+    @pytest.mark.unit
+    def test_prefix_with_hyphen(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle-"})
+        assert extract_project("hle-gpt-oss-120b") == "hle"
+
+
+class TestGetProjectColor:
+    @pytest.mark.unit
+    def test_returns_color_for_configured_project(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "test-proj", {"prefix": "test_", "color": "#abcdef"})
+        assert get_project_color("test-proj") == "#abcdef"
+
+    @pytest.mark.unit
+    def test_auto_assigns_color(self, monkeypatch):
+        monkeypatch.setattr("server.config._persist_projects", lambda: None)
+        monkeypatch.setitem(PROJECTS, "new-proj", {"prefix": "new_"})
+        color = get_project_color("new-proj")
+        assert color.startswith("#")
+        assert len(color) == 7
+
+    @pytest.mark.unit
+    def test_unknown_project_returns_empty(self):
+        assert get_project_color("nonexistent") == ""
+
+    @pytest.mark.unit
+    def test_empty_name_returns_empty(self):
+        assert get_project_color("") == ""

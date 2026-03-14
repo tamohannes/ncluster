@@ -225,6 +225,7 @@ async function loadSettingsPanel() {
     document.getElementById('set-proc-exclude').value = exc.join(', ');
 
     renderClusterEditor(cfg.clusters || {});
+    renderProjectEditor(cfg.projects || {});
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
@@ -291,6 +292,72 @@ async function saveClusters() {
     const d = await res.json();
     if (d.status === 'ok') {
       toast('Clusters saved');
+      fetchAll();
+    } else {
+      toast(d.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    toast('Save failed', 'error');
+  }
+}
+
+function renderProjectEditor(projects) {
+  const el = document.getElementById('project-editor');
+  el.innerHTML = Object.entries(projects).map(([name, p]) => `
+    <div class="cluster-edit-card" data-project="${name}">
+      <div class="ce-head">
+        <span class="ce-name" style="display:flex;align-items:center;gap:6px">
+          <span class="project-color-dot" style="background:${p.color || '#ddd'}"></span>${name}
+        </span>
+        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      </div>
+      <div class="ce-fields">
+        <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
+        <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="${p.prefix || ''}" placeholder="name_"></div>
+        <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="${p.color || '#e8f4fd'}" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addProjectRow() {
+  const el = document.getElementById('project-editor');
+  const div = document.createElement('div');
+  div.className = 'cluster-edit-card';
+  div.innerHTML = `
+    <div class="ce-head">
+      <span class="ce-name">new project</span>
+      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+    </div>
+    <div class="ce-fields">
+      <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="my-project"></div>
+      <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="" placeholder="my-project_"></div>
+      <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="#e8f4fd" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
+    </div>
+  `;
+  el.appendChild(div);
+}
+
+async function saveProjects() {
+  const cards = document.querySelectorAll('#project-editor .cluster-edit-card');
+  const projects = {};
+  for (const card of cards) {
+    const name = (card.querySelector('[data-f="name"]').value || '').trim();
+    if (!name) continue;
+    projects[name] = {
+      prefix: card.querySelector('[data-f="prefix"]').value.trim(),
+      color: card.querySelector('[data-f="color"]').value.trim(),
+    };
+  }
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      toast('Projects saved');
       fetchAll();
     } else {
       toast(d.error || 'Save failed', 'error');

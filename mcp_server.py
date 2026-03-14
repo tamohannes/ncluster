@@ -49,6 +49,7 @@ _JOB_FIELDS = [
     "nodes", "gres", "partition", "submitted",
     "started_local", "ended_local",
     "progress", "depends_on", "dependents", "dep_details",
+    "project", "project_color",
     "_pinned",
 ]
 

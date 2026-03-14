@@ -118,7 +118,8 @@ def init_db():
     """)
     for col, default in [("board_visible", "INTEGER DEFAULT 0"),
                          ("started", "TEXT"),
-                         ("dependency", "TEXT DEFAULT ''")]:
+                         ("dependency", "TEXT DEFAULT ''"),
+                         ("project", "TEXT DEFAULT ''")]:
         try:
             con.execute(f"ALTER TABLE job_history ADD COLUMN {col} {default}")
         except Exception:
@@ -148,12 +149,16 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     if dep_raw in ("(null)", "None", None):
         dep_raw = ""
 
+    from .config import extract_project
+    job_name = job.get("name") or job.get("job_name") or ""
+    project = job.get("project") or extract_project(job_name)
+
     con.execute("""
         INSERT INTO job_history
             (cluster, job_id, job_name, state, exit_code, reason, elapsed,
              nodes, gres, partition, submitted, started, ended_at, log_path,
-             board_visible, dependency)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             board_visible, dependency, project)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(cluster, job_id) DO UPDATE SET
             job_name    = COALESCE(excluded.job_name, job_name),
             state       = excluded.state,
@@ -167,16 +172,17 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
             started     = COALESCE(excluded.started, started),
             ended_at    = COALESCE(excluded.ended_at, ended_at),
             board_visible = excluded.board_visible,
-            dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency)
+            dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
+            project     = COALESCE(NULLIF(excluded.project, ''), project)
     """, (
         cluster, job["jobid"],
-        job.get("name") or job.get("job_name"),
+        job_name,
         job.get("state"),
         job.get("exit_code"), job.get("reason"), job.get("elapsed"),
         job.get("nodes"), job.get("gres"), job.get("partition"),
         job.get("submitted"), job.get("started"),
         job.get("ended_at"), job.get("log_path"),
-        bv, dep_raw,
+        bv, dep_raw, project,
     ))
     con.commit()
     con.close()
@@ -295,18 +301,41 @@ def dismiss_by_state_prefix(cluster, prefixes):
     con.close()
 
 
-def get_history(cluster=None, limit=200):
+def get_history(cluster=None, limit=200, project=None):
     from .jobs import parse_dependency
     con = get_db()
     order = "ORDER BY COALESCE(ended_at, started, submitted, '9999') DESC, id DESC"
+    conditions = []
+    params = []
     if cluster and cluster != "all":
-        rows = con.execute(f"SELECT * FROM job_history WHERE cluster=? {order} LIMIT ?", (cluster, limit)).fetchall()
-    else:
-        rows = con.execute(f"SELECT * FROM job_history {order} LIMIT ?", (limit,)).fetchall()
+        conditions.append("cluster=?")
+        params.append(cluster)
+    if project:
+        conditions.append("project=?")
+        params.append(project)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
+    rows = con.execute(f"SELECT * FROM job_history {where} {order} LIMIT ?", params).fetchall()
     con.close()
     jobs = [normalize_job_times_local(dict(r)) for r in rows]
     _restore_dependency_fields(jobs, parse_dependency)
     return jobs
+
+
+def get_projects():
+    """Return distinct projects with job count and latest activity."""
+    con = get_db()
+    rows = con.execute("""
+        SELECT project,
+               COUNT(*) as job_count,
+               MAX(COALESCE(ended_at, started, submitted)) as last_active
+        FROM job_history
+        WHERE project != '' AND project IS NOT NULL
+        GROUP BY project
+        ORDER BY last_active DESC
+    """).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 def cleanup_local_on_startup():

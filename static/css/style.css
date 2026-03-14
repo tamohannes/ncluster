@@ -346,6 +346,7 @@ tbody tr.pinned-completed-row:hover { background: #eefaf0; }
   padding-bottom: 7px;
 }
 .group-count { color: var(--muted); font-weight: 400; }
+.group-project { color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
 tr.group-bg-0 td { background: #fcfdff; }
 tr.group-bg-1 td { background: #f8fbff; }
 tr.group-bg-2 td { background: #f7fbfa; }
@@ -358,8 +359,22 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 /* ── History view ── */
 .history-view { display: none; }
 .history-view.active { display: block; }
+.projects-view { display: none; }
+.projects-view.active { display: block; }
 .live-view { display: block; }
 .live-view.hidden { display: none; }
+
+.projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; padding: 12px; }
+.project-card {
+  background: var(--surface); border-radius: 8px; padding: 14px 16px;
+  cursor: pointer; transition: box-shadow 0.15s;
+}
+.project-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.project-card-name { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); }
+.project-card-meta { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 4px; }
+.project-detail-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
+.project-detail-title { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+.project-color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
 .mount-panel { display: grid; gap: 7px; }
 .mount-item {
