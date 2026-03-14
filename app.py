@@ -5,7 +5,7 @@ import threading
 from flask import Flask
 
 from server.config import APP_PORT
-from server.db import init_db, repin_recent_terminal_jobs
+from server.db import init_db, cleanup_local_on_startup
 from server.ssh import ssh_pool_gc_loop
 from server.routes import api
 
@@ -14,6 +14,6 @@ app.register_blueprint(api)
 
 if __name__ == "__main__":
     init_db()
-    repin_recent_terminal_jobs()
+    cleanup_local_on_startup()
     threading.Thread(target=ssh_pool_gc_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=APP_PORT, debug=False)

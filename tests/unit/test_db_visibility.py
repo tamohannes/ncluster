@@ -5,7 +5,7 @@ import pytest
 from server.db import (
     init_db, upsert_job, dismiss_job, dismiss_all,
     dismiss_by_state_prefix, get_board_pinned, get_history,
-    get_db, repin_recent_terminal_jobs,
+    get_db, cleanup_local_on_startup,
 )
 
 
@@ -119,25 +119,42 @@ class TestGetHistory:
         assert len(get_history("c", limit=3)) == 3
 
 
-class TestRepinRecentTerminalJobs:
+class TestCleanupLocalOnStartup:
     @pytest.mark.unit
-    def test_repins_recent_terminal(self, fresh_db):
+    def test_dismissed_remote_stays_dismissed(self, fresh_db):
+        """User-dismissed remote jobs must not come back after restart."""
         from datetime import datetime
         job = {"jobid": "1", "state": "FAILED", "ended_at": datetime.now().isoformat()}
-        upsert_job("test-cluster", job, terminal=False)
-        con = get_db()
-        con.execute("UPDATE job_history SET board_visible=0 WHERE job_id='1'")
-        con.commit()
-        con.close()
-        repin_recent_terminal_jobs()
+        upsert_job("test-cluster", job, terminal=True)
+        dismiss_job("test-cluster", "1")
+        cleanup_local_on_startup()
         pinned = get_board_pinned("test-cluster")
-        assert any(p["job_id"] == "1" for p in pinned)
+        assert not any(p["job_id"] == "1" for p in pinned)
 
     @pytest.mark.unit
-    def test_does_not_repin_local(self, fresh_db):
+    def test_pinned_remote_survives_restart(self, fresh_db):
+        """Pinned remote jobs must persist across restarts untouched."""
+        from datetime import datetime
+        job = {"jobid": "2", "state": "FAILED", "ended_at": datetime.now().isoformat()}
+        upsert_job("test-cluster", job, terminal=True)
+        cleanup_local_on_startup()
+        con = get_db()
+        row = con.execute("SELECT board_visible FROM job_history WHERE job_id='2'").fetchone()
+        con.close()
+        assert row["board_visible"] == 1
+
+    @pytest.mark.unit
+    def test_dismisses_local_on_startup(self, fresh_db):
+        """Local PIDs are ephemeral and dismissed on startup."""
         from datetime import datetime
         job = {"jobid": "1", "state": "FAILED", "ended_at": datetime.now().isoformat()}
         upsert_job("local", job, terminal=False)
-        repin_recent_terminal_jobs()
-        pinned = get_board_pinned("local")
-        assert not any(p["job_id"] == "1" for p in pinned)
+        con = get_db()
+        con.execute("UPDATE job_history SET board_visible=1 WHERE job_id='1'")
+        con.commit()
+        con.close()
+        cleanup_local_on_startup()
+        con = get_db()
+        row = con.execute("SELECT board_visible FROM job_history WHERE cluster='local' AND job_id='1'").fetchone()
+        con.close()
+        assert row["board_visible"] == 0

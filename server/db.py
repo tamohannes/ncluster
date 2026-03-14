@@ -309,19 +309,18 @@ def get_history(cluster=None, limit=200):
     return jobs
 
 
-def repin_recent_terminal_jobs():
-    """Re-pin recent terminal jobs on startup and dismiss stale local entries."""
+def cleanup_local_on_startup():
+    """Dismiss local process entries on startup.
+
+    Local PIDs are ephemeral and meaningless after a restart, so clear
+    them from the board.  Remote pinned jobs are left untouched — only
+    the user can dismiss those via the UI.
+    """
     con = get_db()
-    terminal_like = " OR ".join(f"state LIKE '{s}%'" for s in PINNABLE_TERMINAL_STATES)
-    con.execute(f"""
-        UPDATE job_history SET board_visible=1
-        WHERE ({terminal_like})
-          AND cluster != 'local'
-          AND board_visible != 1
-          AND (ended_at >= datetime('now', '-3 days') OR ended_at IS NULL)
-    """)
-    # Local PIDs are ephemeral — dismiss all local entries on startup since
-    # the processes are almost certainly gone after a restart.
     con.execute("UPDATE job_history SET board_visible=0 WHERE cluster='local'")
     con.commit()
     con.close()
+
+
+# Keep old name as alias so existing callers don't break.
+repin_recent_terminal_jobs = cleanup_local_on_startup
