@@ -28,6 +28,7 @@ async function loadProjectButtons() {
 
 async function openProject(projectName) {
   _projCurrentName = projectName;
+  try { sessionStorage.setItem('ncluster.activeProject', projectName); } catch (_) {}
   showTab('project');
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';

@@ -6,6 +6,7 @@ function showTab(tab) {
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   if (tab === 'history') loadHistory();
+  try { sessionStorage.setItem('ncluster.activeTab', tab); } catch (_) {}
 }
 
 function applySidebarState() {

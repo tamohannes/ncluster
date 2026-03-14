@@ -458,7 +458,6 @@ function applyLocalSettings() {
 }
 
 // Init
-showTab('live');
 setupTreeResizer();
 setupSidebarResizer();
 applySidebarState();
@@ -466,4 +465,19 @@ loadLocalSettings();
 applyLocalSettings();
 fetchAll();
 loadProjectButtons();
+
+// Restore last active tab/project across refreshes
+(function restoreTab() {
+  try {
+    const saved = sessionStorage.getItem('ncluster.activeTab') || 'live';
+    if (saved === 'project') {
+      const proj = sessionStorage.getItem('ncluster.activeProject');
+      if (proj) { openProject(proj); return; }
+    }
+    showTab(saved);
+  } catch (_) {
+    showTab('live');
+  }
+})();
+
 if (refreshIntervalSec > 0) startCountdown();
