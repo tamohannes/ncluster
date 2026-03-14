@@ -63,7 +63,9 @@ async function openLog(cluster, jobId, jobName) {
       await expandDir(dirs[0].path, tree.querySelector('.tree-items'));
     } else {
       document.getElementById('modal-content').className = 'placeholder';
-      document.getElementById('modal-content').textContent = 'No files found for this job.';
+      document.getElementById('modal-content').textContent = 'No log files found for this job. It may not have started yet, or was killed before producing output.';
+      document.getElementById('content-path').textContent = 'no logs available';
+      document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">no files</div>';
     }
   } catch (e) {
     document.getElementById('modal-content').textContent = 'Failed: ' + e;
