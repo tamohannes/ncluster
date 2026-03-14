@@ -16,7 +16,7 @@ from .config import (
     _log_content_cache, _dir_list_cache, _progress_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC,
     reload_config, settings_response,
-    get_project_color, get_project_emoji,
+    get_project_color, get_project_emoji, extract_project,
 )
 from .db import (
     normalize_job_times_local, get_board_pinned,
@@ -83,6 +83,8 @@ def api_jobs():
                 pct = _cache_get(_progress_cache, (name, j.get("jobid")), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+            if not j.get("project"):
+                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
             if proj:
                 j["project_color"] = get_project_color(proj)
@@ -250,6 +252,8 @@ def api_jobs_cluster(cluster):
                 pct = _cache_get(_progress_cache, (cluster, j.get("jobid")), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+            if not j.get("project"):
+                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
             if proj:
                 j["project_color"] = get_project_color(proj)
@@ -325,6 +329,8 @@ def api_history():
     project = request.args.get("project", "")
     rows = get_history(cluster, limit, project=project)
     for r in rows:
+        if not r.get("project"):
+            r["project"] = extract_project(r.get("job_name") or r.get("name") or "")
         proj = r.get("project", "")
         if proj:
             r["project_color"] = get_project_color(proj)
