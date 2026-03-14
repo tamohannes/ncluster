@@ -1,0 +1,27 @@
+---
+description: Restart the job-monitor service after making changes
+alwaysApply: true
+---
+
+# Restart Server After Changes
+
+After making any code changes to the job-monitor app (Python backend, JS frontend, CSS, HTML templates), restart the service so the user can see the changes immediately.
+
+## How to restart
+
+```bash
+systemctl --user restart job-monitor.service
+```
+
+## When to restart
+
+- After every turn that modifies files in `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`
+- Do NOT restart if only test files, docs, rules, or config files changed
+
+## Verify
+
+After restarting, briefly check the service is healthy:
+
+```bash
+systemctl --user is-active job-monitor.service
+```

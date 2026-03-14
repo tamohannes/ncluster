@@ -6,6 +6,20 @@ let _lbResizing = false;
 let _lbRunNames = [];
 let _lbSuggestTarget = null;
 let _lbSuggestStart = -1;
+let _lbPanelVisible = false;
+
+function toggleLogbookPanel() {
+  _lbPanelVisible = !_lbPanelVisible;
+  const panel = document.getElementById('logbook-panel');
+  if (panel) panel.style.display = _lbPanelVisible ? '' : 'none';
+  try { sessionStorage.setItem('ncluster.logbookOpen', _lbPanelVisible ? '1' : '0'); } catch (_) {}
+}
+
+function _restoreLogbookState() {
+  try { _lbPanelVisible = sessionStorage.getItem('ncluster.logbookOpen') === '1'; } catch (_) {}
+  const panel = document.getElementById('logbook-panel');
+  if (panel) panel.style.display = _lbPanelVisible ? '' : 'none';
+}
 
 (function setupLogbookResizer() {
   document.addEventListener('mousedown', e => {

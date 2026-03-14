@@ -284,6 +284,9 @@ def _finalize_gone_job(cluster, job_id, prev_job):
         "gres": prev_job.get("gres", ""), "partition": prev_job.get("partition", ""),
         "submitted": prev_job.get("submitted", ""), "ended_at": datetime.now().isoformat(),
     }
+    if not record.get("name") and prev_job.get("name"):
+        record["name"] = prev_job["name"]
+    record.setdefault("state", final_state)
     if not record.get("ended_at"):
         record["ended_at"] = datetime.now().isoformat()
     upsert_job(cluster, record, terminal=True)

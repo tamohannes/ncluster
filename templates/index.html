@@ -92,6 +92,7 @@
         <button class="btn" onclick="showTab('live')">← Dashboard</button>
         <span class="project-detail-title" id="project-detail-title"></span>
         <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
+        <button class="btn" id="logbook-toggle-btn" onclick="toggleLogbookPanel()">📓 notes</button>
       </div>
       <div class="proj-layout">
         <div class="proj-main">
@@ -119,7 +120,7 @@
           </div>
           <div class="hist-pagination" id="proj-pagination"></div>
         </div>
-        <div class="logbook-panel" id="logbook-panel">
+        <div class="logbook-panel" id="logbook-panel" style="display:none">
           <div class="logbook-resizer" id="logbook-resizer"></div>
           <div class="logbook-head">
             <select id="logbook-select" onchange="switchLogbook()"></select>
