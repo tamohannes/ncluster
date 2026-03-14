@@ -408,7 +408,7 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .proj-layout { display: flex; gap: 0; min-height: 0; flex: 1; }
 .proj-main { flex: 1; min-width: 0; overflow-y: auto; }
 .logbook-panel {
-  width: 370px; min-width: 280px; max-width: 600px;
+  width: 320px; min-width: 280px; max-width: 600px;
   border-left: 1px solid var(--border); background: var(--bg);
   display: flex; flex-direction: column; overflow-y: auto;
   position: relative;
