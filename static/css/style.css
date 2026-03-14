@@ -363,20 +363,20 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 /* ── History view ── */
 .history-view { display: none; }
 .history-view.active { display: block; }
-.projects-view { display: none; }
-.projects-view.active { display: block; }
+.project-view { display: none; }
+.project-view.active { display: block; }
 .live-view { display: block; }
 .live-view.hidden { display: none; }
 
-.projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; padding: 16px; }
-.project-card {
-  background: var(--surface); border-radius: 10px; padding: 22px 24px;
-  cursor: pointer; transition: box-shadow 0.15s;
+.nav-project-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.nav-project-btn {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  padding: 5px 6px; border-radius: 5px; cursor: pointer;
+  border: 1.5px solid var(--border); background: var(--surface);
+  color: var(--text); transition: all 0.15s;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.project-card:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.1); }
-.project-card-emoji { font-size: 28px; margin-bottom: 8px; }
-.project-card-name { font-family: var(--mono); font-size: 16px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
-.project-card-meta { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 2px; }
+.nav-project-btn:hover { background: var(--bg); }
 .project-detail-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; }
 .project-detail-title { font-family: var(--mono); font-size: 14px; font-weight: 600; }
 .project-color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }

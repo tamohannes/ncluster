@@ -2,12 +2,10 @@ function showTab(tab) {
   currentTab = tab;
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
   document.getElementById('history-view').classList.toggle('active', tab === 'history');
-  document.getElementById('projects-view').classList.toggle('active', tab === 'projects');
+  document.getElementById('project-view').classList.toggle('active', tab === 'project');
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
-  document.getElementById('tab-projects').classList.toggle('active', tab === 'projects');
   if (tab === 'history') loadHistory();
-  if (tab === 'projects') loadProjects();
 }
 
 function applySidebarState() {

@@ -16,7 +16,6 @@
     <div class="nav-tabs-wrap">
       <button class="nav-tab active" id="tab-live" onclick="showTab('live')">Live</button>
       <button class="nav-tab" id="tab-history" onclick="showTab('history')">History</button>
-      <button class="nav-tab" id="tab-projects" onclick="showTab('projects')">Projects</button>
     </div>
     <div class="countdown-badge" style="display:none">refresh in <b id="cd">30</b>s</div>
     <div class="nav-section">
@@ -31,6 +30,10 @@
         <div class="stat-row"><span class="dot" style="background:var(--cyan)"></span><span class="stat-val" id="s-clusters">—</span><span class="stat-lbl">clusters up</span></div>
         <div class="stat-row"><span class="dot" style="background:var(--green)"></span><span class="stat-val" id="s-mounted">—</span><span class="stat-lbl">mounted</span></div>
       </div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Projects</div>
+      <div class="nav-project-grid" id="nav-project-grid"></div>
     </div>
     <div class="nav-user-btn" onclick="openSettingsModal()">
       <span class="nav-user-avatar">{{ username[0] | upper }}</span>
@@ -83,24 +86,21 @@
       </main>
     </div>
 
-    <!-- Projects view -->
-    <div class="projects-view" id="projects-view">
+    <!-- Project detail view -->
+    <div class="project-view" id="project-view">
       <main>
-        <div id="projects-list"></div>
-        <div id="project-detail" style="display:none">
-          <div class="project-detail-head">
-            <button class="btn" onclick="closeProjectDetail()">← all projects</button>
-            <span class="project-detail-title" id="project-detail-title"></span>
-          </div>
-          <div class="history-table-wrap">
-            <table id="project-hist-table">
-              <thead><tr>
-                <th>Cluster</th><th>ID</th><th>Name</th>
-                <th>State</th><th>Logs</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
-              </tr></thead>
-              <tbody id="project-hist-body"></tbody>
-            </table>
-          </div>
+        <div class="project-detail-head">
+          <button class="btn" onclick="showTab('live')">← Dashboard</button>
+          <span class="project-detail-title" id="project-detail-title"></span>
+        </div>
+        <div class="history-table-wrap">
+          <table id="project-hist-table">
+            <thead><tr>
+              <th>Cluster</th><th>ID</th><th>Name</th>
+              <th>State</th><th>Logs</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
+            </tr></thead>
+            <tbody id="project-hist-body"></tbody>
+          </table>
         </div>
       </main>
     </div>

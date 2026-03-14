@@ -465,4 +465,5 @@ applySidebarState();
 loadLocalSettings();
 applyLocalSettings();
 fetchAll();
+loadProjectButtons();
 if (refreshIntervalSec > 0) startCountdown();

@@ -1,39 +1,28 @@
 // ── Projects ──
 
-async function loadProjects() {
-  const el = document.getElementById('projects-list');
-  document.getElementById('project-detail').style.display = 'none';
-  el.style.display = '';
+async function loadProjectButtons() {
+  const el = document.getElementById('nav-project-grid');
+  if (!el) return;
   try {
     const res = await fetch('/api/projects');
     const projects = await res.json();
     if (!projects.length) {
-      el.innerHTML = '<div class="no-jobs" style="padding:30px;text-align:center">No projects yet. Configure project prefixes in Settings.</div>';
+      el.innerHTML = '<div style="font-family:var(--mono);font-size:10px;color:var(--muted);padding:4px 0">no projects</div>';
       return;
     }
-    el.innerHTML = `<div class="projects-grid">${projects.map(p => {
+    el.innerHTML = projects.map(p => {
+      const emoji = p.emoji || '';
       const color = p.color || 'var(--surface)';
-      const emoji = p.emoji || '📁';
-      const lastActive = fmtTime(p.last_active);
-      return `<div class="project-card" style="border-left:4px solid ${color}" onclick="openProject('${p.project}')">
-        <div class="project-card-emoji">${emoji}</div>
-        <div class="project-card-name">${p.project}</div>
-        <div class="project-card-meta">${p.job_count} job${p.job_count !== 1 ? 's' : ''}</div>
-        <div class="project-card-meta">last active ${lastActive}</div>
-      </div>`;
-    }).join('')}</div>`;
-  } catch (e) {
-    el.innerHTML = '<div class="no-jobs" style="padding:20px">Failed to load projects</div>';
-  }
+      return `<button class="nav-project-btn" style="border-color:${color}" onclick="openProject('${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
+    }).join('');
+  } catch (_) {}
 }
 
 async function openProject(projectName) {
-  document.getElementById('projects-list').style.display = 'none';
-  const detail = document.getElementById('project-detail');
-  detail.style.display = '';
+  showTab('project');
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
-  const emoji = projCfg.emoji || '📁';
-  document.getElementById('project-detail-title').textContent = `${emoji} ${projectName}`;
+  const emoji = projCfg.emoji || '';
+  document.getElementById('project-detail-title').textContent = `${emoji ? emoji + ' ' : ''}${projectName}`;
   const tbody = document.getElementById('project-hist-body');
   tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
 
@@ -49,7 +38,8 @@ async function openProject(projectName) {
       ended_local: r.ended_local || '', ended_at: r.ended_at || '',
       depends_on: r.depends_on || [], dependents: r.dependents || [],
       dep_details: r.dep_details || [], project: r.project || '',
-      project_color: r.project_color || '', _cluster: r.cluster, _pinned: true,
+      project_color: r.project_color || '', project_emoji: r.project_emoji || '',
+      _cluster: r.cluster, _pinned: true,
     }));
 
     const byCluster = {};
@@ -104,6 +94,7 @@ async function openProject(projectName) {
         const hasGpu = parseGpus(j.nodes, j.gres) !== null;
         const nameCls = hasGpu ? '' : ' name-cpu';
         const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+
         html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
           <td><span class="badge">${g.cluster}</span></td>
           <td class="dim">${j.jobid}</td>
@@ -122,9 +113,4 @@ async function openProject(projectName) {
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="10" style="padding:20px;color:var(--red)">Failed: ${e}</td></tr>`;
   }
-}
-
-function closeProjectDetail() {
-  document.getElementById('project-detail').style.display = 'none';
-  document.getElementById('projects-list').style.display = '';
 }
