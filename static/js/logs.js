@@ -490,6 +490,15 @@ async function copyJsonlRecord(ev, btn) {
   }
 }
 
+function _mdInline(text) {
+  let s = escapeHtml(text);
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  s = s.replace(/`(.+?)`/g, '<code class="md-inline-code">$1</code>');
+  s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  return s;
+}
+
 function markdownToHtml(raw) {
   const lines = String(raw || '').split('\n');
   let html = '';
@@ -515,18 +524,18 @@ function markdownToHtml(raw) {
     if (h) {
       if (inList) { html += '</ul>'; inList = false; }
       const lvl = h[1].length;
-      html += `<h${lvl}>${escapeHtml(h[2])}</h${lvl}>`;
+      html += `<h${lvl}>${_mdInline(h[2])}</h${lvl}>`;
       continue;
     }
     const li = line.match(/^\s*[-*]\s+(.*)$/);
     if (li) {
       if (!inList) { html += '<ul>'; inList = true; }
-      html += `<li>${escapeHtml(li[1])}</li>`;
+      html += `<li>${_mdInline(li[1])}</li>`;
       continue;
     }
     if (inList) { html += '</ul>'; inList = false; }
     if (!line.trim()) html += '<p></p>';
-    else html += `<p>${escapeHtml(line)}</p>`;
+    else html += `<p>${_mdInline(line)}</p>`;
   }
   if (inList) html += '</ul>';
   if (inCode) html += '</code></pre>';

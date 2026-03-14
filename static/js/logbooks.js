@@ -21,7 +21,7 @@ let _lbSuggestStart = -1;
     const parentRect = panel.parentElement.getBoundingClientRect();
     let w = parentRect.right - e.clientX;
     if (w < 280) w = 280;
-    if (w > 600) w = 600;
+    if (w > 800) w = 800;
     panel.style.width = w + 'px';
   });
   document.addEventListener('mouseup', () => { _lbResizing = false; });
