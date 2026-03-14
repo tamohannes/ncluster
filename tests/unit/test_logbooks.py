@@ -4,8 +4,9 @@ import os
 import pytest
 
 from server.logbooks import (
-    list_logbooks, read_logbook, add_entry, update_entry,
-    create_logbook, delete_logbook, _split_entries, _sanitize_name,
+    list_logbooks, read_logbook, add_entry, update_entry, delete_entry,
+    create_logbook, delete_logbook, rename_logbook,
+    _split_entries, _sanitize_name,
 )
 
 
@@ -123,6 +124,61 @@ class TestUpdateEntry:
 
     def test_update_missing_logbook(self, logbook_dir):
         result = update_entry("proj", "nonexistent", 0, "content")
+        assert result["status"] == "error"
+
+
+@pytest.mark.unit
+class TestDeleteEntry:
+    def test_delete_valid(self, logbook_dir):
+        add_entry("proj", "notes", "first")
+        add_entry("proj", "notes", "second")
+        result = delete_entry("proj", "notes", 0)
+        assert result["status"] == "ok"
+        assert result["entry_count"] == 1
+        data = read_logbook("proj", "notes")
+        assert data["entries"] == ["first"]
+
+    def test_delete_out_of_range(self, logbook_dir):
+        add_entry("proj", "notes", "only")
+        result = delete_entry("proj", "notes", 5)
+        assert result["status"] == "error"
+
+    def test_delete_missing_logbook(self, logbook_dir):
+        result = delete_entry("proj", "nope", 0)
+        assert result["status"] == "error"
+
+    def test_delete_last_entry(self, logbook_dir):
+        add_entry("proj", "notes", "only")
+        result = delete_entry("proj", "notes", 0)
+        assert result["status"] == "ok"
+        assert result["entry_count"] == 0
+
+
+@pytest.mark.unit
+class TestRenameLogbook:
+    def test_rename_success(self, logbook_dir):
+        create_logbook("proj", "old-name")
+        add_entry("proj", "old-name", "content")
+        result = rename_logbook("proj", "old-name", "new-name")
+        assert result["status"] == "ok"
+        assert result["name"] == "new-name"
+        assert list_logbooks("proj")[0]["name"] == "new-name"
+        data = read_logbook("proj", "new-name")
+        assert "content" in data["entries"][0]
+
+    def test_rename_missing(self, logbook_dir):
+        result = rename_logbook("proj", "nope", "new")
+        assert result["status"] == "error"
+
+    def test_rename_conflict(self, logbook_dir):
+        create_logbook("proj", "a")
+        create_logbook("proj", "b")
+        result = rename_logbook("proj", "a", "b")
+        assert result["status"] == "error"
+
+    def test_rename_empty_name(self, logbook_dir):
+        create_logbook("proj", "a")
+        result = rename_logbook("proj", "a", "")
         assert result["status"] == "error"
 
 

@@ -620,6 +620,8 @@ from .logbooks import (
     read_logbook as _read_logbook,
     add_entry as _add_entry,
     update_entry as _update_entry,
+    delete_entry as _delete_entry,
+    rename_logbook as _rename_logbook,
     create_logbook as _create_logbook,
     delete_logbook as _delete_logbook,
 )
@@ -656,6 +658,20 @@ def api_logbook_update_entry(project, name, index):
 @api.route("/api/logbook/<project>/<name>", methods=["DELETE"])
 def api_logbook_delete(project, name):
     return jsonify(_delete_logbook(project, name))
+
+
+@api.route("/api/logbook/<project>/<name>/<int:index>", methods=["DELETE"])
+def api_logbook_delete_entry(project, name, index):
+    return jsonify(_delete_entry(project, name, index))
+
+
+@api.route("/api/logbook/<project>/<name>/rename", methods=["POST"])
+def api_logbook_rename(project, name):
+    payload = request.get_json(silent=True) or {}
+    new_name = payload.get("new_name", "").strip()
+    if not new_name:
+        return jsonify({"status": "error", "error": "No new_name provided"}), 400
+    return jsonify(_rename_logbook(project, name, new_name))
 
 
 @api.route("/api/logbook/<project>", methods=["POST"])

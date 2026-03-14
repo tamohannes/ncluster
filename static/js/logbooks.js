@@ -85,6 +85,7 @@ async function renderLogbook(project, name) {
         <div class="logbook-entry-content">${rendered}</div>
         <div class="logbook-entry-actions">
           <button class="logbook-entry-btn" onclick="editLogbookEntry(${i})" title="edit">edit</button>
+          <button class="logbook-entry-btn" onclick="deleteLogbookEntry(${i})" title="delete" style="color:var(--red)">delete</button>
         </div>
       </div>`;
     }).join('<div class="logbook-separator"></div>');
@@ -210,6 +211,68 @@ async function promptNewLogbook() {
     }
   } catch (e) {
     toast('Failed to create logbook', 'error');
+  }
+}
+
+async function deleteLogbookEntry(index) {
+  if (!_projCurrentName || !_lbCurrentLogbook) return;
+  if (!confirm(`Delete entry #${index + 1}?`)) return;
+  try {
+    const res = await fetch(`/api/logbook/${encodeURIComponent(_projCurrentName)}/${encodeURIComponent(_lbCurrentLogbook)}/${index}`, {
+      method: 'DELETE',
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      await renderLogbook(_projCurrentName, _lbCurrentLogbook);
+      toast('Entry deleted');
+    } else {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch (e) {
+    toast('Failed to delete entry', 'error');
+  }
+}
+
+async function promptRenameLogbook() {
+  if (!_projCurrentName || !_lbCurrentLogbook) return;
+  const newName = prompt(`Rename "${_lbCurrentLogbook}" to:`, _lbCurrentLogbook);
+  if (!newName || !newName.trim() || newName.trim() === _lbCurrentLogbook) return;
+  try {
+    const res = await fetch(`/api/logbook/${encodeURIComponent(_projCurrentName)}/${encodeURIComponent(_lbCurrentLogbook)}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ new_name: newName.trim() }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      _lbCurrentLogbook = d.name || newName.trim();
+      await loadLogbookPanel(_projCurrentName);
+      toast(`Renamed to "${_lbCurrentLogbook}"`);
+    } else {
+      toast(d.error || 'Rename failed', 'error');
+    }
+  } catch (e) {
+    toast('Failed to rename logbook', 'error');
+  }
+}
+
+async function promptDeleteLogbook() {
+  if (!_projCurrentName || !_lbCurrentLogbook) return;
+  if (!confirm(`Delete logbook "${_lbCurrentLogbook}" and all its entries? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/logbook/${encodeURIComponent(_projCurrentName)}/${encodeURIComponent(_lbCurrentLogbook)}`, {
+      method: 'DELETE',
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      _lbCurrentLogbook = '';
+      await loadLogbookPanel(_projCurrentName);
+      toast('Logbook deleted');
+    } else {
+      toast(d.error || 'Delete failed', 'error');
+    }
+  } catch (e) {
+    toast('Failed to delete logbook', 'error');
   }
 }
 

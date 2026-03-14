@@ -102,3 +102,41 @@ class TestLogbookApi:
         assert resp.get_json()["status"] == "ok"
         data = client.get("/api/logbook/testproj/auto-created").get_json()
         assert len(data["entries"]) == 1
+
+    def test_delete_entry(self, client):
+        client.post("/api/logbook/testproj/notes",
+                     data=json.dumps({"content": "keep"}),
+                     content_type="application/json")
+        client.post("/api/logbook/testproj/notes",
+                     data=json.dumps({"content": "remove"}),
+                     content_type="application/json")
+        resp = client.delete("/api/logbook/testproj/notes/0")
+        assert resp.get_json()["status"] == "ok"
+        data = client.get("/api/logbook/testproj/notes").get_json()
+        assert len(data["entries"]) == 1
+        assert data["entries"][0] == "keep"
+
+    def test_rename_logbook(self, client):
+        client.post("/api/logbook/testproj",
+                     data=json.dumps({"name": "old"}),
+                     content_type="application/json")
+        client.post("/api/logbook/testproj/old",
+                     data=json.dumps({"content": "data"}),
+                     content_type="application/json")
+        resp = client.post("/api/logbook/testproj/old/rename",
+                           data=json.dumps({"new_name": "new"}),
+                           content_type="application/json")
+        assert resp.get_json()["status"] == "ok"
+        listing = client.get("/api/logbooks/testproj").get_json()
+        names = [lb["name"] for lb in listing]
+        assert "new" in names
+        assert "old" not in names
+
+    def test_rename_no_name(self, client):
+        client.post("/api/logbook/testproj",
+                     data=json.dumps({"name": "x"}),
+                     content_type="application/json")
+        resp = client.post("/api/logbook/testproj/x/rename",
+                           data=json.dumps({}),
+                           content_type="application/json")
+        assert resp.status_code == 400

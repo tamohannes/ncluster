@@ -124,6 +124,8 @@
           <div class="logbook-head">
             <select id="logbook-select" onchange="switchLogbook()"></select>
             <button class="btn" onclick="promptNewLogbook()" title="new logbook">+</button>
+            <button class="btn" onclick="promptRenameLogbook()" title="rename logbook">✎</button>
+            <button class="btn" onclick="promptDeleteLogbook()" title="delete logbook" style="color:var(--red)">✕</button>
           </div>
           <div class="logbook-add">
             <textarea id="logbook-new-entry" placeholder="Add a note… use @run-name to reference jobs" rows="8"></textarea>

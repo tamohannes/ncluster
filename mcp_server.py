@@ -331,6 +331,23 @@ def update_logbook_entry(project: str, name: str, index: int, content: str) -> d
 
 
 @mcp.tool()
+def delete_logbook_entry(project: str, name: str, index: int) -> dict:
+    """Delete a logbook entry by index (0 = newest). This is destructive."""
+    return _api_delete(
+        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}"
+    )
+
+
+@mcp.tool()
+def rename_logbook(project: str, old_name: str, new_name: str) -> dict:
+    """Rename a logbook."""
+    return _api_post_json(
+        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(old_name)}/rename",
+        {"new_name": new_name},
+    )
+
+
+@mcp.tool()
 def create_logbook(project: str, name: str) -> dict:
     """Create a new empty logbook for a project.
 

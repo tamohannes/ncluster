@@ -125,6 +125,38 @@ def create_logbook(project, name):
     return {"status": "ok", "name": name}
 
 
+def delete_entry(project, name, index):
+    """Delete an entry at the given index (0 = newest)."""
+    name = _sanitize_name(name)
+    path = _logbook_path(project, name)
+    if not os.path.isfile(path):
+        return {"status": "error", "error": "Logbook not found"}
+    raw = open(path, "r", encoding="utf-8").read()
+    entries = _split_entries(raw)
+    if index < 0 or index >= len(entries):
+        return {"status": "error", "error": f"Entry index {index} out of range (0-{len(entries)-1})"}
+    entries.pop(index)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_join_entries(entries) if entries else "")
+    return {"status": "ok", "entry_count": len(entries)}
+
+
+def rename_logbook(project, old_name, new_name):
+    """Rename a logbook file."""
+    old_name = _sanitize_name(old_name)
+    new_name = _sanitize_name(new_name)
+    if not new_name:
+        return {"status": "error", "error": "New name is empty"}
+    old_path = _logbook_path(project, old_name)
+    new_path = _logbook_path(project, new_name)
+    if not os.path.isfile(old_path):
+        return {"status": "error", "error": "Logbook not found"}
+    if os.path.isfile(new_path):
+        return {"status": "error", "error": f"Logbook '{new_name}' already exists"}
+    os.rename(old_path, new_path)
+    return {"status": "ok", "name": new_name}
+
+
 def delete_logbook(project, name):
     """Delete a logbook file."""
     name = _sanitize_name(name)
