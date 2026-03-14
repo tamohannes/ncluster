@@ -381,6 +381,30 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .project-detail-title { font-family: var(--mono); font-size: 14px; font-weight: 600; }
 .project-color-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 
+.proj-stats-bar {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 16px; font-family: var(--mono); font-size: 11px;
+}
+.proj-stat { display: flex; align-items: center; gap: 4px; }
+.proj-stat-val { font-weight: 700; color: var(--text); }
+.proj-stat-lbl { color: var(--muted); }
+.proj-cluster-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.proj-cluster-tag.has-active { border-color: var(--green); color: var(--green); font-weight: 600; }
+
+.proj-live-section { padding: 0 16px 8px; }
+.proj-live-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden; margin-bottom: 10px;
+}
+.proj-live-card table { width: 100%; }
+.proj-live-label {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  color: var(--green); padding: 8px 16px 4px;
+}
+
 .mount-panel { display: grid; gap: 7px; }
 .mount-item {
   border: 1px solid var(--border);

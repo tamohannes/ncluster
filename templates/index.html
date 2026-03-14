@@ -92,7 +92,10 @@
         <div class="project-detail-head">
           <button class="btn" onclick="showTab('live')">← Dashboard</button>
           <span class="project-detail-title" id="project-detail-title"></span>
+          <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
         </div>
+        <div class="proj-stats-bar" id="proj-stats-bar"></div>
+        <div class="proj-live-section" id="proj-live-section"></div>
         <div class="history-filter">
           <input id="proj-search" type="text" placeholder="filter by name or job id…" oninput="filterProjectRuns()" />
           <div class="hist-state-filters" id="proj-state-filters">
@@ -108,7 +111,7 @@
           <table id="project-hist-table">
             <thead><tr>
               <th>Cluster</th><th>ID</th><th>Name</th>
-              <th>State</th><th>Logs</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
+              <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th>
             </tr></thead>
             <tbody id="project-hist-body"></tbody>
           </table>

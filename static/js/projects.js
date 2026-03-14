@@ -2,8 +2,10 @@
 
 let _projData = [];
 let _projGroups = [];
+let _projLiveJobs = [];
 let _projPage = 0;
 let _projCurrentName = '';
+let _projRefreshTimer = null;
 const PROJ_GROUPS_PER_PAGE = 50;
 
 async function loadProjectButtons() {
@@ -31,21 +33,156 @@ async function openProject(projectName) {
   const emoji = projCfg.emoji || '';
   document.getElementById('project-detail-title').textContent = `${emoji ? emoji + ' ' : ''}${projectName}`;
   document.getElementById('proj-search').value = '';
-  // Reset state filter buttons to all active
   document.querySelectorAll('#proj-state-filters .hist-state-btn').forEach(b => b.classList.add('active'));
 
-  const tbody = document.getElementById('project-hist-body');
-  tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
+  document.getElementById('proj-stats-bar').innerHTML = '<span class="proj-stat-lbl">loading…</span>';
+  document.getElementById('proj-live-section').innerHTML = '';
+  document.getElementById('project-hist-body').innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
 
-  try {
-    const res = await fetch(`/api/history?project=${encodeURIComponent(projectName)}&limit=500`);
-    _projData = await res.json();
-    _projPage = 0;
-    _buildProjGroups(_projData);
-    _renderProjPage();
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" style="padding:20px;color:var(--red)">Failed: ${e}</td></tr>`;
+  await _fetchProjectData();
+
+  if (_projRefreshTimer) clearInterval(_projRefreshTimer);
+  _projRefreshTimer = setInterval(() => {
+    if (currentTab === 'project') _fetchProjectData();
+  }, 30000);
+}
+
+async function refreshProjectPage() {
+  if (_projCurrentName) await _fetchProjectData();
+}
+
+async function _fetchProjectData() {
+  const name = _projCurrentName;
+  if (!name) return;
+
+  // Fetch live jobs and history in parallel
+  const [liveRes, histRes] = await Promise.all([
+    fetch('/api/jobs').then(r => r.json()).catch(() => ({})),
+    fetch(`/api/history?project=${encodeURIComponent(name)}&limit=500`).then(r => r.json()).catch(() => []),
+  ]);
+
+  // Extract live jobs for this project
+  _projLiveJobs = [];
+  const clusterActivity = {};
+  if (typeof liveRes === 'object' && !Array.isArray(liveRes)) {
+    for (const [cname, cdata] of Object.entries(liveRes)) {
+      if (!cdata || cdata.status !== 'ok') continue;
+      for (const j of (cdata.jobs || [])) {
+        if (j.project === name && !j._pinned) {
+          _projLiveJobs.push({ ...j, _cluster: cname });
+          const st = (j.state || '').toUpperCase();
+          if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
+          if (st === 'RUNNING' || st === 'COMPLETING') clusterActivity[cname].running++;
+          else if (st === 'PENDING') clusterActivity[cname].pending++;
+        }
+      }
+    }
   }
+
+  _projData = Array.isArray(histRes) ? histRes : [];
+  _projPage = 0;
+
+  _renderProjStats(clusterActivity);
+  _renderProjLive();
+  _buildProjGroups(_projData);
+  _renderProjPage();
+}
+
+function _renderProjStats(clusterActivity) {
+  const all = [..._projLiveJobs.map(j => j.state), ..._projData.map(r => r.state || '')];
+  const running = all.filter(s => s === 'RUNNING' || s === 'COMPLETING').length;
+  const pending = all.filter(s => s === 'PENDING').length;
+  const failed = all.filter(s => (s || '').toUpperCase().includes('FAIL')).length;
+  const completed = all.filter(s => (s || '').toUpperCase().startsWith('COMPLETED')).length;
+  const cancelled = all.filter(s => (s || '').toUpperCase().startsWith('CANCEL')).length;
+  const totalGpus = _projLiveJobs.reduce((sum, j) => {
+    const g = parseGpus(j.nodes, j.gres);
+    if (!g) return sum;
+    const m = g.match(/(\d+)\s*GPU/);
+    return sum + (m ? parseInt(m[1]) : 0);
+  }, 0);
+
+  const clusters = Object.entries(clusterActivity).map(([c, a]) => {
+    const hasActive = a.running > 0 || a.pending > 0;
+    const label = hasActive ? `${c} (${a.running}r/${a.pending}p)` : c;
+    return `<span class="proj-cluster-tag${hasActive ? ' has-active' : ''}">${label}</span>`;
+  }).join(' ');
+
+  document.getElementById('proj-stats-bar').innerHTML = `
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--green)">${running}</span><span class="proj-stat-lbl">running</span></span>
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--amber)">${pending}</span><span class="proj-stat-lbl">pending</span></span>
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--red)">${failed}</span><span class="proj-stat-lbl">failed</span></span>
+    <span class="proj-stat"><span class="proj-stat-val">${completed}</span><span class="proj-stat-lbl">completed</span></span>
+    <span class="proj-stat"><span class="proj-stat-val">${cancelled}</span><span class="proj-stat-lbl">cancelled</span></span>
+    ${totalGpus ? `<span class="proj-stat"><span class="proj-stat-val" style="color:var(--accent)">${totalGpus}</span><span class="proj-stat-lbl">GPUs</span></span>` : ''}
+    <span class="proj-stat"><span class="proj-stat-val">${_projData.length + _projLiveJobs.length}</span><span class="proj-stat-lbl">total</span></span>
+    ${clusters ? `<span style="margin-left:4px">${clusters}</span>` : ''}
+  `;
+}
+
+function _renderProjLive() {
+  const el = document.getElementById('proj-live-section');
+  if (!_projLiveJobs.length) {
+    el.innerHTML = '';
+    return;
+  }
+
+  const byCluster = {};
+  for (const j of _projLiveJobs) {
+    if (!byCluster[j._cluster]) byCluster[j._cluster] = [];
+    byCluster[j._cluster].push(j);
+  }
+
+  let html = '<div class="proj-live-label">● live jobs</div>';
+  for (const [cluster, jobs] of Object.entries(byCluster)) {
+    const groups = groupJobsByDependency(jobs);
+    for (const [gk, groupJobs] of groups) {
+      const idSet = new Set(groupJobs.map(j => j.jobid));
+      const byId = {};
+      for (const j of groupJobs) byId[j.jobid] = j;
+      const depthMemo = {};
+
+      const groupLabel = `${cluster} · ${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+      let rows = `<tr class="group-head-row"><td colspan="11">${groupLabel}</td></tr>`;
+
+      for (const j of groupJobs) {
+        const st = (j.state || '').toUpperCase();
+        const depth = depthInGroup(j, byId, idSet, depthMemo);
+        const gpuStr = parseGpus(j.nodes, j.gres);
+        const resourceCell = gpuStr
+          ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
+          : `<span class="dim">${j.nodes || '—'}n</span>`;
+        const startTime = fmtTime(j.started_local || j.started || j.start);
+        const safeName = (j.name || '').replace(/'/g, "\\'");
+        const isPending = st === 'PENDING';
+        const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${cluster}','${j.jobid}','${safeName}')">log</button>`;
+        const statsBtn = isPending ? '' : (cluster === 'local'
+          ? ''
+          : `<button class="action-btn log-btn" onclick="openStats('${cluster}','${j.jobid}','${safeName}')">stats</button>`);
+        const cancelBtn = `<button class="action-btn" onclick="cancelJob('${cluster}','${j.jobid}')">cancel</button>`;
+        const depBadge = depBadgeHtml(j, byId);
+        const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
+        const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
+        const hasGpu = !!gpuStr;
+        const nameCls = hasGpu ? '' : ' name-cpu';
+
+        rows += `<tr>
+          <td class="dim">${j.jobid}</td>
+          <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span></td>
+          <td>${stateChip(j.state, j.progress)} ${depBadge}</td>
+          <td>${logBtn} ${statsBtn}</td>
+          <td class="dim">${startTime}</td>
+          <td class="dim">—</td>
+          <td class="dim">${j.elapsed || '—'}</td>
+          <td>${resourceCell}</td>
+          <td class="dim">${j.partition || '—'}</td>
+          <td>${cancelBtn}</td>
+        </tr>`;
+      }
+      html += `<div class="proj-live-card"><table><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    }
+  }
+  el.innerHTML = html;
 }
 
 function toggleProjStateFilter(btn) {
@@ -81,7 +218,6 @@ function _buildProjGroups(rows) {
     ended_local: r.ended_local || '', ended_at: r.ended_at || '',
     depends_on: r.depends_on || [], dependents: r.dependents || [],
     dep_details: r.dep_details || [], project: r.project || '',
-    project_color: r.project_color || '', project_emoji: r.project_emoji || '',
     _cluster: r.cluster, _pinned: true,
   }));
 
@@ -113,7 +249,7 @@ function _renderProjPage() {
   if (_projPage < 0) _projPage = 0;
 
   if (!totalGroups) {
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">no runs match filters</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">no runs match filters</td></tr>';
     document.getElementById('proj-pagination').innerHTML = '';
     return;
   }
@@ -126,7 +262,7 @@ function _renderProjPage() {
     const groupJobs = g.jobs;
     const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
     if (groupJobs.length > 1) {
-      html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;
+      html += `<tr class="group-head-row"><td colspan="11" style="padding:4px 16px">${groupLabel}</td></tr>`;
     }
     const idSet = new Set(groupJobs.map(j => j.jobid));
     const byId = {};
@@ -160,6 +296,7 @@ function _renderProjPage() {
         <td class="dim">${j.elapsed || '—'}</td>
         <td class="dim">${gpuStr}</td>
         <td class="dim">${j.partition || '—'}</td>
+        <td></td>
       </tr>`;
     });
   });
