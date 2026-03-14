@@ -83,7 +83,7 @@ class TestExtractProject:
         assert extract_project("artsiv_eval-math") == "artsiv"
 
     @pytest.mark.unit
-    def test_no_match(self):
+    def test_no_match_without_underscore(self):
         assert extract_project("random-job-name") == ""
 
     @pytest.mark.unit
@@ -105,6 +105,24 @@ class TestExtractProject:
     def test_prefix_with_hyphen(self, monkeypatch):
         monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle-"})
         assert extract_project("hle-gpt-oss-120b") == "hle"
+
+    @pytest.mark.unit
+    def test_auto_detect_from_underscore(self, monkeypatch):
+        monkeypatch.setattr("server.config._persist_projects", lambda: None)
+        result = extract_project("newproj_eval-math")
+        assert result == "newproj"
+        assert "newproj" in PROJECTS
+        assert PROJECTS["newproj"]["prefix"] == "newproj_"
+
+    @pytest.mark.unit
+    def test_auto_detect_not_triggered_without_underscore(self):
+        assert extract_project("nounderscore") == ""
+
+    @pytest.mark.unit
+    def test_auto_detect_assigns_color(self, monkeypatch):
+        monkeypatch.setattr("server.config._persist_projects", lambda: None)
+        extract_project("colortest_job")
+        assert PROJECTS.get("colortest", {}).get("color", "").startswith("#")
 
 
 class TestGetProjectColor:

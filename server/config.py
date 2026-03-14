@@ -135,13 +135,28 @@ _PROJECT_PALETTE = [
 
 
 def extract_project(job_name):
-    """Return project key if job_name starts with a configured prefix, else ''."""
+    """Return project key from job name.
+
+    1. Check configured prefixes first.
+    2. Auto-detect: if the job name starts with `word_` (letters/digits/hyphens
+       followed by underscore), treat that as a new project and register it.
+    """
     if not job_name:
         return ""
     for name, cfg in PROJECTS.items():
         prefix = cfg.get("prefix", "")
         if prefix and job_name.startswith(prefix):
             return name
+    # Auto-detect: "artsiv_eval-math" → project "artsiv", prefix "artsiv_"
+    import re
+    m = re.match(r'^([a-zA-Z][a-zA-Z0-9-]*)_', job_name)
+    if m:
+        proj_name = m.group(1).lower()
+        prefix = m.group(0)  # includes the trailing underscore
+        if proj_name not in PROJECTS:
+            PROJECTS[proj_name] = {"prefix": prefix}
+            get_project_color(proj_name)  # auto-assign a color and persist
+        return proj_name
     return ""
 
 
