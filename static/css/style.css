@@ -338,7 +338,7 @@ tbody tr.pinned-completed-row:hover { background: #eefaf0; }
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
-  color: var(--muted);
+  color: var(--text);
   background: #f2f5fb;
   border-top: 1px solid #e3eaf8;
   border-bottom: 1px solid #e3eaf8;
