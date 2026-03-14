@@ -11,7 +11,7 @@ from glob import glob
 
 from .config import (
     APP_ROOT, CLUSTERS, MOUNT_LUSTRE_PREFIXES, NEMO_RUN_BASES, LOG_SEARCH_BASES,
-    RESULT_DIR_NAMES, _dir_label,
+    _dir_label,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, LOG_INDEX_TTL_SEC,
 )
@@ -300,36 +300,16 @@ def discover_job_logs_from_mount(cluster_name, job_id):
 
 
 def _derive_result_dirs(files, cluster_name=None):
-    """Walk up from the first log file's directory to find the parent that
-    contains eval-logs / eval-results / tmp-eval-results."""
+    """Find the output directory (parent of log dir) and return it as a
+    browsable directory. The UI's tree browser handles subdirectory
+    expansion, so we just need the root output path."""
     if not files:
         return []
-    path = os.path.dirname(files[0]["path"])
-
-    # Walk up to 5 levels looking for a parent that contains result dirs.
-    for _ in range(5):
-        parent = os.path.dirname(path)
-        if parent == path:
-            break
-        found = False
-        for dname in RESULT_DIR_NAMES:
-            candidate = parent.rstrip("/") + "/" + dname
-            if cluster_name and cluster_name != "local":
-                if resolve_mounted_path(cluster_name, candidate, want_dir=True):
-                    found = True
-                    break
-            else:
-                if os.path.isdir(candidate):
-                    found = True
-                    break
-        if found:
-            return [{"label": dn, "path": parent.rstrip("/") + "/" + dn} for dn in RESULT_DIR_NAMES]
-        path = parent
-
-    # Fallback: use grandparent of first file.
     log_dir = os.path.dirname(files[0]["path"])
     output_dir = os.path.dirname(log_dir)
-    return [{"label": dn, "path": output_dir.rstrip("/") + "/" + dn} for dn in RESULT_DIR_NAMES]
+    if not output_dir or output_dir == log_dir:
+        return []
+    return [{"label": "output", "path": output_dir}]
 
 
 def fetch_log_tail(cluster_name, log_path, lines=150):

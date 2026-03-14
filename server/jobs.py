@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .config import (
     APP_ROOT, CLUSTERS, DEFAULT_USER, STATE_ORDER, SQUEUE_FMT, SQUEUE_HDR,
-    NEMO_RUN_BASES, RESULT_DIR_NAMES,
+    NEMO_RUN_BASES,
     LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE,
     SSH_TIMEOUT, CACHE_FRESH_SEC,
     _cache_lock, _cache, _seen_jobs, _last_polled,
@@ -413,7 +413,7 @@ done
             dirs = []
             if logdir:
                 outdir = os.path.dirname(logdir)
-                dirs = [{"label": dn, "path": outdir.rstrip("/") + "/" + dn} for dn in RESULT_DIR_NAMES]
+                dirs = [{"label": "output", "path": outdir}]
             result = {"files": files, "dirs": dirs}
             _cache_set(_log_index_cache, (cluster, jid), result)
             first = files[0]["path"]
