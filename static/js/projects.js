@@ -13,10 +13,13 @@ async function loadProjects() {
     }
     el.innerHTML = `<div class="projects-grid">${projects.map(p => {
       const color = p.color || 'var(--surface)';
+      const emoji = p.emoji || '📁';
       const lastActive = fmtTime(p.last_active);
       return `<div class="project-card" style="border-left:4px solid ${color}" onclick="openProject('${p.project}')">
+        <div class="project-card-emoji">${emoji}</div>
         <div class="project-card-name">${p.project}</div>
-        <div class="project-card-meta">${p.job_count} job${p.job_count !== 1 ? 's' : ''} · last active ${lastActive}</div>
+        <div class="project-card-meta">${p.job_count} job${p.job_count !== 1 ? 's' : ''}</div>
+        <div class="project-card-meta">last active ${lastActive}</div>
       </div>`;
     }).join('')}</div>`;
   } catch (e) {
@@ -28,7 +31,9 @@ async function openProject(projectName) {
   document.getElementById('projects-list').style.display = 'none';
   const detail = document.getElementById('project-detail');
   detail.style.display = '';
-  document.getElementById('project-detail-title').textContent = projectName;
+  const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
+  const emoji = projCfg.emoji || '📁';
+  document.getElementById('project-detail-title').textContent = `${emoji} ${projectName}`;
   const tbody = document.getElementById('project-hist-body');
   tbody.innerHTML = '<tr><td colspan="10" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
 

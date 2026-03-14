@@ -133,6 +133,11 @@ _PROJECT_PALETTE = [
     "#e3f2fd", "#f3e5f5", "#e8eaf6", "#fff3e0",
 ]
 
+_PROJECT_EMOJIS = [
+    "🔬", "🧪", "🚀", "⚡", "🎯", "🔮", "🌊", "🔥",
+    "💎", "🧬", "🏗️", "🎨",
+]
+
 
 def extract_project(job_name):
     """Return project key from job name.
@@ -155,7 +160,8 @@ def extract_project(job_name):
         prefix = m.group(0)  # includes the trailing underscore
         if proj_name not in PROJECTS:
             PROJECTS[proj_name] = {"prefix": prefix}
-            get_project_color(proj_name)  # auto-assign a color and persist
+            get_project_color(proj_name)
+            get_project_emoji(proj_name)
         return proj_name
     return ""
 
@@ -176,6 +182,24 @@ def get_project_color(project_name):
     cfg["color"] = _PROJECT_PALETTE[len(PROJECTS) % len(_PROJECT_PALETTE)]
     _persist_projects()
     return cfg["color"]
+
+
+def get_project_emoji(project_name):
+    """Return the emoji for a project, auto-assigning if needed."""
+    if not project_name or project_name not in PROJECTS:
+        return ""
+    cfg = PROJECTS[project_name]
+    if cfg.get("emoji"):
+        return cfg["emoji"]
+    used = {p.get("emoji") for p in PROJECTS.values() if p.get("emoji")}
+    for e in _PROJECT_EMOJIS:
+        if e not in used:
+            cfg["emoji"] = e
+            _persist_projects()
+            return e
+    cfg["emoji"] = _PROJECT_EMOJIS[len(PROJECTS) % len(_PROJECT_EMOJIS)]
+    _persist_projects()
+    return cfg["emoji"]
 
 
 def _persist_projects():

@@ -307,6 +307,7 @@ function renderProjectEditor(projects) {
     <div class="cluster-edit-card" data-project="${name}">
       <div class="ce-head">
         <span class="ce-name" style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:16px">${p.emoji || '📁'}</span>
           <span class="project-color-dot" style="background:${p.color || '#ddd'}"></span>${name}
         </span>
         <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
@@ -314,6 +315,7 @@ function renderProjectEditor(projects) {
       <div class="ce-fields">
         <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
         <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="${p.prefix || ''}" placeholder="name_"></div>
+        <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="${p.emoji || ''}" placeholder="🔬" style="width:40px;text-align:center"></div>
         <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="${p.color || '#e8f4fd'}" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
       </div>
     </div>
@@ -332,6 +334,7 @@ function addProjectRow() {
     <div class="ce-fields">
       <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="my-project"></div>
       <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="" placeholder="my-project_"></div>
+      <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="" placeholder="🔬" style="width:40px;text-align:center"></div>
       <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="#e8f4fd" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
     </div>
   `;
@@ -346,6 +349,7 @@ async function saveProjects() {
     if (!name) continue;
     projects[name] = {
       prefix: card.querySelector('[data-f="prefix"]').value.trim(),
+      emoji: card.querySelector('[data-f="emoji"]').value.trim(),
       color: card.querySelector('[data-f="color"]').value.trim(),
     };
   }

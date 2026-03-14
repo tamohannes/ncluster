@@ -44,6 +44,7 @@ function _buildHistGroups(rows) {
     dep_details: r.dep_details || [],
     project: r.project || '',
     project_color: r.project_color || '',
+    project_emoji: r.project_emoji || '',
     _cluster: r.cluster,
     _pinned: true,
   }));
@@ -94,7 +95,8 @@ function _renderHistPage() {
     const groupJobs = g.jobs;
     const _proj = groupJobs[0]?.project || '';
     const _projColor = groupJobs[0]?.project_color || '';
-    const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_proj}</span> ` : '';
+    const _projEmoji = groupJobs[0]?.project_emoji || '';
+    const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span> ` : '';
     const groupLabel = `${_projBadge}${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
     if (groupJobs.length > 1) {

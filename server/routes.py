@@ -16,7 +16,7 @@ from .config import (
     _log_content_cache, _dir_list_cache, _progress_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC,
     reload_config, settings_response,
-    get_project_color,
+    get_project_color, get_project_emoji,
 )
 from .db import (
     normalize_job_times_local, get_board_pinned,
@@ -86,6 +86,7 @@ def api_jobs():
             proj = j.get("project", "")
             if proj:
                 j["project_color"] = get_project_color(proj)
+                j["project_emoji"] = get_project_emoji(proj)
 
     def cluster_sort_key(item):
         name, data = item
@@ -252,6 +253,7 @@ def api_jobs_cluster(cluster):
             proj = j.get("project", "")
             if proj:
                 j["project_color"] = get_project_color(proj)
+                j["project_emoji"] = get_project_emoji(proj)
     if cluster != "local":
         data["mount"] = cluster_mount_status(cluster)
     return jsonify(data)
@@ -326,15 +328,17 @@ def api_history():
         proj = r.get("project", "")
         if proj:
             r["project_color"] = get_project_color(proj)
+            r["project_emoji"] = get_project_emoji(proj)
     return jsonify(rows)
 
 
 @api.route("/api/projects")
 def api_projects():
-    from .config import get_project_color as _color
+    from .config import get_project_color as _color, get_project_emoji as _emoji
     projects = get_projects()
     for p in projects:
         p["color"] = _color(p["project"])
+        p["emoji"] = _emoji(p["project"])
     return jsonify(projects)
 
 
