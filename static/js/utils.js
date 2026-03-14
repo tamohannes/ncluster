@@ -238,3 +238,15 @@ function depthInGroup(job, byId, idSet, memo) {
   return d;
 }
 
+function lightenColor(hex, lightness) {
+  if (!hex || !hex.startsWith('#')) return '';
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const t = lightness || 0.92;
+  const lr = Math.round(r + (255 - r) * t);
+  const lg = Math.round(g + (255 - g) * t);
+  const lb = Math.round(b + (255 - b) * t);
+  return `rgb(${lr},${lg},${lb})`;
+}
+

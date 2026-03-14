@@ -240,8 +240,8 @@ function renderCard(name, data) {
       const nameCls = hasGpu ? '' : ' name-cpu';
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>`;
 
-      const projBg = j.project_color ? `background:${j.project_color}` : '';
-      return `<tr class="${rowClass}" style="${projBg}">
+      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+      return `<tr class="${rowClass}" style="${_rowBg}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
         <td>${stateChip(j.state, j.progress)} ${depBadge}</td>

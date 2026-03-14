@@ -103,9 +103,8 @@ async function openProject(projectName) {
         const ended = fmtTime(j.ended_local || j.ended_at);
         const hasGpu = parseGpus(j.nodes, j.gres) !== null;
         const nameCls = hasGpu ? '' : ' name-cpu';
-        const projBg = j.project_color ? `background:${j.project_color}` : '';
-
-        html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${projBg}">
+        const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+        html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
           <td><span class="badge">${g.cluster}</span></td>
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
