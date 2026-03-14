@@ -158,6 +158,24 @@ def cancel_job(cluster: str, job_id: str) -> dict:
     return _api_post(f"/api/cancel/{urllib.parse.quote(cluster)}/{urllib.parse.quote(job_id)}")
 
 
+@mcp.tool()
+def cleanup_history(days: int = 30, dry_run: bool = False) -> dict:
+    """Delete history records older than N days and remove their local log files.
+
+    Destructive — only use when the user explicitly asks to clean up old runs.
+    Set dry_run=True to preview what would be deleted without actually removing anything.
+    """
+    payload = json.dumps({"days": days, "dry_run": dry_run}).encode()
+    url = f"{API_BASE}/api/cleanup"
+    req = urllib.request.Request(url, method="POST", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 # ── resources ────────────────────────────────────────────────────────────────
 
 @mcp.resource("jobs://summary")

@@ -1,0 +1,579 @@
+"""Flask route handlers as a Blueprint."""
+
+import json
+import os
+import shutil
+import subprocess
+import threading
+from datetime import datetime, timedelta
+
+from flask import Blueprint, jsonify, request, render_template
+
+from .config import (
+    CLUSTERS, DEFAULT_USER, TERMINAL_STATES, RESULT_DIR_NAMES,
+    _CONFIG, _cache_lock, _cache,
+    _cache_get, _cache_set,
+    _log_content_cache, _dir_list_cache, _progress_cache,
+    LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC,
+    reload_config, settings_response,
+)
+from .db import (
+    normalize_job_times_local, get_board_pinned,
+    dismiss_job, dismiss_by_state_prefix,
+    get_history, get_db,
+)
+from .ssh import ssh_run, ssh_run_with_timeout
+from .mounts import (
+    resolve_mounted_path, resolve_file_path,
+    list_local_dir, prefetch_nested_dir_cache_local,
+    cluster_mount_status, all_mount_status, run_mount_script,
+)
+from .logs import (
+    fetch_log_tail, tail_local_file, extract_progress,
+    get_job_log_files_cached,
+    read_jsonl_index, read_jsonl_record,
+)
+from .jobs import (
+    refresh_all_clusters, refresh_cluster,
+    schedule_prefetch, prefetch_cluster_bulk,
+    get_job_stats_cached,
+    _last_polled,
+)
+
+api = Blueprint("api", __name__)
+
+
+@api.route("/")
+def index():
+    return render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER)
+
+
+@api.route("/api/jobs")
+def api_jobs():
+    if request.args.get("refresh", "0") == "1":
+        refresh_all_clusters()
+
+    with _cache_lock:
+        snapshot = {k: dict(v) for k, v in _cache.items()}
+
+    all_pinned = get_board_pinned()
+    pinned_by_cluster = {}
+    for row in all_pinned:
+        c = row["cluster"]
+        pinned_by_cluster.setdefault(c, []).append(row)
+
+    for name in list(CLUSTERS.keys()):
+        if name not in snapshot:
+            snapshot[name] = {"status": "ok", "jobs": [], "updated": None}
+        data = snapshot[name]
+        if data.get("status") != "ok":
+            continue
+        live_ids = {j["jobid"] for j in data.get("jobs", [])}
+        pinned = [
+            {**p, "_pinned": True, "jobid": p["job_id"], "name": p["job_name"]}
+            for p in pinned_by_cluster.get(name, [])
+            if p["job_id"] not in live_ids
+        ]
+        if pinned:
+            data["jobs"] = data.get("jobs", []) + pinned
+        data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
+        for j in data.get("jobs", []):
+            if j.get("state", "").upper() == "RUNNING":
+                pct = _cache_get(_progress_cache, (name, j.get("jobid")), PROGRESS_TTL_SEC)
+                if pct is not None:
+                    j["progress"] = pct
+
+    def cluster_sort_key(item):
+        name, data = item
+        jobs = data.get("jobs", [])
+        has_running = any(j.get("state") in ("RUNNING", "COMPLETING") for j in jobs if not j.get("_pinned"))
+        has_pending = any(j.get("state") == "PENDING" for j in jobs if not j.get("_pinned"))
+        has_live = any(not j.get("_pinned") for j in jobs)
+        return (not has_running, not has_pending, not has_live, name)
+
+    ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
+
+    for c, d in ordered.items():
+        if d.get("status") != "ok":
+            continue
+        active_jobs = [
+            j for j in d.get("jobs", [])
+            if str(j.get("state", "")).upper() in {"RUNNING", "COMPLETING"}
+            and not j.get("_pinned")
+        ][:3]
+        for j in active_jobs:
+            schedule_prefetch(c, j.get("jobid"))
+
+    mounts = all_mount_status()
+    for c, d in ordered.items():
+        if c != "local":
+            d["mount"] = mounts.get(c, {"mounted": False, "root": ""})
+    return jsonify(ordered)
+
+
+@api.route("/api/mounts")
+def api_mounts():
+    cluster = request.args.get("cluster", "all")
+    if cluster != "all":
+        if cluster not in CLUSTERS or cluster == "local":
+            return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+        return jsonify({"status": "ok", "mounts": {cluster: cluster_mount_status(cluster)}})
+    return jsonify({"status": "ok", "mounts": all_mount_status()})
+
+
+@api.route("/api/mount/<action>/<cluster>", methods=["POST"])
+def api_mount_action(action, cluster):
+    ok, msg = run_mount_script(action, cluster)
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg, "mounts": all_mount_status()})
+
+
+@api.route("/api/mount/<action>", methods=["POST"])
+def api_mount_action_all(action):
+    ok, msg = run_mount_script(action, "all")
+    if not ok:
+        return jsonify({"status": "error", "error": msg}), 400
+    return jsonify({"status": "ok", "message": msg, "mounts": all_mount_status()})
+
+
+@api.route("/api/clear_failed/<cluster>", methods=["POST"])
+def api_clear_failed(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    dismiss_by_state_prefix(cluster, list(TERMINAL_STATES))
+    return jsonify({"status": "ok"})
+
+
+@api.route("/api/clear_completed/<cluster>", methods=["POST"])
+def api_clear_completed(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    dismiss_by_state_prefix(cluster, ["COMPLETED"])
+    return jsonify({"status": "ok"})
+
+
+@api.route("/api/clear_failed_job/<cluster>/<job_id>", methods=["POST"])
+def api_clear_failed_job(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    dismiss_job(cluster, job_id)
+    return jsonify({"status": "ok"})
+
+
+@api.route("/api/cleanup", methods=["POST"])
+def api_cleanup():
+    payload = request.get_json(silent=True) or {}
+    days = int(payload.get("days", 30))
+    dry_run = bool(payload.get("dry_run", False))
+    if days < 1:
+        return jsonify({"status": "error", "error": "days must be >= 1"}), 400
+
+    con = get_db()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = con.execute("""
+        SELECT cluster, job_id, job_name, log_path, ended_at
+        FROM job_history WHERE ended_at < ? AND cluster != 'local' ORDER BY ended_at
+    """, (cutoff,)).fetchall()
+
+    if not rows:
+        con.close()
+        return jsonify({"status": "ok", "deleted_records": 0, "cleaned_dirs": 0, "message": f"No records older than {days} days."})
+
+    cleaned_dirs = []
+    deleted_ids = []
+    for row in rows:
+        r = dict(row)
+        deleted_ids.append((r["cluster"], r["job_id"]))
+        if not dry_run:
+            _cleanup_mounted_logs(r["cluster"], r["job_id"], r.get("log_path", ""), cleaned_dirs)
+
+    if not dry_run:
+        con.execute("DELETE FROM job_history WHERE ended_at < ? AND cluster != 'local'", (cutoff,))
+        con.commit()
+    con.close()
+    return jsonify({"status": "ok", "deleted_records": len(deleted_ids), "cleaned_dirs": len(cleaned_dirs),
+                     "dry_run": dry_run, "days": days, "cleaned_paths": cleaned_dirs[:20]})
+
+
+def _cleanup_mounted_logs(cluster_name, job_id, log_path, cleaned_list):
+    if not log_path:
+        return
+    remote_log_dir = os.path.dirname(log_path)
+    remote_output_dir = os.path.dirname(remote_log_dir)
+    for dname in RESULT_DIR_NAMES:
+        remote_dir = remote_output_dir.rstrip("/") + "/" + dname
+        local_dir = resolve_mounted_path(cluster_name, remote_dir, want_dir=True)
+        if local_dir and os.path.isdir(local_dir):
+            for fname in os.listdir(local_dir):
+                if job_id in fname:
+                    fpath = os.path.join(local_dir, fname)
+                    try:
+                        if os.path.isfile(fpath):
+                            os.remove(fpath)
+                            cleaned_list.append(fpath)
+                        elif os.path.isdir(fpath):
+                            shutil.rmtree(fpath, ignore_errors=True)
+                            cleaned_list.append(fpath)
+                    except Exception:
+                        pass
+
+
+@api.route("/api/jobs/<cluster>")
+def api_jobs_cluster(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    _last_polled[cluster] = 0.0
+    refresh_cluster(cluster)
+    with _cache_lock:
+        data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
+    if data.get("status") == "ok":
+        live_ids = {j["jobid"] for j in data.get("jobs", [])}
+        pinned = [
+            {**p, "_pinned": True, "jobid": p["job_id"], "name": p["job_name"]}
+            for p in get_board_pinned(cluster) if p["job_id"] not in live_ids
+        ]
+        if pinned:
+            data = dict(data)
+            data["jobs"] = data.get("jobs", []) + pinned
+        data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
+        for j in data.get("jobs", []):
+            s = str(j.get("state", "")).upper()
+            if s in {"RUNNING", "COMPLETING"} and not j.get("_pinned"):
+                schedule_prefetch(cluster, j.get("jobid"))
+            if s == "RUNNING":
+                pct = _cache_get(_progress_cache, (cluster, j.get("jobid")), PROGRESS_TTL_SEC)
+                if pct is not None:
+                    j["progress"] = pct
+    if cluster != "local":
+        data["mount"] = cluster_mount_status(cluster)
+    return jsonify(data)
+
+
+@api.route("/api/prefetch_visible", methods=["POST"])
+def api_prefetch_visible():
+    payload = request.get_json(silent=True) or {}
+    jobs = payload.get("jobs", [])
+    by_cluster = {}
+    for item in jobs:
+        c = item.get("cluster")
+        jid = str(item.get("job_id", "")).strip()
+        if not c or not jid or c not in CLUSTERS:
+            continue
+        by_cluster.setdefault(c, []).append(jid)
+
+    def _run():
+        threads = []
+        for c, ids in by_cluster.items():
+            t = threading.Thread(target=prefetch_cluster_bulk, args=(c, ids), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(timeout=25)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"status": "ok", "clusters": list(by_cluster.keys()), "jobs": sum(len(v) for v in by_cluster.values())})
+
+
+@api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
+def api_cancel(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    try:
+        if cluster == "local":
+            os.kill(int(job_id), 15)
+            return jsonify({"status": "ok"})
+        ssh_run(cluster, f"scancel {job_id}")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/cancel_all/<cluster>", methods=["POST"])
+def api_cancel_all(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    try:
+        if cluster == "local":
+            return jsonify({"status": "error", "error": "Not supported for local"})
+        ssh_run(cluster, "scancel -u $USER")
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/stats/<cluster>/<job_id>")
+def api_stats(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    return jsonify(get_job_stats_cached(cluster, job_id))
+
+
+@api.route("/api/history")
+def api_history():
+    cluster = request.args.get("cluster", "all")
+    limit = int(request.args.get("limit", 200))
+    return jsonify(get_history(cluster, limit))
+
+
+@api.route("/api/log_files/<cluster>/<job_id>")
+def api_log_files(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "files": [], "dirs": [], "error": "Unknown cluster"}), 404
+    result = get_job_log_files_cached(cluster, job_id)
+    files = []
+    for f in result.get("files", []):
+        p = f.get("path", "")
+        mounted = resolve_mounted_path(cluster, p, want_dir=False) if (p and cluster != "local") else ""
+        source_hint = "local" if cluster == "local" else ("mount" if mounted else "ssh")
+        files.append({**f, "source_hint": source_hint, "mounted_path": mounted})
+    dirs = []
+    for d in result.get("dirs", []):
+        p = d.get("path", "")
+        mounted = resolve_mounted_path(cluster, p, want_dir=True) if (p and cluster != "local") else ""
+        source_hint = "local" if cluster == "local" else ("mount" if mounted else "ssh")
+        dirs.append({**d, "source_hint": source_hint, "mounted_path": mounted})
+    return jsonify({"status": "ok", "files": files, "dirs": dirs, "error": result.get("error", "")})
+
+
+@api.route("/api/ls/<cluster>")
+def api_ls(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    path = request.args.get("path", "")
+    force = request.args.get("force", "0") == "1"
+    if not path:
+        return jsonify({"status": "error", "error": "No path provided"}), 400
+    cache_key = (cluster, path)
+    if not force:
+        cached = _cache_get(_dir_list_cache, cache_key, DIR_LIST_TTL_SEC)
+        if cached is not None:
+            return jsonify(cached)
+    try:
+        if cluster == "local":
+            entries = list_local_dir(path)
+            payload = {"status": "ok", "path": path, "entries": entries, "source": "local", "resolved_path": path}
+            _cache_set(_dir_list_cache, cache_key, payload)
+            prefetch_nested_dir_cache_local(cluster, path, path, entries)
+            return jsonify(payload)
+        mounted_dir = resolve_mounted_path(cluster, path, want_dir=True)
+        if mounted_dir:
+            entries = list_local_dir(mounted_dir)
+            for e in entries:
+                e["path"] = path.rstrip("/") + "/" + e["name"]
+            payload = {"status": "ok", "path": path, "entries": entries, "source": "mount", "resolved_path": mounted_dir}
+            _cache_set(_dir_list_cache, cache_key, payload)
+            prefetch_nested_dir_cache_local(cluster, path, mounted_dir, entries)
+            return jsonify(payload)
+        cmd = f"""ls -la '{path}' 2>/dev/null | tail -n +2 | awk '{{
+  type = ($1 ~ /^d/) ? "d" : "f"
+  size = $5
+  name = $NF
+  if (name != "." && name != "..") print type "|" size "|" name
+}}'"""
+        out, _ = ssh_run(cluster, cmd)
+        entries = []
+        for line in out.splitlines():
+            parts = line.split("|", 2)
+            if len(parts) != 3:
+                continue
+            ftype, size, name = parts
+            entries.append({"name": name, "path": path.rstrip("/") + "/" + name, "is_dir": ftype == "d",
+                            "size": int(size) if size.isdigit() else None})
+        payload = {"status": "ok", "path": path, "entries": entries, "source": "ssh", "resolved_path": path}
+        _cache_set(_dir_list_cache, cache_key, payload)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/log/<cluster>/<job_id>")
+def api_log(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    lines = int(request.args.get("lines", 150))
+    log_path = request.args.get("path", "")
+    force = request.args.get("force", "0") == "1"
+
+    if not log_path:
+        result = get_job_log_files_cached(cluster, job_id)
+        files = result["files"]
+        if not files:
+            return jsonify({"status": "error", "error": "No log files found for this job."})
+        preferred = next((f for f in files if "main" in f["label"]), None)
+        log_path = (preferred or files[0])["path"]
+
+    if not log_path:
+        return jsonify({"status": "error", "error": "No log path available."})
+
+    cache_key = (cluster, str(job_id), log_path)
+    cached = None if force else _cache_get(_log_content_cache, cache_key, LOG_CONTENT_TTL_SEC)
+    source = "cache"
+    resolved_path = log_path
+    if cached is not None:
+        content = cached
+    else:
+        if cluster != "local":
+            mounted = resolve_mounted_path(cluster, log_path, want_dir=False)
+            if mounted:
+                content = tail_local_file(mounted, lines)
+                source = "mount"
+                resolved_path = mounted
+            else:
+                content = fetch_log_tail(cluster, log_path, lines)
+                source = "ssh"
+        else:
+            content = fetch_log_tail(cluster, log_path, lines)
+            source = "local"
+        _cache_set(_log_content_cache, cache_key, content)
+        pct = extract_progress(content)
+        if pct is not None:
+            _cache_set(_progress_cache, (cluster, str(job_id)), pct)
+    return jsonify({"status": "ok", "log_path": log_path, "content": content, "source": source, "resolved_path": resolved_path})
+
+
+@api.route("/api/log_full/<cluster>/<job_id>")
+def api_log_full(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    log_path = request.args.get("path", "")
+    page = int(request.args.get("page", 0))
+    page_size = int(request.args.get("page_size", 500))
+    if not log_path:
+        return jsonify({"status": "error", "error": "No path provided"}), 400
+
+    local_path = None
+    source = "ssh"
+    if cluster == "local":
+        local_path = log_path if os.path.isfile(log_path) else None
+        source = "local"
+    else:
+        mounted = resolve_mounted_path(cluster, log_path, want_dir=False)
+        if mounted:
+            local_path = mounted
+            source = "mount"
+
+    if local_path:
+        try:
+            result = subprocess.run(["wc", "-l", local_path], capture_output=True, text=True, timeout=10)
+            total_lines = int(result.stdout.strip().split()[0]) if result.stdout.strip() else 0
+            total_pages = max(1, -(-total_lines // page_size))
+            page = max(0, min(page, total_pages - 1))
+            start = page * page_size + 1
+            end = start + page_size - 1
+            result = subprocess.run(["sed", "-n", f"{start},{end}p", local_path], capture_output=True, text=True, timeout=15)
+            content = result.stdout or "(empty)"
+        except Exception as e:
+            return jsonify({"status": "error", "error": str(e)})
+    else:
+        try:
+            wc_out, _ = ssh_run_with_timeout(cluster, f"wc -l '{log_path}' 2>/dev/null", timeout_sec=10)
+            total_lines = int(wc_out.strip().split()[0]) if wc_out.strip() else 0
+            total_pages = max(1, -(-total_lines // page_size))
+            page = max(0, min(page, total_pages - 1))
+            start = page * page_size + 1
+            end = start + page_size - 1
+            content, _ = ssh_run_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
+            content = content or "(empty)"
+        except Exception as e:
+            return jsonify({"status": "error", "error": str(e)})
+
+    return jsonify({"status": "ok", "content": content, "page": page, "page_size": page_size,
+                     "total_pages": total_pages, "total_lines": total_lines, "source": source, "log_path": log_path})
+
+
+@api.route("/api/jsonl_index/<cluster>/<job_id>")
+def api_jsonl_index(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    path = request.args.get("path", "")
+    mode = request.args.get("mode", "last")
+    limit = int(request.args.get("limit", 100))
+    if mode not in ("first", "last", "all"):
+        mode = "last"
+    if not path:
+        return jsonify({"status": "error", "error": "No path provided"}), 400
+
+    local_path, source = resolve_file_path(cluster, path)
+    if local_path:
+        result = read_jsonl_index(local_path, limit=limit, mode=mode)
+        result["source"] = source
+        return jsonify(result)
+
+    preview_chars = 150
+    if mode == "first" and limit > 0:
+        cmd = f"head -n {limit} '{path}' 2>/dev/null | awk '{{printf \"%d|%d|%s\\n\", NR-1, length($0), substr($0, 1, {preview_chars})}}'"
+    else:
+        cmd = f"awk '{{printf \"%d|%d|%s\\n\", NR-1, length($0), substr($0, 1, {preview_chars})}}' '{path}' 2>/dev/null"
+    try:
+        out, _ = ssh_run_with_timeout(cluster, cmd, timeout_sec=15)
+        all_records = []
+        for line in out.splitlines():
+            parts = line.split("|", 2)
+            if len(parts) < 3:
+                continue
+            ln, sz = int(parts[0]), int(parts[1])
+            prev = parts[2]
+            all_records.append({"line": ln, "preview": prev, "valid": len(prev) < sz, "size": sz})
+        total = len(all_records)
+        if mode == "all" or limit <= 0:
+            records = all_records
+        elif mode == "first":
+            records = all_records
+        else:
+            records = all_records[-limit:]
+        return jsonify({"status": "ok", "total": total, "count": len(records),
+                        "mode": mode, "limit": limit, "records": records, "source": "ssh"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/jsonl_record/<cluster>/<job_id>")
+def api_jsonl_record(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    path = request.args.get("path", "")
+    line_num = int(request.args.get("line", 0))
+    if not path:
+        return jsonify({"status": "error", "error": "No path provided"}), 400
+
+    local_path, source = resolve_file_path(cluster, path)
+    if local_path:
+        result = read_jsonl_record(local_path, line_num)
+        result["source"] = source
+        return jsonify(result)
+
+    sed_line = line_num + 1
+    cmd = f"sed -n '{sed_line}p' '{path}' 2>/dev/null"
+    try:
+        out, _ = ssh_run_with_timeout(cluster, cmd, timeout_sec=10)
+        return jsonify({"status": "ok", "line": line_num, "content": out.strip(), "source": "ssh"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/settings")
+def api_settings_get():
+    return jsonify(settings_response())
+
+
+@api.route("/api/settings", methods=["POST"])
+def api_settings_post():
+    patch = request.get_json(silent=True)
+    if not patch or not isinstance(patch, dict):
+        return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
+
+    merged = dict(_CONFIG)
+    for key in ("port", "ssh_timeout", "cache_fresh_sec", "log_search_bases",
+                "nemo_run_bases", "mount_lustre_prefixes", "local_process_filters"):
+        if key in patch:
+            merged[key] = patch[key]
+    if "clusters" in patch:
+        merged["clusters"] = patch["clusters"]
+
+    try:
+        reload_config(merged)
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify({"status": "ok", "settings": settings_response()})

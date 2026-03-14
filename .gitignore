@@ -27,6 +27,10 @@ history.db
 
 # Site-specific config (copy config.example.json to config.json)
 config.json
+conf/config.json
+
+# Runtime data
+data/
 
 # OS/editor noise
 .DS_Store
