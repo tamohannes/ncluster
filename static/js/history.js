@@ -93,8 +93,9 @@ function _renderHistPage() {
   pageGroups.forEach((g, gidx) => {
     const groupJobs = g.jobs;
     const _proj = groupJobs[0]?.project || '';
-    const _projLabel = _proj ? ` <span class="group-project">(${_proj})</span>` : '';
-    const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>${_projLabel}`;
+    const _projColor = groupJobs[0]?.project_color || '';
+    const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_proj}</span> ` : '';
+    const groupLabel = `${_projBadge}${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;

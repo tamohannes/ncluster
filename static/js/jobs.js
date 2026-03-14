@@ -198,8 +198,9 @@ function renderCard(name, data) {
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
       const _proj = groupJobs[0]?.project || '';
-      const _projLabel = _proj ? ` <span class="group-project">(${_proj})</span>` : '';
-      const groupLabel = `${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>${_projLabel}`;
+      const _projColor = groupJobs[0]?.project_color || '';
+      const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_proj}</span> ` : '';
+      const groupLabel = `${_projBadge}${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));
