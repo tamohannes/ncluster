@@ -93,6 +93,17 @@
           <button class="btn" onclick="showTab('live')">← Dashboard</button>
           <span class="project-detail-title" id="project-detail-title"></span>
         </div>
+        <div class="history-filter">
+          <input id="proj-search" type="text" placeholder="filter by name or job id…" oninput="filterProjectRuns()" />
+          <div class="hist-state-filters" id="proj-state-filters">
+            <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
+            <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>
+            <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleProjStateFilter(this)">cancelled</button>
+            <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleProjStateFilter(this)">timeout</button>
+            <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleProjStateFilter(this)">running</button>
+            <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleProjStateFilter(this)">pending</button>
+          </div>
+        </div>
         <div class="history-table-wrap">
           <table id="project-hist-table">
             <thead><tr>
@@ -102,6 +113,7 @@
             <tbody id="project-hist-body"></tbody>
           </table>
         </div>
+        <div class="hist-pagination" id="proj-pagination"></div>
       </main>
     </div>
 
