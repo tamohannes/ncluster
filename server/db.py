@@ -119,11 +119,36 @@ def init_db():
     for col, default in [("board_visible", "INTEGER DEFAULT 0"),
                          ("started", "TEXT"),
                          ("dependency", "TEXT DEFAULT ''"),
-                         ("project", "TEXT DEFAULT ''")]:
+                         ("project", "TEXT DEFAULT ''"),
+                         ("run_id", "INTEGER DEFAULT NULL")]:
         try:
             con.execute(f"ALTER TABLE job_history ADD COLUMN {col} {default}")
         except Exception:
             pass
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS runs (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster       TEXT NOT NULL,
+            root_job_id   TEXT NOT NULL,
+            run_name      TEXT DEFAULT '',
+            project       TEXT DEFAULT '',
+            batch_script  TEXT DEFAULT '',
+            scontrol_raw  TEXT DEFAULT '',
+            env_vars      TEXT DEFAULT '',
+            conda_state   TEXT DEFAULT '',
+            started_at    TEXT,
+            ended_at      TEXT,
+            created_at    TEXT DEFAULT (datetime('now')),
+            meta_fetched  INTEGER DEFAULT 0,
+            UNIQUE(cluster, root_job_id)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_board ON job_history(cluster, board_visible)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_ended ON job_history(cluster, ended_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_project ON job_history(project)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_run_id ON job_history(run_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_runs_cluster_root ON runs(cluster, root_job_id)")
     con.commit()
     con.close()
 
@@ -160,7 +185,7 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
              board_visible, dependency, project)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(cluster, job_id) DO UPDATE SET
-            job_name    = COALESCE(excluded.job_name, job_name),
+            job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
             state       = excluded.state,
             exit_code   = COALESCE(excluded.exit_code, exit_code),
             reason      = COALESCE(excluded.reason, reason),
@@ -171,6 +196,7 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
             submitted   = COALESCE(excluded.submitted, submitted),
             started     = COALESCE(excluded.started, started),
             ended_at    = COALESCE(excluded.ended_at, ended_at),
+            log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
             board_visible = excluded.board_visible,
             dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
             project     = COALESCE(NULLIF(excluded.project, ''), project)
@@ -353,3 +379,128 @@ def cleanup_local_on_startup():
 
 # Keep old name as alias so existing callers don't break.
 repin_recent_terminal_jobs = cleanup_local_on_startup
+
+
+# ─── Run CRUD ────────────────────────────────────────────────────────────────
+
+def upsert_run(cluster, root_job_id, run_name="", project=""):
+    """Create or return existing run. Returns the run id."""
+    con = get_db()
+    row = con.execute(
+        "SELECT id FROM runs WHERE cluster=? AND root_job_id=?",
+        (cluster, root_job_id),
+    ).fetchone()
+    if row:
+        run_id = row["id"]
+        if run_name or project:
+            con.execute(
+                "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
+                "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
+                (run_name, project, run_id),
+            )
+            con.commit()
+    else:
+        cur = con.execute(
+            "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
+            (cluster, root_job_id, run_name, project),
+        )
+        run_id = cur.lastrowid
+        con.commit()
+    con.close()
+    return run_id
+
+
+def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda_state=""):
+    has_data = any([batch_script, scontrol_raw, env_vars])
+    con = get_db()
+    con.execute("""
+        UPDATE runs SET
+            batch_script  = COALESCE(NULLIF(?, ''), batch_script),
+            scontrol_raw  = COALESCE(NULLIF(?, ''), scontrol_raw),
+            env_vars      = COALESCE(NULLIF(?, ''), env_vars),
+            conda_state   = COALESCE(NULLIF(?, ''), conda_state),
+            meta_fetched  = ?
+        WHERE id = ?
+    """, (batch_script, scontrol_raw, env_vars, conda_state,
+          1 if has_data else 0, run_id))
+    con.commit()
+    con.close()
+
+
+def update_run_times(run_id, started_at=None, ended_at=None):
+    con = get_db()
+    if started_at:
+        con.execute(
+            "UPDATE runs SET started_at = ? WHERE id = ? AND (started_at IS NULL OR started_at > ?)",
+            (started_at, run_id, started_at),
+        )
+    if ended_at:
+        con.execute(
+            "UPDATE runs SET ended_at = ? WHERE id = ? AND (ended_at IS NULL OR ended_at < ?)",
+            (ended_at, run_id, ended_at),
+        )
+    con.commit()
+    con.close()
+
+
+def get_run(cluster, root_job_id):
+    """Return run record dict or None."""
+    con = get_db()
+    row = con.execute(
+        "SELECT * FROM runs WHERE cluster=? AND root_job_id=?",
+        (cluster, root_job_id),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def get_run_with_jobs(cluster, root_job_id):
+    """Return run metadata + all associated jobs."""
+    con = get_db()
+    run_row = con.execute(
+        "SELECT * FROM runs WHERE cluster=? AND root_job_id=?",
+        (cluster, root_job_id),
+    ).fetchone()
+    if not run_row:
+        con.close()
+        return None
+    run = dict(run_row)
+    job_rows = con.execute(
+        "SELECT * FROM job_history WHERE run_id=? ORDER BY submitted, id",
+        (run["id"],),
+    ).fetchall()
+    con.close()
+    from .jobs import parse_dependency
+    jobs = [normalize_job_times_local(dict(r)) for r in job_rows]
+    _restore_dependency_fields(jobs, parse_dependency)
+    run["jobs"] = jobs
+    return run
+
+
+def associate_jobs_to_run(cluster, run_id, job_ids):
+    """Set run_id on job_history rows for the given job IDs."""
+    if not job_ids:
+        return
+    con = get_db()
+    placeholders = ",".join("?" for _ in job_ids)
+    con.execute(
+        f"UPDATE job_history SET run_id=? WHERE cluster=? AND job_id IN ({placeholders})",
+        [run_id, cluster] + list(job_ids),
+    )
+    con.commit()
+    con.close()
+
+
+# ─── Safe DB access ─────────────────────────────────────────────────────────
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def db_connection():
+    """Context manager for safe DB access with auto-close."""
+    con = get_db()
+    try:
+        yield con
+    finally:
+        con.close()

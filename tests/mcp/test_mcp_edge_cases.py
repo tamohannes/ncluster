@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch
 
 import mcp_server
-from mcp_server import list_jobs, get_job_log, get_history, jobs_summary
+from mcp_server import list_jobs, get_job_log, get_history, jobs_summary, mount_cluster, clear_failed
 
 
 @pytest.mark.mcp
@@ -70,3 +70,29 @@ class TestEmptyData:
             result = jobs_summary()
         assert "unreachable" in result
         assert "Total: 0" in result
+
+
+@pytest.mark.mcp
+class TestMountEdgeCases:
+    def test_cluster_with_special_chars(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            mock.return_value = {"status": "ok"}
+            mount_cluster("cluster/name", "mount")
+            url = mock.call_args[0][0]
+            assert "cluster%2Fname" in url or "cluster/name" in url
+
+    def test_invalid_action_no_api_call(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            result = mount_cluster("c1", "bad")
+            mock.assert_not_called()
+            assert result["status"] == "error"
+
+
+@pytest.mark.mcp
+class TestClearEdgeCases:
+    def test_clear_failed_special_cluster(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            mock.return_value = {"status": "ok"}
+            clear_failed("cluster/name")
+            url = mock.call_args[0][0]
+            assert "cluster%2Fname" in url or "cluster/name" in url

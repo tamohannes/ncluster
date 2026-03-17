@@ -115,19 +115,25 @@ class TestResolveFilePath:
 class TestRemotePathFromMounted:
     @pytest.mark.unit
     def test_basic(self, monkeypatch):
-        monkeypatch.setattr("server.mounts.mounted_root", lambda c: "/mnt/c1")
+        monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
+        monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": ["/remote/base"]})
+        monkeypatch.setattr("os.path.ismount", lambda p: p == "/mnt/c1")
         result = remote_path_from_mounted("c1", "/mnt/c1/data/file.txt")
-        assert result == "/data/file.txt"
+        assert result == "/remote/base/data/file.txt"
 
     @pytest.mark.unit
-    def test_root_returns_slash(self, monkeypatch):
-        monkeypatch.setattr("server.mounts.mounted_root", lambda c: "/mnt/c1")
+    def test_root_returns_base(self, monkeypatch):
+        monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
+        monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": ["/remote/base"]})
+        monkeypatch.setattr("os.path.ismount", lambda p: p == "/mnt/c1")
         result = remote_path_from_mounted("c1", "/mnt/c1")
-        assert result == "/"
+        assert result == "/remote/base"
 
     @pytest.mark.unit
     def test_no_mount_returns_empty(self, monkeypatch):
-        monkeypatch.setattr("server.mounts.mounted_root", lambda c: "")
+        monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
+        monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": []})
+        monkeypatch.setattr("os.path.ismount", lambda p: False)
         assert remote_path_from_mounted("c1", "/any/path") == ""
 
 

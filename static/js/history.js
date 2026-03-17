@@ -98,8 +98,13 @@ function _renderHistPage() {
     const _proj = groupJobs[0]?.project || '';
     const _projColor = groupJobs[0]?.project_color || '';
     const _projEmoji = groupJobs[0]?.project_emoji || '';
-    const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span> ` : '';
-    const groupLabel = `${_projBadge}${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+    const _projBadge = _proj ? `<span class="group-project-badge">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span>` : '';
+    const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
+    const rootJobId = rootJob.jobid;
+    const safeLabel = g.label.replace(/'/g, "\\'");
+    const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="View run details">${g.label}</span>`;
+    const groupLabel = `${runBadge}${_projBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;
@@ -116,6 +121,7 @@ function _renderHistPage() {
       const gpuStr = parseGpus(j.nodes, j.gres) || '—';
       const safeName = (j.name || '').replace(/'/g, "\\'");
       const logBtn = `<button class="action-btn log-btn" onclick="openLog('${g.cluster}','${j.jobid}','${safeName}')">log</button>`;
+      const statsBtn = `<button class="action-btn log-btn" onclick="openStats('${g.cluster}','${j.jobid}','${safeName}')">stats</button>`;
       const depBadge = depBadgeHtml(j, byId);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
@@ -132,7 +138,7 @@ function _renderHistPage() {
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
         <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
-        <td>${logBtn}</td>
+        <td>${logBtn} ${statsBtn}</td>
         <td class="dim">${started}</td>
         <td class="dim">${ended}</td>
         <td class="dim">${j.elapsed || '—'}</td>

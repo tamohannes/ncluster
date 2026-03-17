@@ -47,22 +47,29 @@ function closeStatsDirect() {
   document.getElementById('stats-overlay').classList.remove('open');
 }
 
-// ── Failed pins ──
+// ── Failed/completed pins ──
+function _removeJobsFromUI(cluster, predicate) {
+  if (allData[cluster] && allData[cluster].jobs) {
+    allData[cluster].jobs = allData[cluster].jobs.filter(j => !predicate(j));
+    _renderAll();
+  }
+}
+
 async function dismissFailed(cluster, jobId) {
-  await fetch(`/api/clear_failed_job/${cluster}/${jobId}`, { method: 'POST' });
-  await refreshCluster(cluster);
+  _removeJobsFromUI(cluster, j => j._pinned && String(j.jobid) === String(jobId));
+  fetch(`/api/clear_failed_job/${cluster}/${jobId}`, { method: 'POST' });
 }
 
 async function clearFailed(cluster) {
-  await fetch(`/api/clear_failed/${cluster}`, { method: 'POST' });
-  await refreshCluster(cluster);
+  _removeJobsFromUI(cluster, j => j._pinned && isFailedLikeState(j.state));
   toast(`Cleared failed jobs on ${cluster}`);
+  fetch(`/api/clear_failed/${cluster}`, { method: 'POST' });
 }
 
 async function clearCompleted(cluster) {
-  await fetch(`/api/clear_completed/${cluster}`, { method: 'POST' });
-  await refreshCluster(cluster);
+  _removeJobsFromUI(cluster, j => j._pinned && isCompletedState(j.state));
   toast(`Cleared completed jobs on ${cluster}`);
+  fetch(`/api/clear_completed/${cluster}`, { method: 'POST' });
 }
 
 // ── Cancel ──
@@ -74,6 +81,22 @@ async function cancelJob(cluster, jobId) {
     if (d.status === 'ok') { toast(`Cancelled ${jobId}`); refreshCluster(cluster); }
     else toast(d.error, 'error');
   } catch { toast('Cancel failed', 'error'); }
+}
+
+async function cancelGroup(cluster, jobIdsJson, groupName) {
+  const jobIds = JSON.parse(jobIdsJson);
+  if (!confirm(`Cancel ${jobIds.length} job${jobIds.length !== 1 ? 's' : ''} in "${groupName}" on ${cluster}?`)) return;
+  try {
+    const res = await fetch(`/api/cancel_jobs/${cluster}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_ids: jobIds }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') { toast(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster); }
+    else if (d.status === 'partial') { toast(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster); }
+    else toast(d.error, 'error');
+  } catch { toast('Cancel group failed', 'error'); }
 }
 
 async function cancelAll(cluster) {
@@ -184,9 +207,14 @@ function refreshNow() {
   }
 }
 
+function stopCountdown() {
+  clearInterval(cdTimer);
+}
+
 function startCountdown() {
   document.getElementById('cd').textContent = countdown;
   cdTimer = setInterval(() => {
+    if (document.hidden) return;
     countdown--;
     document.getElementById('cd').textContent = countdown;
     if (countdown <= 0) { countdown = refreshIntervalSec; fetchAll(); }
@@ -244,7 +272,7 @@ function renderClusterEditor(clusters) {
         <div class="ce-field"><span>Host</span><input data-f="host" value="${c.host || ''}"></div>
         <div class="ce-field"><span>Port</span><input data-f="port" type="number" value="${c.port || 22}"></div>
         <div class="ce-field"><span>GPU Type</span><input data-f="gpu_type" value="${c.gpu_type || ''}"></div>
-        <div class="ce-field" style="grid-column:1/-1"><span>Remote Root</span><input data-f="remote_root" value="${c.remote_root || '/'}"></div>
+        <div class="ce-field" style="grid-column:1/-1"><span>Mount Paths</span><textarea data-f="mount_paths" rows="3" placeholder="/lustre/fsw/.../users/$USER">${(c.mount_paths || []).join('\n')}</textarea></div>
       </div>
     </div>
   `).join('');
@@ -264,7 +292,7 @@ function addClusterRow() {
       <div class="ce-field"><span>Host</span><input data-f="host" value="" placeholder="login-node.example.com"></div>
       <div class="ce-field"><span>Port</span><input data-f="port" type="number" value="22"></div>
       <div class="ce-field"><span>GPU Type</span><input data-f="gpu_type" value="" placeholder="H100"></div>
-      <div class="ce-field" style="grid-column:1/-1"><span>Remote Root</span><input data-f="remote_root" value="/lustre"></div>
+      <div class="ce-field" style="grid-column:1/-1"><span>Mount Paths</span><textarea data-f="mount_paths" rows="3" placeholder="/lustre/fsw/.../users/$USER"></textarea></div>
     </div>
   `;
   el.appendChild(div);
@@ -276,11 +304,13 @@ async function saveClusters() {
   for (const card of cards) {
     const name = (card.querySelector('[data-f="name"]').value || '').trim();
     if (!name) continue;
+    const mpRaw = (card.querySelector('[data-f="mount_paths"]').value || '').trim();
+    const mountPaths = mpRaw ? mpRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
     clusters[name] = {
       host: card.querySelector('[data-f="host"]').value.trim(),
       port: parseInt(card.querySelector('[data-f="port"]').value) || 22,
       gpu_type: card.querySelector('[data-f="gpu_type"]').value.trim(),
-      remote_root: card.querySelector('[data-f="remote_root"]').value.trim() || '/',
+      mount_paths: mountPaths,
     };
   }
   try {

@@ -50,7 +50,7 @@ _JOB_FIELDS = [
     "started_local", "ended_local",
     "progress", "depends_on", "dependents", "dep_details",
     "project", "project_color", "project_emoji",
-    "_pinned",
+    "_pinned", "exit_code", "crash_detected",
 ]
 
 
@@ -209,14 +209,11 @@ def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
 
     This is destructive — only use when the user explicitly asks to
     cancel specific jobs. Pass each job ID as a separate list element.
-    Returns per-job results so partial failures are visible.
     """
-    results = {}
-    for jid in job_ids:
-        results[jid] = _api_post(f"/api/cancel/{urllib.parse.quote(cluster)}/{urllib.parse.quote(str(jid))}")
-    ok = sum(1 for r in results.values() if r.get("status") == "ok")
-    failed = len(results) - ok
-    return {"status": "ok" if failed == 0 else "partial", "cancelled": ok, "failed": failed, "details": results}
+    return _api_post_json(
+        f"/api/cancel_jobs/{urllib.parse.quote(cluster)}",
+        {"job_ids": job_ids},
+    )
 
 
 @mcp.tool()
@@ -235,6 +232,64 @@ def cleanup_history(days: int = 30, dry_run: bool = False) -> dict:
             return json.loads(resp.read().decode())
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+def get_run_info(cluster: str, root_job_id: str) -> dict:
+    """Get detailed run information including metadata captured from Slurm.
+
+    Returns the run record with batch script, scontrol output, environment
+    variables, conda/pip state, and list of associated jobs. The metadata
+    is auto-captured via SSH when jobs are first detected.
+
+    The root_job_id is the job ID of the first job in the dependency chain
+    (the one with no parent dependencies).
+    """
+    return _api_get(f"/api/run_info/{urllib.parse.quote(cluster)}/{urllib.parse.quote(root_job_id)}")
+
+
+# ── mount & board tools ──────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_mounts() -> dict:
+    """Get SSHFS mount status for all clusters.
+
+    Returns a dict of cluster -> {mounted, root} showing whether each
+    cluster's remote filesystem is mounted locally for fast log reads.
+    """
+    return _api_get("/api/mounts")
+
+
+@mcp.tool()
+def mount_cluster(cluster: str, action: str = "mount") -> dict:
+    """Mount or unmount a cluster's remote filesystem via SSHFS.
+
+    action must be 'mount' or 'unmount'. Mounting enables fast local
+    reads of log files instead of SSH fallback.
+    """
+    if action not in ("mount", "unmount"):
+        return {"status": "error", "error": "action must be 'mount' or 'unmount'"}
+    return _api_post(f"/api/mount/{urllib.parse.quote(action)}/{urllib.parse.quote(cluster)}")
+
+
+@mcp.tool()
+def clear_failed(cluster: str) -> dict:
+    """Dismiss all failed/cancelled/timeout job pins from a cluster's board.
+
+    These are terminal-state jobs that stay visible on the dashboard
+    until explicitly cleared. This does not affect job history.
+    """
+    return _api_post(f"/api/clear_failed/{urllib.parse.quote(cluster)}")
+
+
+@mcp.tool()
+def clear_completed(cluster: str) -> dict:
+    """Dismiss all completed job pins from a cluster's board.
+
+    Completed jobs stay pinned on the dashboard until cleared.
+    This does not affect job history.
+    """
+    return _api_post(f"/api/clear_completed/{urllib.parse.quote(cluster)}")
 
 
 # ── logbook tools ────────────────────────────────────────────────────────────

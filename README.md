@@ -9,6 +9,9 @@ Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs a
 - Slurm dependency chain detection — parent/child jobs linked with `afterok`, `afterany` badges
 - Topological sorting within groups (parent first, children indented with arrows)
 - Progress percentage display for running jobs
+- Failure reason and exit code display on failed/cancelled jobs
+- Crash detection — automatic log scanning for OOM, segfault, and other crash signatures
+- Externally killed jobs (e.g. by Slurm) correctly marked as FAILED instead of COMPLETED
 - Board-pinned terminal jobs (COMPLETED, FAILED, CANCELLED, COMPLETING) persist until manually dismissed
 - Job actions: cancel one/all, dismiss pinned runs, clear failed/completed
 
@@ -16,16 +19,39 @@ Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs a
 - Mount-first reads with SSH fallback
 - Nested directory browsing with lazy-loaded tree
 - Concurrent SSH channels for parallel log/dir fetches
+- Full output directory discovery (not limited to hardcoded subdirs)
 - Syntax-aware rendering for `.json`, `.jsonl`, `.jsonl-async`, `.md`
+- Markdown table rendering in log viewer
 - JSONL record viewer with expand/collapse all and per-record copy
+- Full log pagination for large files
 - Copy file path + content to clipboard
+- Clear messaging when no log files found for a job
 
 ### History
 - SQLite-backed job history with grouped view (related pipeline jobs together)
 - Dependency arrows for child jobs (judge, summarize-results)
 - Pagination by run groups (50 groups per page)
-- Filterable by cluster and job name/ID
+- Filterable by cluster, job name/ID, and state (toggle chip filters)
 - GPU count and full job name display
+- Active tab and project persisted across browser refresh
+
+### Projects
+- Auto-detected from job name prefixes
+- Project detail page with live jobs, stats, and auto-refresh
+- Pagination, search, and state filters on per-project view
+- Customizable color and emoji in Settings > Projects
+
+### Logbooks
+- Per-project logbooks for recording experiment notes
+- `@run-name` autocomplete for referencing jobs
+- Inline markdown rendering with table support
+- Resizable side panel with toggleable visibility
+- Full CRUD: create, rename, delete logbooks; add, edit, delete entries
+
+### Run Metadata
+- Auto-captured Slurm metadata (batch script, scontrol, env vars, conda/pip state) per run
+- Accessible via `/api/run_info` and `get_run_info` MCP tool
+- On-demand capture via SSH when jobs are first detected
 
 ### Stats
 - GPU/CPU/memory utilization popup for running jobs
@@ -37,22 +63,30 @@ Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs a
   - **Refresh** — auto-refresh toggle + interval (default: off, on-demand only)
   - **Mounts** — mount/unmount all or individual clusters via SSHFS
   - **Clusters** — add/edit/remove cluster configs (hot-reloads without restart)
+  - **Projects** — customize project colors and emojis
   - **Advanced** — SSH timeout, cache freshness, history page size
   - **Process Filters** — local process include/exclude keywords
 - Backend settings persist to `config.json`, frontend settings to `localStorage`
 
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server (`mcp_server.py`) for Cursor and other MCP-compatible agents
-- Tools: `list_jobs`, `get_job_log`, `list_log_files`, `get_job_stats`, `get_history`, `cancel_job`
+- Job tools: `list_jobs`, `get_job_log`, `list_log_files`, `get_job_stats`, `get_history`, `list_projects`, `get_project_jobs`, `get_run_info`, `cancel_job`, `cancel_jobs`, `cleanup_history`
+- Mount tools: `get_mounts`, `mount_cluster`
+- Board tools: `clear_failed`, `clear_completed`
+- Logbook tools: `list_logbooks`, `read_logbook`, `add_logbook_entry`, `update_logbook_entry`, `delete_logbook_entry`, `rename_logbook`, `create_logbook`, `delete_logbook`
 - Resource: `jobs://summary` — quick cluster overview
+- `crash_detected` and `exit_code` fields exposed on jobs for agent-side error detection
 - Wraps the Flask API — no SSH, no DB access, no duplicate logic
 
 ### Performance
-- On-demand fetching: clusters are only polled when a user or agent requests data
+- Eager cache warming on startup — all clusters are polled in background immediately after service restart, so the first page load always has fresh data
+- On-demand fetching after startup: clusters are only polled when a user or agent requests data
 - SSH connection pooling with concurrent channel multiplexing
 - Per-cluster cache with configurable freshness TTL (default: 30s)
+- Stale cache detection on the frontend — loading skeleton shown instead of outdated data
 - Prefetch warming for running jobs (log index, first file content, stats)
-- No background polling — login nodes are not contacted when nobody is looking
+- SSH commands wrapped in `bash -lc` for clusters with csh as default shell
+- No background polling after startup — login nodes are not contacted when nobody is looking
 
 ## Quick Start
 
@@ -149,24 +183,69 @@ Run name suffixes for dependency chain auto-detection:
 
 ## API Endpoints
 
+### Jobs & Clusters
+
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/api/jobs` | All clusters with jobs, mounts, dependency info |
 | GET | `/api/jobs/<cluster>` | Force-refresh one cluster |
-| GET | `/api/history?cluster=&limit=` | Job history |
+| GET | `/api/run_info/<cluster>/<root_job_id>` | Detailed run metadata (batch script, env, conda/pip, scontrol) |
+| GET | `/api/history?cluster=&limit=&project=` | Job history, filterable by cluster and project |
+| GET | `/api/projects` | All known projects with job counts |
+
+### Logs & Files
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
 | GET | `/api/log_files/<cluster>/<job_id>` | Discover log files |
-| GET | `/api/log/<cluster>/<job_id>?path=&lines=` | Read log content |
+| GET | `/api/log/<cluster>/<job_id>?path=&lines=` | Read log content (tail) |
+| GET | `/api/log_full/<cluster>/<job_id>?path=&page=` | Full log with pagination |
 | GET | `/api/ls/<cluster>?path=` | Directory listing |
-| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats |
+| GET | `/api/jsonl_index/<cluster>/<job_id>?path=&mode=` | JSONL file index |
+| GET | `/api/jsonl_record/<cluster>/<job_id>?path=&line=` | Single JSONL record |
+
+### Stats & Prefetch
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats (GPU/CPU/memory) |
+| POST | `/api/prefetch_visible` | Prefetch log index, content, and stats for visible jobs |
+| POST | `/api/progress` | Batch-fetch progress for multiple jobs |
+
+### Actions
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| POST | `/api/cancel/<cluster>/<job_id>` | Cancel a single job |
+| POST | `/api/cancel_jobs/<cluster>` | Cancel multiple jobs (JSON body: `job_ids`) |
+| POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
+| POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
+| POST | `/api/clear_failed_job/<cluster>/<job_id>` | Dismiss a single failed pin |
+| POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
+| POST | `/api/cleanup` | Delete old history records (JSON body: `days`, `dry_run`) |
+
+### Mounts & Settings
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
 | GET | `/api/mounts` | Mount status |
+| POST | `/api/mount/<action>/<cluster>` | Mount/unmount one cluster |
+| POST | `/api/mount/<action>` | Mount/unmount all clusters |
 | GET | `/api/settings` | Current configuration |
 | POST | `/api/settings` | Update configuration (hot-reload) |
-| POST | `/api/mount/mount/<cluster>` | Mount one cluster |
-| POST | `/api/mount/unmount/<cluster>` | Unmount one cluster |
-| POST | `/api/cancel/<cluster>/<job_id>` | Cancel a job |
-| POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
-| POST | `/api/clear_failed/<cluster>` | Dismiss failed pins |
-| POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
+
+### Logbooks
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/logbooks/<project>` | List all logbooks for a project |
+| POST | `/api/logbook/<project>` | Create a new logbook (JSON body: `name`) |
+| GET | `/api/logbook/<project>/<name>` | Read logbook content and entries |
+| POST | `/api/logbook/<project>/<name>` | Add entry (JSON body: `content`) |
+| DELETE | `/api/logbook/<project>/<name>` | Delete a logbook |
+| PUT | `/api/logbook/<project>/<name>/<index>` | Update entry at index (JSON body: `content`) |
+| DELETE | `/api/logbook/<project>/<name>/<index>` | Delete entry at index |
+| POST | `/api/logbook/<project>/<name>/rename` | Rename logbook (JSON body: `new_name`) |
 
 ## SSHFS Mount Helper
 

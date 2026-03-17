@@ -52,7 +52,8 @@ def list_logbooks(project):
         fpath = os.path.join(d, fname)
         name = fname[:-3]
         try:
-            content = open(fpath, "r", encoding="utf-8").read()
+            with open(fpath, "r", encoding="utf-8") as fh:
+                content = fh.read()
             entry_count = len(_split_entries(content))
             mtime = os.path.getmtime(fpath)
         except Exception:
@@ -72,7 +73,8 @@ def read_logbook(project, name):
     path = _logbook_path(project, name)
     if not os.path.isfile(path):
         return {"name": name, "content": "", "entries": [], "error": "Logbook not found"}
-    content = open(path, "r", encoding="utf-8").read()
+    with open(path, "r", encoding="utf-8") as fh:
+        content = fh.read()
     entries = _split_entries(content)
     return {"name": name, "content": content, "entries": entries}
 
@@ -85,7 +87,8 @@ def add_entry(project, name, content):
 
     existing = ""
     if os.path.isfile(path):
-        existing = open(path, "r", encoding="utf-8").read().strip()
+        with open(path, "r", encoding="utf-8") as fh:
+            existing = fh.read().strip()
 
     new_content = content.strip()
     if existing:
@@ -103,7 +106,8 @@ def update_entry(project, name, index, content):
     path = _logbook_path(project, name)
     if not os.path.isfile(path):
         return {"status": "error", "error": "Logbook not found"}
-    raw = open(path, "r", encoding="utf-8").read()
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
     entries = _split_entries(raw)
     if index < 0 or index >= len(entries):
         return {"status": "error", "error": f"Entry index {index} out of range (0-{len(entries)-1})"}
@@ -131,7 +135,8 @@ def delete_entry(project, name, index):
     path = _logbook_path(project, name)
     if not os.path.isfile(path):
         return {"status": "error", "error": "Logbook not found"}
-    raw = open(path, "r", encoding="utf-8").read()
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
     entries = _split_entries(raw)
     if index < 0 or index >= len(entries):
         return {"status": "error", "error": f"Entry index {index} out of range (0-{len(entries)-1})"}

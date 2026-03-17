@@ -96,14 +96,18 @@ def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
 
 
 def _ssh_exec(cluster_name, command, timeout_sec):
-    # Wrap in bash -lc to handle clusters with non-bash default shells (e.g. csh)
-    wrapped = f"bash -lc {_shell_quote(command)}"
+    # Force bash for clusters with non-bash default shells (e.g. csh on dfw).
+    # exec_command sends stdin separately, so we pipe the script through bash.
+    use_bash_stdin = True
     lock = _get_cluster_lock(cluster_name)
     for attempt in (1, 2):
         with lock:
             client = _get_pooled_client(cluster_name, force_new=(attempt == 2))
         try:
-            _, stdout, stderr = client.exec_command(wrapped, timeout=timeout_sec)
+            stdin_ch, stdout, stderr = client.exec_command("bash", timeout=timeout_sec)
+            stdin_ch.write(command + "\nexit\n")
+            stdin_ch.flush()
+            stdin_ch.channel.shutdown_write()
             out = stdout.read().decode().strip()
             err = stderr.read().decode().strip()
             with _ssh_pool_lock:

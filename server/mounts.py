@@ -1,10 +1,11 @@
 """Mount resolution, status, and path helpers."""
 
 import os
+import re
 import subprocess
 
 from .config import (
-    CLUSTERS, MOUNT_MAP, MOUNT_SCRIPT_PATH, MOUNT_LUSTRE_PREFIXES,
+    CLUSTERS, MOUNT_MAP, MOUNT_REMOTE_MAP, MOUNT_SCRIPT_PATH,
     _cache_set, _dir_list_cache,
 )
 
@@ -31,6 +32,7 @@ def _resolve_symlink_candidates(mount_root, remote_path, out, seen):
 
 def _local_candidates_for_remote_path(cluster_name, remote_path):
     roots = MOUNT_MAP.get(cluster_name, [])
+    remote_bases = MOUNT_REMOTE_MAP.get(cluster_name, [])
     if not roots or not remote_path:
         return []
     rp = str(remote_path).strip()
@@ -38,17 +40,33 @@ def _local_candidates_for_remote_path(cluster_name, remote_path):
         return []
     out = []
     seen = set()
-    suffixes = [rp.lstrip("/")]
-    if rp.startswith("/lustre/"):
-        suffixes.append(rp.split("/lustre/", 1)[1])
-    for root in roots:
-        for suf in suffixes:
-            cand = os.path.normpath(os.path.join(root, suf))
-            if cand not in seen:
-                seen.add(cand)
-                out.append(cand)
-        rel = rp.split("/lustre/", 1)[1] if rp.startswith("/lustre/") else rp.lstrip("/")
-        _resolve_symlink_candidates(root, "/" + rel, out, seen)
+
+    # With MOUNT_REMOTE_MAP: strip the remote base to get the relative path
+    for i, root in enumerate(roots):
+        if i < len(remote_bases) and remote_bases[i]:
+            base = remote_bases[i].rstrip("/")
+            if rp.startswith(base + "/"):
+                rel = rp[len(base):].lstrip("/")
+                cand = os.path.normpath(os.path.join(root, rel))
+                if cand not in seen:
+                    seen.add(cand)
+                    out.append(cand)
+            elif rp == base:
+                if root not in seen:
+                    seen.add(root)
+                    out.append(root)
+
+    # Fallback: old-style whole-mount (no MOUNT_REMOTE_MAP entry)
+    if not out:
+        suffixes = [rp.lstrip("/")]
+        if rp.startswith("/lustre/"):
+            suffixes.append(rp.split("/lustre/", 1)[1])
+        for root in roots:
+            for suf in suffixes:
+                cand = os.path.normpath(os.path.join(root, suf))
+                if cand not in seen:
+                    seen.add(cand)
+                    out.append(cand)
     return out
 
 
@@ -121,17 +139,13 @@ def prefetch_nested_dir_cache_local(cluster, request_path, local_base_path, entr
 
 def cluster_mount_status(cluster_name):
     roots = MOUNT_MAP.get(cluster_name, [])
-    mounted_root = ""
-    for r in roots:
-        p = os.path.abspath(os.path.expanduser(r))
-        if os.path.ismount(p):
-            mounted_root = p
-            break
+    active = mounted_roots(cluster_name)
     return {
         "cluster": cluster_name,
-        "mounted": bool(mounted_root),
-        "root": mounted_root or (os.path.abspath(os.path.expanduser(roots[0])) if roots else ""),
+        "mounted": bool(active),
+        "root": active[0] if active else (os.path.abspath(os.path.expanduser(roots[0])) if roots else ""),
         "roots": [os.path.abspath(os.path.expanduser(r)) for r in roots],
+        "active_roots": active,
     }
 
 
@@ -140,6 +154,7 @@ def all_mount_status():
 
 
 def mounted_root(cluster_name):
+    """Return the first mounted root for a cluster, or empty string."""
     for r in MOUNT_MAP.get(cluster_name, []):
         p = os.path.abspath(os.path.expanduser(r))
         if os.path.ismount(p):
@@ -147,18 +162,210 @@ def mounted_root(cluster_name):
     return ""
 
 
+def mounted_roots(cluster_name):
+    """Return all currently mounted roots for a cluster."""
+    out = []
+    for r in MOUNT_MAP.get(cluster_name, []):
+        p = os.path.abspath(os.path.expanduser(r))
+        if os.path.ismount(p):
+            out.append(p)
+    return out
+
+
 def remote_path_from_mounted(cluster_name, local_path):
-    root = mounted_root(cluster_name)
-    if not root:
-        return ""
+    """Convert a local mount path back to its remote equivalent.
+
+    With indexed mounts, each root maps to a specific remote path
+    from MOUNT_REMOTE_MAP.
+    """
+    roots = MOUNT_MAP.get(cluster_name, [])
+    remote_paths = MOUNT_REMOTE_MAP.get(cluster_name, [])
     lp = os.path.abspath(local_path)
+
+    for i, root in enumerate(roots):
+        rp = os.path.abspath(os.path.expanduser(root))
+        if not os.path.ismount(rp):
+            continue
+        try:
+            rel = os.path.relpath(lp, rp)
+        except Exception:
+            continue
+        if rel.startswith(".."):
+            continue
+        if i < len(remote_paths) and remote_paths[i]:
+            base = remote_paths[i].rstrip("/")
+            if rel == ".":
+                return base
+            return base + "/" + rel
+        if rel == ".":
+            return "/"
+        return "/" + rel.lstrip("/")
+    return ""
+
+
+def find_job_logs_on_mount(cluster_name, job_id):
+    """Check local mounts for log files matching job_id.
+
+    Uses a targeted approach instead of walking the whole nemo-run tree
+    (which is too slow over sshfs). Scans top-level nemo-run subdirs,
+    and for each checks at most 3 levels deep for sbatch scripts.
+    """
+    roots = mounted_roots(cluster_name)
+    if not roots:
+        return None
+
+    job_str = str(job_id)
+    allowed_suffixes = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
+    output_re = re.compile(r'#SBATCH\s+--output=(\S+)')
+
+    for root in roots:
+        nemo_run = os.path.join(root, "nemo-run")
+        if not os.path.isdir(nemo_run):
+            continue
+
+        try:
+            run_dirs = os.listdir(nemo_run)
+        except Exception:
+            continue
+
+        for run_name in run_dirs:
+            result = _scan_run_dir_for_job(
+                cluster_name, root,
+                os.path.join(nemo_run, run_name),
+                job_str, output_re, allowed_suffixes,
+            )
+            if result:
+                return result
+
+    return None
+
+
+def _scan_run_dir_for_job(cluster_name, mount_root, run_dir, job_str,
+                          output_re, allowed_suffixes, max_depth=3):
+    """Scan a single nemo-run/<name>/ dir for sbatch scripts matching job_str.
+
+    Uses targeted listdir at each level instead of os.walk to avoid
+    slow sshfs round-trips for irrelevant subtrees.
+    """
+    return _scan_dir_recursive(
+        cluster_name, mount_root, run_dir, job_str,
+        output_re, allowed_suffixes, 0, max_depth,
+    )
+
+
+def _scan_dir_recursive(cluster_name, mount_root, path, job_str,
+                         output_re, allowed_suffixes, depth, max_depth):
+    if depth > max_depth:
+        return None
     try:
-        rel = os.path.relpath(lp, root)
+        entries = os.listdir(path)
     except Exception:
-        return ""
-    if rel == ".":
-        return "/"
-    return "/" + rel.lstrip("/")
+        return None
+
+    sbatch_files = [e for e in entries if e.endswith("sbatch.sh")]
+    subdirs = []
+
+    for sb_name in sbatch_files:
+        result = _check_sbatch_for_job(
+            cluster_name, mount_root,
+            os.path.join(path, sb_name),
+            job_str, output_re, allowed_suffixes,
+        )
+        if result:
+            return result
+
+    if depth < max_depth:
+        for e in entries:
+            full = os.path.join(path, e)
+            if e.startswith("."):
+                continue
+            try:
+                if os.path.isdir(full):
+                    subdirs.append(full)
+            except Exception:
+                continue
+
+        for sub in subdirs:
+            result = _scan_dir_recursive(
+                cluster_name, mount_root, sub, job_str,
+                output_re, allowed_suffixes, depth + 1, max_depth,
+            )
+            if result:
+                return result
+
+    return None
+
+
+def _check_sbatch_for_job(cluster_name, mount_root, sbatch_path, job_str,
+                           output_re, allowed_suffixes):
+    """Read a sbatch script, extract --output path, check for job files."""
+    try:
+        with open(sbatch_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = output_re.search(line)
+                if not m:
+                    continue
+                out_pattern = m.group(1).replace("%j", job_str)
+                log_dir = os.path.dirname(out_pattern)
+                local_log_dir = _resolve_log_dir_on_mount(
+                    cluster_name, mount_root, log_dir,
+                )
+                if not local_log_dir or not os.path.isdir(local_log_dir):
+                    return None
+
+                matched_files = []
+                try:
+                    for lf in os.listdir(local_log_dir):
+                        if job_str not in lf:
+                            continue
+                        if not lf.lower().endswith(allowed_suffixes):
+                            continue
+                        full = os.path.join(local_log_dir, lf)
+                        rp = remote_path_from_mounted(cluster_name, full)
+                        if rp:
+                            matched_files.append(rp)
+                except Exception:
+                    return None
+
+                if not matched_files:
+                    return None
+
+                from .logs import label_and_sort_files
+                files = label_and_sort_files(list(dict.fromkeys(matched_files)))
+                rp_dir = remote_path_from_mounted(cluster_name, local_log_dir)
+                dirs = []
+                if rp_dir:
+                    dirs = [{"label": "output", "path": os.path.dirname(rp_dir)}]
+                return {"files": files, "dirs": dirs}
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_log_dir_on_mount(cluster_name, mount_root, remote_log_dir):
+    """Try to find remote_log_dir under mount_root.
+
+    The log dir from sbatch is an absolute remote path. We need to find
+    it under one of our mount roots.
+    """
+    roots = MOUNT_MAP.get(cluster_name, [])
+    remote_paths = MOUNT_REMOTE_MAP.get(cluster_name, [])
+
+    for i, root in enumerate(roots):
+        rp = os.path.abspath(os.path.expanduser(root))
+        if not os.path.ismount(rp):
+            continue
+        if i < len(remote_paths) and remote_paths[i]:
+            remote_base = remote_paths[i].rstrip("/")
+            if remote_log_dir.startswith(remote_base + "/"):
+                rel = remote_log_dir[len(remote_base):].lstrip("/")
+                local = os.path.join(rp, rel)
+                if os.path.isdir(local):
+                    return local
+            elif remote_log_dir.startswith(remote_base):
+                return rp
+
+    return ""
 
 
 def run_mount_script(action, cluster="all"):

@@ -47,6 +47,7 @@ async function openProject(projectName) {
 
   if (_projRefreshTimer) clearInterval(_projRefreshTimer);
   _projRefreshTimer = setInterval(() => {
+    if (document.hidden) return;
     if (currentTab === 'project') _fetchProjectData();
   }, 30000);
 }
@@ -65,31 +66,36 @@ async function _fetchProjectData() {
     fetch(`/api/history?project=${encodeURIComponent(name)}&limit=500`).then(r => r.json()).catch(() => []),
   ]);
 
-  // Extract live jobs for this project
+  // Extract live + pinned jobs for this project from the board.
+  // Pinned jobs (recently completed/failed) are included so runs stay together.
   _projLiveJobs = [];
   const clusterActivity = {};
   if (typeof liveRes === 'object' && !Array.isArray(liveRes)) {
     for (const [cname, cdata] of Object.entries(liveRes)) {
       if (!cdata || cdata.status !== 'ok') continue;
       for (const j of (cdata.jobs || [])) {
-        if (j.project === name && !j._pinned) {
+        if (j.project === name) {
           _projLiveJobs.push({ ...j, _cluster: cname });
           const st = (j.state || '').toUpperCase();
-          if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
-          if (st === 'RUNNING' || st === 'COMPLETING') clusterActivity[cname].running++;
-          else if (st === 'PENDING') clusterActivity[cname].pending++;
+          if (!j._pinned) {
+            if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
+            if (st === 'RUNNING' || st === 'COMPLETING') clusterActivity[cname].running++;
+            else if (st === 'PENDING') clusterActivity[cname].pending++;
+          }
         }
       }
     }
   }
 
-  _projData = Array.isArray(histRes) ? histRes : [];
+  const liveIds = new Set(_projLiveJobs.map(j => String(j.jobid)));
+  _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !liveIds.has(String(r.job_id)));
   _projPage = 0;
 
   _renderProjStats(clusterActivity);
   _renderProjLive();
   _buildProjGroups(_projData);
   _renderProjPage();
+  _saveProgressCache();
 }
 
 function _renderProjStats(clusterActivity) {
@@ -126,7 +132,9 @@ function _renderProjStats(clusterActivity) {
 
 function _renderProjLive() {
   const el = document.getElementById('proj-live-section');
-  if (!_projLiveJobs.length) {
+  // Only show this section if there are any non-pinned (truly live) jobs.
+  const hasLive = _projLiveJobs.some(j => !j._pinned);
+  if (!hasLive) {
     el.innerHTML = '';
     return;
   }
@@ -139,48 +147,67 @@ function _renderProjLive() {
 
   let html = '<div class="proj-live-label">● live jobs</div>';
   for (const [cluster, jobs] of Object.entries(byCluster)) {
+    // Only render clusters that have at least one non-pinned job.
+    if (!jobs.some(j => !j._pinned)) continue;
     const groups = groupJobsByDependency(jobs);
     for (const [gk, groupJobs] of groups) {
+      // Only render groups that contain at least one active job.
+      if (!groupJobs.some(j => !j._pinned)) continue;
       const idSet = new Set(groupJobs.map(j => j.jobid));
       const byId = {};
       for (const j of groupJobs) byId[j.jobid] = j;
       const depthMemo = {};
 
-      const groupLabel = `${cluster} · ${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+      const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
+      const rootJobId = rootJob.jobid;
+      const safeGk = gk.replace(/'/g, "\\'");
+      const _projColor = groupJobs[0]?.project_color || '';
+      const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const runBadge = cluster !== 'local'
+        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="View run details">${gk}</span>`
+        : gk;
+      const groupLabel = `${runBadge} ${cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
       let rows = `<tr class="group-head-row"><td colspan="11">${groupLabel}</td></tr>`;
 
       for (const j of groupJobs) {
         const st = (j.state || '').toUpperCase();
+        const isPinned = j._pinned;
         const depth = depthInGroup(j, byId, idSet, depthMemo);
         const gpuStr = parseGpus(j.nodes, j.gres);
         const resourceCell = gpuStr
           ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
           : `<span class="dim">${j.nodes || '—'}n</span>`;
         const startTime = fmtTime(j.started_local || j.started || j.start);
+        const endTime = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
         const safeName = (j.name || '').replace(/'/g, "\\'");
         const isPending = st === 'PENDING';
         const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${cluster}','${j.jobid}','${safeName}')">log</button>`;
         const statsBtn = isPending ? '' : (cluster === 'local'
           ? ''
           : `<button class="action-btn log-btn" onclick="openStats('${cluster}','${j.jobid}','${safeName}')">stats</button>`);
-        const cancelBtn = `<button class="action-btn" onclick="cancelJob('${cluster}','${j.jobid}')">cancel</button>`;
+        const tailAction = isPinned
+          ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${cluster}','${j.jobid}')">✕</button>`
+          : `<button class="action-btn" onclick="cancelJob('${cluster}','${j.jobid}')">cancel</button>`;
         const depBadge = depBadgeHtml(j, byId);
         const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
         const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
         const hasGpu = !!gpuStr;
         const nameCls = hasGpu ? '' : ' name-cpu';
+        const pinKind = isPinned ? (isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
 
-        rows += `<tr>
+        const _pct = resolveProgress(cluster, j.jobid, j.progress, j.state);
+        const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+        rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}" style="${_rowBg}">
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span></td>
-          <td>${stateChip(j.state, j.progress, j.reason, j.exit_code)} ${depBadge}</td>
+          <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected)} ${depBadge}</td>
           <td>${logBtn} ${statsBtn}</td>
           <td class="dim">${startTime}</td>
-          <td class="dim">—</td>
+          <td class="dim">${endTime}</td>
           <td class="dim">${j.elapsed || '—'}</td>
           <td>${resourceCell}</td>
           <td class="dim">${j.partition || '—'}</td>
-          <td>${cancelBtn}</td>
+          <td>${tailAction}</td>
         </tr>`;
       }
       html += `<div class="proj-live-card"><table><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -222,6 +249,7 @@ function _buildProjGroups(rows) {
     ended_local: r.ended_local || '', ended_at: r.ended_at || '',
     depends_on: r.depends_on || [], dependents: r.dependents || [],
     dep_details: r.dep_details || [], project: r.project || '',
+    project_color: r.project_color || '', project_emoji: r.project_emoji || '',
     reason: r.reason || '', exit_code: r.exit_code || '',
     _cluster: r.cluster, _pinned: true,
   }));
@@ -265,7 +293,13 @@ function _renderProjPage() {
   let html = '';
   pageGroups.forEach((g, gidx) => {
     const groupJobs = g.jobs;
-    const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+    const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
+    const rootJobId = rootJob.jobid;
+    const safeLabel = g.label.replace(/'/g, "\\'");
+    const _projColor = groupJobs[0]?.project_color || '';
+    const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="View run details">${g.label}</span>`;
+    const groupLabel = `${runBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="11" style="padding:4px 16px">${groupLabel}</td></tr>`;
     }
@@ -280,6 +314,7 @@ function _renderProjPage() {
       const gpuStr = parseGpus(j.nodes, j.gres) || '—';
       const safeName = (j.name || '').replace(/'/g, "\\'");
       const logBtn = `<button class="action-btn log-btn" onclick="openLog('${g.cluster}','${j.jobid}','${safeName}')">log</button>`;
+      const statsBtn = `<button class="action-btn log-btn" onclick="openStats('${g.cluster}','${j.jobid}','${safeName}')">stats</button>`;
       const depBadge = depBadgeHtml(j, byId);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
@@ -289,13 +324,14 @@ function _renderProjPage() {
       const ended = fmtTime(j.ended_local || j.ended_at);
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
+      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
 
-      html += `<tr class="hist-compact ${pinKind}${bgClass}">
+      html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
         <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
-        <td>${logBtn}</td>
+        <td>${logBtn} ${statsBtn}</td>
         <td class="dim">${started}</td>
         <td class="dim">${ended}</td>
         <td class="dim">${j.elapsed || '—'}</td>

@@ -22,6 +22,45 @@ try {
 } catch (_) {}
 
 const STATE_ORDER = { RUNNING: 0, COMPLETING: 1, PENDING: 2, FAILED: 3, CANCELLED: 4 };
+const _expandedBackups = new Set();
+
+function toggleBackups(parentJobId) {
+  if (_expandedBackups.has(parentJobId)) {
+    _expandedBackups.delete(parentJobId);
+  } else {
+    _expandedBackups.add(parentJobId);
+  }
+  const show = _expandedBackups.has(parentJobId);
+  document.querySelectorAll(`tr[data-backup-parent="${parentJobId}"]`).forEach(r => {
+    r.style.display = show ? '' : 'none';
+  });
+  const btn = document.querySelector(`[data-backups-toggle="${parentJobId}"]`);
+  if (btn) btn.classList.toggle('expanded', show);
+}
+
+const _progressCache = (() => {
+  try {
+    return JSON.parse(sessionStorage.getItem('ncluster.progress') || '{}');
+  } catch (_) { return {}; }
+})();
+
+function _saveProgressCache() {
+  try { sessionStorage.setItem('ncluster.progress', JSON.stringify(_progressCache)); } catch (_) {}
+}
+
+function resolveProgress(cluster, jobid, apiProgress, state) {
+  const key = `${cluster}:${jobid}`;
+  const st = (state || '').toUpperCase();
+  if (st !== 'RUNNING' && st !== 'COMPLETING') {
+    delete _progressCache[key];
+    return apiProgress;
+  }
+  if (apiProgress != null) {
+    _progressCache[key] = apiProgress;
+    return apiProgress;
+  }
+  return _progressCache[key] ?? null;
+}
 
 function stateClass(s) {
   s = (s || '').toUpperCase().split(' ')[0];
@@ -45,9 +84,13 @@ function progressRing(pct) {
   </svg>`;
 }
 
-function stateChip(s, progress, reason, exitCode) {
+function stateChip(s, progress, reason, exitCode, crashDetected) {
   const cls = stateClass(s);
   const st = (s || '').toUpperCase();
+  if (crashDetected && (st === 'RUNNING' || st === 'COMPLETING')) {
+    const short = crashDetected.length > 40 ? crashDetected.slice(0, 38) + '…' : crashDetected;
+    return `<span class="state-chip crash-warning" title="${crashDetected}">RUNNING</span><span class="crash-badge">crashed</span><span class="fail-reason">${short}</span>`;
+  }
   if (progress != null && st === 'RUNNING') {
     return `<span class="state-chip ${cls}">${s}${progressRing(progress)}<span class="progress-pct">${progress}%</span></span>`;
   }
@@ -80,6 +123,115 @@ const DEP_TYPE_DESC = {
   after:      'runs after parent starts',
   afterburstbuffer: 'runs after parent burst buffer completes',
 };
+
+function classifyBackupJob(job, byId) {
+  const st = (job.state || '').toUpperCase();
+  if (st !== 'PENDING') return null;
+  if (!byId) return null;
+
+  const reason = (job.reason || '');
+  const deps = job.dep_details || [];
+
+  if (reason === 'DependencyNeverSatisfied') return 'dormant';
+
+  // A backup/continuation job has afterany or afternotok dep on a
+  // parent with the SAME NAME (checkpoint-restart chain pattern).
+  const backupDeps = deps.filter(d => {
+    if (d.type !== 'afterany' && d.type !== 'afternotok') return false;
+    const parent = byId[d.job_id];
+    return parent && parent.name === job.name;
+  });
+
+  if (backupDeps.length) {
+    let anyRunning = false;
+    let allDone = true;
+
+    for (const d of backupDeps) {
+      const pst = (byId[d.job_id].state || '').toUpperCase();
+      if (pst === 'RUNNING' || pst === 'COMPLETING') {
+        anyRunning = true;
+        allDone = false;
+      } else if (!pst.startsWith('COMPLETED') && !isFailedLikeState(pst)) {
+        allDone = false;
+      }
+    }
+
+    if (allDone && !anyRunning) return 'dormant';
+    if (anyRunning) return 'standby';
+    return 'standby';
+  }
+
+  // Heuristic fallback: no dep_details but same-name completed siblings.
+  const siblings = Object.values(byId).filter(
+    s => s.name === job.name && s.jobid !== job.jobid
+  );
+  if (!siblings.length) return null;
+
+  const hasCompleted = siblings.some(
+    s => (s.state || '').toUpperCase().startsWith('COMPLETED')
+  );
+  const hasRunning = siblings.some(s => {
+    const ss = (s.state || '').toUpperCase();
+    return ss === 'RUNNING' || ss === 'COMPLETING';
+  });
+
+  if (hasCompleted && !hasRunning) return 'dormant';
+  if (hasRunning) return 'standby';
+  return null;
+}
+
+function backupBadgeHtml(kind) {
+  if (!kind) return '';
+  if (kind === 'dormant') {
+    return '<span class="backup-badge dormant" title="Backup job — parent completed successfully, this will not run">backup · won\'t run</span>';
+  }
+  return '<span class="backup-badge standby" title="Standby backup — will start if parent fails or hits time limit">standby</span>';
+}
+
+function buildBackupInfo(groupJobs, byId) {
+  const backupMap = {};
+  const parentOf = {};
+
+  for (const j of groupJobs) {
+    if ((j.state || '').toUpperCase() !== 'PENDING') continue;
+    const deps = j.dep_details || [];
+    for (const d of deps) {
+      if (d.type !== 'afterany' && d.type !== 'afternotok') continue;
+      const parent = byId[d.job_id];
+      if (parent && parent.name === j.name) {
+        if (!backupMap[d.job_id]) backupMap[d.job_id] = [];
+        backupMap[d.job_id].push(j);
+        parentOf[j.jobid] = d.job_id;
+        break;
+      }
+    }
+    if (parentOf[j.jobid]) continue;
+
+    // Heuristic: same-name completed/running sibling with closest lower ID.
+    if (classifyBackupJob(j, byId)) {
+      const jid = parseInt(j.jobid, 10);
+      let best = null, bestDist = Infinity;
+      for (const s of groupJobs) {
+        if (s.jobid === j.jobid || s.name !== j.name) continue;
+        const sid = parseInt(s.jobid, 10);
+        if (sid < jid && (jid - sid) < bestDist) {
+          const ss = (s.state || '').toUpperCase();
+          if (ss.startsWith('COMPLETED') || ss === 'RUNNING' || ss === 'COMPLETING') {
+            best = s.jobid;
+            bestDist = jid - sid;
+          }
+        }
+      }
+      if (best) {
+        if (!backupMap[best]) backupMap[best] = [];
+        backupMap[best].push(j);
+        parentOf[j.jobid] = best;
+      }
+    }
+  }
+
+  return { backupMap, parentOf };
+}
 
 function depBadgeHtml(job, byId) {
   const deps = job.dep_details || [];
@@ -259,4 +411,31 @@ function lightenColor(hex, lightness) {
   const lb = Math.round(b + (255 - b) * t);
   return `rgb(${lr},${lg},${lb})`;
 }
+
+function contrastTextColor(hex) {
+  if (!hex || !hex.startsWith('#')) return '#000';
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.55 ? '#000' : '#fff';
+}
+
+/* ── Tab Visibility Guard ───────────────────────────────── */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (typeof stopCountdown === 'function') stopCountdown();
+    if (typeof _projRefreshTimer !== 'undefined' && _projRefreshTimer) {
+      clearInterval(_projRefreshTimer);
+    }
+  } else {
+    if (typeof fetchAll === 'function') fetchAll();
+    if (typeof startCountdown === 'function' && typeof refreshIntervalSec !== 'undefined' && refreshIntervalSec > 0) {
+      startCountdown();
+    }
+    if (typeof currentTab !== 'undefined' && currentTab === 'project' && typeof _fetchProjectData === 'function') {
+      _fetchProjectData();
+    }
+  }
+});
 

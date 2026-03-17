@@ -19,6 +19,7 @@ function openExplorer(cluster, jobId, path, filename) {
 
   document.getElementById('live-view').classList.add('hidden');
   document.getElementById('history-view').classList.remove('active');
+  document.getElementById('project-view').classList.remove('active');
   document.getElementById('explorer-page').classList.add('open');
 
   const isJsonl = /\.jsonl(?:-async)?$/i.test(path);

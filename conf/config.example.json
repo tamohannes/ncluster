@@ -24,13 +24,17 @@
       "host": "login-node.example.com",
       "port": 22,
       "gpu_type": "H100",
-      "remote_root": "/"
+      "mount_paths": [
+        "/shared/storage/users/$USER"
+      ]
     },
     "another-cluster": {
       "host": "login.another.example.com",
       "port": 22,
       "gpu_type": "A100",
-      "remote_root": "/lustre"
+      "mount_paths": [
+        "/lustre/fsw/portfolios/llmservice/users/$USER"
+      ]
     }
   }
 }

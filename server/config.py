@@ -52,42 +52,67 @@ CLUSTERS["local"] = {
 
 
 def _load_mount_map():
+    """Build MOUNT_MAP: cluster -> list of local mount roots.
+
+    With mount_paths config, each cluster has indexed subdirs:
+      ~/.job-monitor/mounts/<cluster>/0/
+      ~/.job-monitor/mounts/<cluster>/1/
+      ...
+    Falls back to the old single-dir layout if no indexed subdirs exist.
+    """
     home = os.path.expanduser("~")
     base = os.path.join(home, ".job-monitor", "mounts")
-    defaults = {
-        name: [os.path.join(base, name)]
-        for name in CLUSTERS if name != "local"
-    }
     raw = os.environ.get("JOB_MONITOR_MOUNT_MAP", "").strip()
-    if not raw:
-        return defaults
-    try:
-        parsed = json.loads(raw)
-        if not isinstance(parsed, dict):
-            return defaults
-        out = {}
-        for name, roots in parsed.items():
-            if name not in CLUSTERS or name == "local":
-                continue
-            if isinstance(roots, str):
-                roots = [roots]
-            if not isinstance(roots, list):
-                continue
-            norm = []
-            for r in roots:
-                if not isinstance(r, str):
-                    continue
-                p = os.path.abspath(os.path.expanduser(r.strip()))
-                if p:
-                    norm.append(p)
-            if norm:
-                out[name] = norm
-        return out or defaults
-    except Exception:
-        return defaults
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                out = {}
+                for name, roots in parsed.items():
+                    if name not in CLUSTERS or name == "local":
+                        continue
+                    if isinstance(roots, str):
+                        roots = [roots]
+                    if not isinstance(roots, list):
+                        continue
+                    norm = [os.path.abspath(os.path.expanduser(r.strip()))
+                            for r in roots if isinstance(r, str)]
+                    if norm:
+                        out[name] = norm
+                if out:
+                    return out
+        except Exception:
+            pass
+
+    result = {}
+    for name in CLUSTERS:
+        if name == "local":
+            continue
+        cluster_base = os.path.join(base, name)
+        mount_paths = _CONFIG.get("clusters", {}).get(name, {}).get("mount_paths", [])
+        if mount_paths:
+            roots = [os.path.join(cluster_base, str(i))
+                     for i in range(len(mount_paths))]
+        else:
+            roots = [cluster_base]
+        result[name] = roots
+    return result
+
+
+def _load_mount_remote_map():
+    """Build a mapping: cluster -> list of remote paths (with $USER expanded).
+
+    Used by find_job_logs_on_mount to convert local paths back to remote.
+    """
+    result = {}
+    for name, ccfg in _CONFIG.get("clusters", {}).items():
+        paths = ccfg.get("mount_paths", [])
+        result[name] = [p.replace("$USER", DEFAULT_USER) for p in paths]
+    return result
 
 
 MOUNT_MAP = _load_mount_map()
+MOUNT_REMOTE_MAP = _load_mount_remote_map()
 MOUNT_SCRIPT_PATH = os.path.join(APP_ROOT, "scripts", "sshfs_logs.sh")
 
 STATE_ORDER = {"RUNNING": 0, "COMPLETING": 1, "PENDING": 2, "FAILED": 3, "CANCELLED": 4}
@@ -111,12 +136,14 @@ _log_content_cache = {}
 _stats_cache = {}
 _dir_list_cache = {}
 _progress_cache = {}
+_crash_cache = {}
 _prefetch_last = {}
 LOG_INDEX_TTL_SEC = 120
 LOG_CONTENT_TTL_SEC = 45
 STATS_TTL_SEC = 15
 DIR_LIST_TTL_SEC = 20
 PROGRESS_TTL_SEC = 60
+CRASH_TTL_SEC = 60
 PREFETCH_MIN_GAP_SEC = 120
 
 TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL"}
@@ -280,6 +307,8 @@ def reload_config(new_cfg):
     CLUSTERS.update(new_clusters)
     MOUNT_MAP.clear()
     MOUNT_MAP.update(_load_mount_map())
+    MOUNT_REMOTE_MAP.clear()
+    MOUNT_REMOTE_MAP.update(_load_mount_remote_map())
 
     PROJECTS.clear()
     PROJECTS.update(new_cfg.get("projects", {}))

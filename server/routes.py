@@ -7,14 +7,14 @@ import subprocess
 import threading
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request, render_template
+from flask import Blueprint, jsonify, request, render_template, make_response
 
 from .config import (
     CLUSTERS, DEFAULT_USER, TERMINAL_STATES, RESULT_DIR_NAMES,
     _CONFIG, _cache_lock, _cache,
     _cache_get, _cache_set,
-    _log_content_cache, _dir_list_cache, _progress_cache,
-    LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC,
+    _log_content_cache, _dir_list_cache, _progress_cache, _crash_cache,
+    LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC,
     reload_config, settings_response,
     get_project_color, get_project_emoji, extract_project,
 )
@@ -22,6 +22,7 @@ from .db import (
     normalize_job_times_local, get_board_pinned,
     dismiss_job, dismiss_by_state_prefix,
     get_history, get_projects, get_db,
+    _restore_dependency_fields,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
 from .mounts import (
@@ -37,16 +38,55 @@ from .logs import (
 from .jobs import (
     refresh_all_clusters, refresh_cluster,
     schedule_prefetch, prefetch_cluster_bulk,
-    get_job_stats_cached,
+    get_job_stats_cached, fetch_run_metadata_sync,
+    create_run_on_demand,
     _last_polled,
 )
+from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
 
 
+def _rebuild_cross_deps(jobs):
+    """Rebuild depends_on/dependents across the full merged set of jobs.
+
+    After merging live and pinned jobs, their dependency arrays only reference
+    IDs within their original sets.  This rebuilds them so cross-references
+    (e.g. a running child pointing to a completed parent) are restored.
+    """
+    from .jobs import parse_dependency
+    id_set = {j.get("jobid") or j.get("job_id", "") for j in jobs}
+    by_name = {}
+    for j in jobs:
+        name = j.get("name") or j.get("job_name") or ""
+        if name:
+            by_name[name] = j.get("jobid") or j.get("job_id", "")
+
+    for j in jobs:
+        dep_details = j.get("dep_details", [])
+        if not dep_details:
+            raw = j.get("dependency", "")
+            if raw and raw not in ("(null)", "None"):
+                dep_details = parse_dependency(raw)
+                j["dep_details"] = dep_details
+        j["depends_on"] = [d["job_id"] for d in dep_details if d["job_id"] in id_set]
+
+    children_map = {}
+    for j in jobs:
+        jid = j.get("jobid") or j.get("job_id", "")
+        for pid in j.get("depends_on", []):
+            children_map.setdefault(pid, []).append(jid)
+    for j in jobs:
+        jid = j.get("jobid") or j.get("job_id", "")
+        j["dependents"] = children_map.get(jid, [])
+
+
 @api.route("/")
 def index():
-    return render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER)
+    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @api.route("/api/jobs")
@@ -77,12 +117,18 @@ def api_jobs():
         ]
         if pinned:
             data["jobs"] = data.get("jobs", []) + pinned
+            _rebuild_cross_deps(data["jobs"])
         data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
         for j in data.get("jobs", []):
-            if j.get("state", "").upper() == "RUNNING":
-                pct = _cache_get(_progress_cache, (name, j.get("jobid")), PROGRESS_TTL_SEC)
+            st = j.get("state", "").upper()
+            jid = j.get("jobid")
+            if st in ("RUNNING", "COMPLETING"):
+                pct = _cache_get(_progress_cache, (name, jid), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+                crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC)
+                if crash:
+                    j["crash_detected"] = crash
             if not j.get("project"):
                 j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
@@ -177,30 +223,31 @@ def api_cleanup():
         return jsonify({"status": "error", "error": "days must be >= 1"}), 400
 
     con = get_db()
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
-    rows = con.execute("""
-        SELECT cluster, job_id, job_name, log_path, ended_at
-        FROM job_history WHERE ended_at < ? AND cluster != 'local' ORDER BY ended_at
-    """, (cutoff,)).fetchall()
+    try:
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        rows = con.execute("""
+            SELECT cluster, job_id, job_name, log_path, ended_at
+            FROM job_history WHERE ended_at < ? AND cluster != 'local' ORDER BY ended_at
+        """, (cutoff,)).fetchall()
 
-    if not rows:
-        con.close()
-        return jsonify({"status": "ok", "deleted_records": 0, "cleaned_dirs": 0, "message": f"No records older than {days} days."})
+        if not rows:
+            return jsonify({"status": "ok", "deleted_records": 0, "cleaned_dirs": 0, "message": f"No records older than {days} days."})
 
-    cleaned_dirs = []
-    deleted_ids = []
-    for row in rows:
-        r = dict(row)
-        deleted_ids.append((r["cluster"], r["job_id"]))
+        cleaned_dirs = []
+        deleted_ids = []
+        for row in rows:
+            r = dict(row)
+            deleted_ids.append((r["cluster"], r["job_id"]))
+            if not dry_run:
+                _cleanup_mounted_logs(r["cluster"], r["job_id"], r.get("log_path", ""), cleaned_dirs)
+
         if not dry_run:
-            _cleanup_mounted_logs(r["cluster"], r["job_id"], r.get("log_path", ""), cleaned_dirs)
-
-    if not dry_run:
-        con.execute("DELETE FROM job_history WHERE ended_at < ? AND cluster != 'local'", (cutoff,))
-        con.commit()
-    con.close()
-    return jsonify({"status": "ok", "deleted_records": len(deleted_ids), "cleaned_dirs": len(cleaned_dirs),
-                     "dry_run": dry_run, "days": days, "cleaned_paths": cleaned_dirs[:20]})
+            con.execute("DELETE FROM job_history WHERE ended_at < ? AND cluster != 'local'", (cutoff,))
+            con.commit()
+        return jsonify({"status": "ok", "deleted_records": len(deleted_ids), "cleaned_dirs": len(cleaned_dirs),
+                         "dry_run": dry_run, "days": days, "cleaned_paths": cleaned_dirs[:20]})
+    finally:
+        con.close()
 
 
 def _cleanup_mounted_logs(cluster_name, job_id, log_path, cleaned_list):
@@ -243,15 +290,20 @@ def api_jobs_cluster(cluster):
         if pinned:
             data = dict(data)
             data["jobs"] = data.get("jobs", []) + pinned
+            _rebuild_cross_deps(data["jobs"])
         data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
         for j in data.get("jobs", []):
             s = str(j.get("state", "")).upper()
             if s in {"RUNNING", "COMPLETING"} and not j.get("_pinned"):
                 schedule_prefetch(cluster, j.get("jobid"))
-            if s == "RUNNING":
-                pct = _cache_get(_progress_cache, (cluster, j.get("jobid")), PROGRESS_TTL_SEC)
+            if s in ("RUNNING", "COMPLETING"):
+                jid = j.get("jobid")
+                pct = _cache_get(_progress_cache, (cluster, jid), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+                crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC)
+                if crash:
+                    j["crash_detected"] = crash
             if not j.get("project"):
                 j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
@@ -288,6 +340,23 @@ def api_prefetch_visible():
     return jsonify({"status": "ok", "clusters": list(by_cluster.keys()), "jobs": sum(len(v) for v in by_cluster.values())})
 
 
+@api.route("/api/progress", methods=["POST"])
+def api_progress():
+    """Return cached progress percentages for a batch of jobs."""
+    payload = request.get_json(silent=True) or {}
+    jobs = payload.get("jobs", [])
+    result = {}
+    for item in jobs:
+        c = item.get("cluster")
+        jid = str(item.get("job_id", "")).strip()
+        if not c or not jid:
+            continue
+        pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC)
+        if pct is not None:
+            result[f"{c}:{jid}"] = pct
+    return jsonify(result)
+
+
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
 def api_cancel(cluster, job_id):
     if cluster not in CLUSTERS:
@@ -298,6 +367,34 @@ def api_cancel(cluster, job_id):
             return jsonify({"status": "ok"})
         ssh_run(cluster, f"scancel {job_id}")
         return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/cancel_jobs/<cluster>", methods=["POST"])
+def api_cancel_jobs(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    payload = request.get_json(silent=True) or {}
+    job_ids = payload.get("job_ids", [])
+    if not job_ids or not isinstance(job_ids, list):
+        return jsonify({"status": "error", "error": "job_ids list required"}), 400
+    sanitized = [str(jid).strip() for jid in job_ids if str(jid).strip().isdigit()]
+    if not sanitized:
+        return jsonify({"status": "error", "error": "No valid job IDs"}), 400
+    try:
+        if cluster == "local":
+            errors = []
+            for jid in sanitized:
+                try:
+                    os.kill(int(jid), 15)
+                except Exception as e:
+                    errors.append(f"{jid}: {e}")
+            if errors:
+                return jsonify({"status": "partial", "cancelled": len(sanitized) - len(errors), "errors": errors})
+            return jsonify({"status": "ok", "cancelled": len(sanitized)})
+        ssh_run(cluster, f"scancel {','.join(sanitized)}")
+        return jsonify({"status": "ok", "cancelled": len(sanitized)})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
@@ -320,6 +417,51 @@ def api_stats(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     return jsonify(get_job_stats_cached(cluster, job_id))
+
+
+@api.route("/api/run_info/<cluster>/<root_job_id>")
+def api_run_info(cluster, root_job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run = get_run_with_jobs(cluster, root_job_id)
+    if not run:
+        actual_root = create_run_on_demand(cluster, root_job_id)
+        if actual_root:
+            run = get_run_with_jobs(cluster, actual_root)
+        if not run:
+            return jsonify({"status": "error", "error": "Run not found"}), 404
+    if not run.get("meta_fetched"):
+        fetch_run_metadata_sync(cluster, run["root_job_id"])
+        run = get_run_with_jobs(cluster, run["root_job_id"])
+        if not run:
+            return jsonify({"status": "error", "error": "Run not found after fetch"}), 404
+    for j in run.get("jobs", []):
+        if not j.get("project"):
+            j["project"] = extract_project(j.get("job_name") or j.get("name") or "")
+        proj = j.get("project", "")
+        if proj:
+            j["project_color"] = get_project_color(proj)
+            j["project_emoji"] = get_project_emoji(proj)
+    return jsonify({"status": "ok", "run": run})
+
+
+@api.route("/api/run_info/<cluster>/<root_job_id>/retry_meta", methods=["POST"])
+def api_retry_run_meta(cluster, root_job_id):
+    """Force retry metadata capture for a run."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    from .jobs import _run_meta_fetched, _capture_run_metadata
+    from .db import get_run
+    key = (cluster, str(root_job_id))
+    _run_meta_fetched.pop(key, None)
+    run = get_run(cluster, str(root_job_id))
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+    db = get_db()
+    db.execute("UPDATE runs SET meta_fetched=0 WHERE cluster=? AND root_job_id=?", (cluster, str(root_job_id)))
+    db.commit()
+    _capture_run_metadata(cluster, str(root_job_id), run["id"])
+    return api_run_info(cluster, root_job_id)
 
 
 @api.route("/api/history")
@@ -352,7 +494,8 @@ def api_projects():
 def api_log_files(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "files": [], "dirs": [], "error": "Unknown cluster"}), 404
-    result = get_job_log_files_cached(cluster, job_id)
+    force = request.args.get("force", "0") == "1"
+    result = get_job_log_files_cached(cluster, job_id, force=force)
     files = []
     for f in result.get("files", []):
         p = f.get("path", "")
@@ -461,6 +604,10 @@ def api_log(cluster, job_id):
         pct = extract_progress(content)
         if pct is not None:
             _cache_set(_progress_cache, (cluster, str(job_id)), pct)
+        from .logs import detect_crash
+        crash = detect_crash(content)
+        if crash is not None:
+            _cache_set(_crash_cache, (cluster, str(job_id)), crash)
     return jsonify({"status": "ok", "log_path": log_path, "content": content, "source": source, "resolved_path": resolved_path})
 
 

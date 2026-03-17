@@ -4,13 +4,13 @@ let _currentRemotePath = null, _currentResolvedPath = null, _currentSource = nul
 const _treeState = {};   // path -> { open, entries }
 const TREE_CACHE_TTL_MS = 30000;
 
-async function openLog(cluster, jobId, jobName) {
+async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
   _currentFilePath = null;
 
   document.getElementById('modal-overlay').classList.add('open');
-  document.getElementById('modal-title').textContent = jobName || jobId;
+  if (jobName) document.getElementById('modal-title').textContent = jobName;
   document.getElementById('modal-subtitle').textContent = `${cluster} · job ${jobId}`;
   document.getElementById('content-path').textContent = 'discovering files…';
   document.getElementById('content-source').textContent = 'source: —';
@@ -18,11 +18,11 @@ async function openLog(cluster, jobId, jobName) {
   document.getElementById('modal-content').className = 'log-loading';
   document.getElementById('modal-content').textContent = 'Discovering log directories…';
   document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
-  // Keep cache bounded to current explorer context.
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
   try {
-    const res = await fetch(`/api/log_files/${cluster}/${jobId}`);
+    const qs = force ? '?force=1' : '';
+    const res = await fetch(`/api/log_files/${cluster}/${jobId}${qs}`);
     const data = await res.json();
 
     if (data.files && data.files[0] && data.files[0].error) {
@@ -247,9 +247,13 @@ function renderLogWithHighlights(raw) {
   return lines.map((line) => {
     const l = line.toLowerCase();
     let cls = 'log-line';
-    if (l.includes('traceback')) cls += ' trace';
-    if (l.includes('error') || l.includes('exception') || l.includes('fatal')) cls += ' error';
-    else if (l.includes('warning') || l.includes('warn')) cls += ' warn';
+    if (isBenignLogLine(l)) {
+      cls += ' warn';
+    } else {
+      if (l.includes('traceback')) cls += ' trace';
+      if (l.includes('error') || l.includes('exception') || l.includes('fatal')) cls += ' error';
+      else if (l.includes('warning') || l.includes('warn')) cls += ' warn';
+    }
     return `<div class="${cls}">${escapeHtml(line)}</div>`;
   }).join('');
 }
@@ -678,7 +682,11 @@ async function viewFile(path, force) {
 }
 
 async function reloadCurrentFile() {
-  if (_currentFilePath) await viewFile(_currentFilePath, true);
+  if (_currentFilePath) {
+    await viewFile(_currentFilePath, true);
+  } else if (_exCluster && _exJobId) {
+    await openLog(_exCluster, _exJobId, null, true);
+  }
 }
 
 async function copyCurrentFileWithPath() {

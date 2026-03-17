@@ -10,7 +10,7 @@ import time
 from glob import glob
 
 from .config import (
-    APP_ROOT, CLUSTERS, MOUNT_LUSTRE_PREFIXES, NEMO_RUN_BASES, LOG_SEARCH_BASES,
+    APP_ROOT, CLUSTERS,
     _dir_label,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, LOG_INDEX_TTL_SEC,
@@ -20,6 +20,8 @@ from .mounts import (
     resolve_mounted_path, resolve_file_path,
     mounted_root, remote_path_from_mounted,
 )
+
+from .crash_detect import detect_crash  # noqa: F401 — re-exported for consumers
 
 _PROGRESS_RE = re.compile(r'(\d{1,3})%\|')
 
@@ -257,46 +259,9 @@ def local_job_log_files(job_id):
 
 
 def discover_job_logs_from_mount(cluster_name, job_id):
-    root = mounted_root(cluster_name)
-    if not root:
-        return None
-    user = CLUSTERS[cluster_name]["user"]
-    allowed_suffixes = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
-    paths = []
-    bases = [os.path.join(root, prefix, user) for prefix in MOUNT_LUSTRE_PREFIXES]
-    for base in bases:
-        if not os.path.isdir(base):
-            continue
-        pats = [
-            os.path.join(base, "nemo-run", "**", "eval-logs", f"*{job_id}*"),
-            os.path.join(base, "**", "eval-logs", f"*{job_id}*"),
-        ]
-        for pat in pats:
-            for p in glob(pat, recursive=True):
-                if not os.path.isfile(p) or not p.lower().endswith(allowed_suffixes):
-                    continue
-                paths.append(p)
-                if len(paths) >= 80:
-                    break
-            if len(paths) >= 80:
-                break
-        if paths:
-            break
-    if not paths:
-        return None
-
-    uniq = []
-    seen = set()
-    for p in paths:
-        rp = remote_path_from_mounted(cluster_name, p)
-        if not rp or rp in seen:
-            continue
-        seen.add(rp)
-        uniq.append(rp)
-
-    files = label_and_sort_files(uniq)
-    dirs = _derive_result_dirs(files, cluster_name)
-    return {"files": files, "dirs": dirs}
+    """Deprecated — log discovery now uses SSH (scontrol/sacct).
+    Mounts are only used for reading files, not discovering them."""
+    return None
 
 
 def _derive_result_dirs(files, cluster_name=None):
@@ -336,76 +301,62 @@ def fetch_log_tail(cluster_name, log_path, lines=150):
         return f"Could not read log: {e}"
 
 
+def _db_log_path(cluster_name, job_id):
+    """Look up the stored log_path for a job from the history DB."""
+    try:
+        import sqlite3
+        from .config import DB_PATH
+        con = sqlite3.connect(DB_PATH)
+        row = con.execute(
+            "SELECT log_path FROM job_history WHERE cluster=? AND job_id=?",
+            (cluster_name, str(job_id)),
+        ).fetchone()
+        con.close()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return ""
+
+
 def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
 
-    mount_result = discover_job_logs_from_mount(cluster_name, str(job_id))
-    if mount_result and mount_result.get("files"):
-        return mount_result
+    db_path = _db_log_path(cluster_name, job_id)
+    db_logdir_clause = ""
+    if db_path:
+        db_logdir = os.path.dirname(db_path).replace("'", "'\\''")
+        db_logdir_clause = f"""
+if [ -z "$LOGDIR" ]; then
+  [ -d '{db_logdir}' ] && LOGDIR='{db_logdir}'
+fi
+"""
 
-    user = CLUSTERS[cluster_name]["user"]
     script = f"""#!/bin/sh
 JOB={job_id}
-USER={user}
-
 emit() {{ echo "FILE:$1:$2"; }}
-
 LOGDIR=""
+
 SCTL=$(scontrol show job "$JOB" 2>/dev/null)
 if [ -n "$SCTL" ]; then
   STDOUT=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2- | sed "s/%j/$JOB/g")
-  if [ -n "$STDOUT" ]; then
-    LOGDIR=$(dirname "$STDOUT")
-  fi
+  [ -n "$STDOUT" ] && LOGDIR=$(dirname "$STDOUT")
 fi
 
 if [ -z "$LOGDIR" ]; then
-  for NEMO_BASE in {" ".join(NEMO_RUN_BASES)}; do
-    [ -d "$NEMO_BASE" ] || continue
-    SBATCH=$(find "$NEMO_BASE" -maxdepth 5 -name "*sbatch.sh" 2>/dev/null \\
-             | xargs grep -l "$JOB" 2>/dev/null | head -1)
-    if [ -n "$SBATCH" ]; then
-      OUT_LINE=$(grep '#SBATCH --output=' "$SBATCH" | head -1)
-      OUT_PATH=$(echo "$OUT_LINE" | sed 's/.*--output=//' | sed "s/%j/$JOB/g" | tr -d ' ')
-      [ -n "$OUT_PATH" ] && LOGDIR=$(dirname "$OUT_PATH")
-    fi
-    [ -n "$LOGDIR" ] && break
-    for SB in $(find "$NEMO_BASE" -maxdepth 5 -name "*sbatch.sh" 2>/dev/null); do
-      OL=$(grep '#SBATCH --output=' "$SB" 2>/dev/null | head -1)
-      [ -z "$OL" ] && continue
-      OP=$(echo "$OL" | sed 's/.*--output=//' | sed "s/%j/$JOB/g" | tr -d ' ')
-      D=$(dirname "$OP")
-      [ -d "$D" ] || continue
-      HIT=$(find "$D" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | head -1)
-      if [ -n "$HIT" ]; then
-        LOGDIR="$D"
-        break
-      fi
-    done
-    [ -n "$LOGDIR" ] && break
-  done
+  STDOUT=$(sacct -j "$JOB" --format=StdOut --noheader -P 2>/dev/null | head -1 | tr -d ' ')
+  [ -n "$STDOUT" ] && LOGDIR=$(dirname "$(echo "$STDOUT" | sed "s/%j/$JOB/g")")
 fi
-
-FOUND=0
+{db_logdir_clause}
 if [ -n "$LOGDIR" ] && [ -d "$LOGDIR" ]; then
   find "$LOGDIR" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | sort | while read F; do
     emit "$(basename "$F")" "$F"
   done
-  FOUND=$(find "$LOGDIR" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | wc -l)
-fi
-if [ "$FOUND" -eq 0 ]; then
-  for ROOT in {" ".join(LOG_SEARCH_BASES)}; do
-    [ -d "$ROOT" ] || continue
-    find "$ROOT" -maxdepth 6 -type f -name "*$JOB*" 2>/dev/null | head -20 | while read F; do
-      emit "$(basename "$F")" "$F"
-    done
-    break
-  done
 fi
 """
     try:
-        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=20)
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
     except Exception as e:
         return {"files": [], "dirs": [], "error": f"SSH error: {e}"}
 
@@ -440,7 +391,8 @@ def get_job_log_files_cached(cluster_name, job_id, force=False):
         if cached is not None:
             return cached
     value = get_job_log_files(cluster_name, str(job_id))
-    _cache_set(_log_index_cache, key, value)
+    if not value.get("error"):
+        _cache_set(_log_index_cache, key, value)
     return value
 
 

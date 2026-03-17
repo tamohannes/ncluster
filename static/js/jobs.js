@@ -3,6 +3,7 @@ function showTab(tab) {
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
   document.getElementById('history-view').classList.toggle('active', tab === 'history');
   document.getElementById('project-view').classList.toggle('active', tab === 'project');
+  document.getElementById('explorer-page').classList.remove('open');
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   if (tab === 'history') loadHistory();
@@ -189,7 +190,7 @@ function renderCard(name, data) {
 
   let body = '';
   if (isErr) {
-    body = `<div class="err-msg">⚠ ${data.error}</div>`;
+    body = `<div class="err-msg">⚠ ${data.error}<button class="btn" style="margin-left:10px" onclick="refreshCluster('${name}')">retry</button></div>`;
   } else if (jobs.length === 0) {
     body = `<div class="no-jobs">no active jobs</div>`;
   } else {
@@ -199,8 +200,14 @@ function renderCard(name, data) {
       const _proj = groupJobs[0]?.project || '';
       const _projColor = groupJobs[0]?.project_color || '';
       const _projEmoji = groupJobs[0]?.project_emoji || '';
-      const _projBadge = _proj ? `<span class="group-project-badge" style="background:${_projColor || 'var(--surface)'}">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span> ` : '';
-      const groupLabel = `${_projBadge}${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
+      const _projBadge = _proj ? `<span class="group-project-badge">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span>` : '';
+      const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
+      const rootJobId = rootJob.jobid;
+      const safeGk = gk.replace(/'/g, "\\'");
+      const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const runBadge = name !== 'local'
+        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="View run details">${gk}</span>`
+        : gk;
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -208,7 +215,21 @@ function renderCard(name, data) {
       for (const j of groupJobs) byId[j.jobid] = j;
       const depthMemo = {};
 
-      const groupRows = groupJobs.map(j => {
+      // Identify backup jobs and reorder so each parent is followed by its backups.
+      const { backupMap, parentOf } = buildBackupInfo(groupJobs, byId);
+      const backupSet = new Set(Object.keys(parentOf));
+      const ordered = [];
+      for (const j of groupJobs) {
+        if (backupSet.has(j.jobid)) continue;
+        ordered.push(j);
+        if (backupMap[j.jobid]) {
+          for (const bk of backupMap[j.jobid]) ordered.push(bk);
+        }
+      }
+      const visibleCount = groupJobs.length - backupSet.size;
+      const groupLabel = `<span>${runBadge}${_projBadge} <span class="group-count">· ${visibleCount} job${visibleCount !== 1 ? 's' : ''}</span></span>`;
+
+      const groupRows = ordered.map(j => {
       const gpuStr = parseGpus(j.nodes, j.gres);
       const resourceCell = gpuStr
         ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
@@ -217,7 +238,18 @@ function renderCard(name, data) {
       const st = (j.state || '').toUpperCase();
       const pinKind = isPinned ? (isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
       const depth = depthInGroup(j, byId, idSet, depthMemo);
-      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} group-bg-${gidx % 4}`;
+
+      const isBackup = backupSet.has(j.jobid);
+      const backupParentId = parentOf[j.jobid] || '';
+      const hasBackups = backupMap[j.jobid] && backupMap[j.jobid].length > 0;
+      const isExpanded = _expandedBackups.has(j.jobid);
+      const backupHidden = isBackup && !_expandedBackups.has(backupParentId);
+      const backupRowCls = isBackup ? 'backup-child-row' : '';
+
+      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls} group-bg-${gidx % 4}`;
+      const rowDisplay = backupHidden ? 'display:none;' : '';
+      const parentAttr = isBackup ? ` data-backup-parent="${backupParentId}"` : '';
+
       const startTime = fmtTime(j.started_local || j.started || j.start);
       const endTime   = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
       const safeName = (j.name || '').replace(/'/g, "\\'");
@@ -231,19 +263,28 @@ function renderCard(name, data) {
         ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${name}','${j.jobid}')">✕</button>`
         : `<button class="action-btn" onclick="cancelJob('${name}','${j.jobid}')">cancel</button>`;
 
-      // Dependency badge for jobs waiting on a parent.
       const depBadge = depBadgeHtml(j, byId);
+      const backupKind = isBackup ? classifyBackupJob(j, byId) : null;
+      const bkBadge = backupBadgeHtml(backupKind);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
       const hasGpu = !!gpuStr;
       const nameCls = hasGpu ? '' : ' name-cpu';
-      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>`;
+
+      let backupBtn = '';
+      if (hasBackups) {
+        const n = backupMap[j.jobid].length;
+        const cls = isExpanded ? 'backups-btn expanded' : 'backups-btn';
+        backupBtn = ` <button class="${cls}" data-backups-toggle="${j.jobid}" onclick="event.stopPropagation();toggleBackups('${j.jobid}')">${n} backup${n !== 1 ? 's' : ''}</button>`;
+      }
+      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>${backupBtn}`;
 
       const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
-      return `<tr class="${rowClass}" style="${_rowBg}">
+      const _pct = resolveProgress(name, j.jobid, j.progress, j.state);
+      return `<tr class="${rowClass}"${parentAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, j.progress, j.reason, j.exit_code)} ${depBadge}</td>
+        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected)} ${bkBadge}${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
@@ -253,7 +294,12 @@ function renderCard(name, data) {
         <td>${tailAction}</td>
       </tr>`;
       }).join('');
-      return `<tr class="group-head-row"><td colspan="10">${groupLabel}</td></tr>${groupRows}`;
+      const cancelableIds = groupJobs.filter(j => !j._pinned).map(j => j.jobid);
+      const idsAttr = JSON.stringify(cancelableIds).replace(/"/g, '&quot;');
+      const cancelGroupBtn = cancelableIds.length > 1 && name !== 'local'
+        ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroup('${name}','${idsAttr}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
+        : '';
+      return `<tr class="group-head-row"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
     }).join('');
 
     body = `<div class="card-body">
@@ -319,18 +365,15 @@ function groupClusters(data) {
   const idle    = [];  // reachable + no live jobs at all
   const failed  = [];  // unreachable
 
-  for (const [name, d] of Object.entries(data)) {
+  for (const name of Object.keys(CLUSTERS)) {
+    const d = data[name];
+    if (!d) continue;
     if (name === 'local') { local.push(name); continue; }
     if (d.status === 'error') { failed.push(name); continue; }
     const liveJobs = (d.jobs || []).filter(j => !j._pinned);
     if (liveJobs.length > 0) active.push(name);
     else idle.push(name);
   }
-
-  // Sort active/idle by job count desc, failed alphabetically
-  active.sort((a, b) => (data[b].jobs||[]).length - (data[a].jobs||[]).length);
-  idle.sort((a, b) => (data[b].jobs||[]).length - (data[a].jobs||[]).length);
-  failed.sort();
 
   return { local, active, idle, failed };
 }
@@ -409,62 +452,125 @@ function renderGrid(data) {
   grid.innerHTML = html;
 }
 
-async function prefetchVisibleJobs(data) {
-  try {
-    const jobs = [];
-    for (const [cluster, d] of Object.entries(data || {})) {
-      if (!d || d.status !== 'ok') continue;
-      for (const j of (d.jobs || [])) {
-        const s = (j.state || '').toUpperCase();
-        if (j._pinned) continue;
-        if (s === 'RUNNING' || s === 'COMPLETING') {
-          jobs.push({ cluster, job_id: j.jobid });
-        }
+function _collectRunningJobs(data) {
+  const jobs = [];
+  for (const [cluster, d] of Object.entries(data || {})) {
+    if (!d || d.status !== 'ok') continue;
+    for (const j of (d.jobs || [])) {
+      const s = (j.state || '').toUpperCase();
+      if (j._pinned) continue;
+      if (s === 'RUNNING' || s === 'COMPLETING') {
+        jobs.push({ cluster, job_id: j.jobid });
       }
     }
-    // Cap batch size to keep load bounded
-    const batch = jobs.slice(0, 40);
-    if (!batch.length) return;
+  }
+  return jobs.slice(0, 40);
+}
+
+async function prefetchAndUpdateProgress(data) {
+  if (document.hidden) return;
+  const batch = _collectRunningJobs(data);
+  if (!batch.length) { _saveProgressCache(); return; }
+  try {
     await fetch('/api/prefetch_visible', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobs: batch }),
     });
-  } catch (_) {
-    // best effort
-  }
+  } catch (_) {}
+  setTimeout(() => _fetchProgressUpdate(batch), 4000);
+}
+
+async function _fetchProgressUpdate(batch) {
+  if (document.hidden) return;
+  try {
+    const res = await fetch('/api/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobs: batch }),
+    });
+    const result = await res.json();
+    let changed = false;
+    for (const [key, pct] of Object.entries(result)) {
+      const [cluster, jobid] = key.split(':');
+      _progressCache[key] = pct;
+      if (allData[cluster]) {
+        for (const j of (allData[cluster].jobs || [])) {
+          if (String(j.jobid) === jobid && j.progress !== pct) {
+            j.progress = pct;
+            changed = true;
+          }
+        }
+      }
+    }
+    _saveProgressCache();
+    if (changed) _renderAll();
+  } catch (_) {}
 }
 
 // ── Live fetch ──
-async function fetchAll() {
+function _showLoadingSkeleton() {
   const grid = document.getElementById('grid');
-  if (!grid.children.length) {
-    grid.innerHTML = `<div class="section">
-      ${renderGroupLabel('', 'var(--accent)', 'loading…', 0)}
-      <div class="grid">${Object.keys(CLUSTERS).map(name => `
-        <div class="card" id="card-${name}">
-          <div class="card-head">
-            <div class="card-title"><span class="card-name">${name}</span><span class="badge">${CLUSTERS[name].gpu_type}</span></div>
-            <div class="card-meta"><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
-          </div>
-          <div class="no-jobs" style="color:#bbb">waiting…</div>
-        </div>`).join('')}
-      </div>
-    </div>`;
-  }
+  grid.innerHTML = `<div class="section">
+    ${renderGroupLabel('', 'var(--accent)', 'loading…', 0)}
+    <div class="grid">${Object.keys(CLUSTERS).map(name => `
+      <div class="card" id="card-${name}">
+        <div class="card-head">
+          <div class="card-title"><span class="card-name">${name}</span><span class="badge">${CLUSTERS[name].gpu_type}</span></div>
+          <div class="card-meta"><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
+        </div>
+        <div class="no-jobs" style="color:#bbb">waiting…</div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
 
-  // 1) Render cached data instantly.
+function _isCacheFresh(data) {
+  const now = Date.now();
+  const maxAge = 60 * 1000;
+  for (const d of Object.values(data)) {
+    if (d.updated && (now - new Date(d.updated).getTime()) < maxAge) return true;
+  }
+  return false;
+}
+
+async function fetchAll() {
+  if (document.hidden) return;
+  const grid = document.getElementById('grid');
+  if (!grid.children.length) _showLoadingSkeleton();
+
+  // 1) Try cached data — only render if it's reasonably fresh.
+  let usedCache = false;
   try {
     const res = await fetch('/api/jobs');
-    allData = await res.json();
-    _fillMissing();
-    _renderAll();
+    const cached = await res.json();
+    if (_isCacheFresh(cached)) {
+      allData = cached;
+      _fillMissing();
+      _renderAll();
+      usedCache = true;
+    }
   } catch (e) {
     toast('Failed to fetch jobs', 'error');
   }
 
+  if (!usedCache && !grid.children.length) _showLoadingSkeleton();
+
   // 2) Refresh each cluster in parallel; update cards as responses arrive.
-  const names = Object.keys(CLUSTERS);
+  grid.classList.add('grid-loading');
+  await _refreshAllClusters();
+  grid.classList.remove('grid-loading');
+
+  // 3) Prefetch logs for visible running jobs, then async-fetch progress.
+  _saveProgressCache();
+  prefetchAndUpdateProgress(allData);
+}
+
+async function _refreshAllClusters() {
+  return _refreshClusters(Object.keys(CLUSTERS));
+}
+
+async function _refreshClusters(names) {
   const promises = names.map(name =>
     fetch(`/api/jobs/${name}`)
       .then(r => r.json())
@@ -473,7 +579,7 @@ async function fetchAll() {
         _fillMissing();
         _renderAll();
       })
-      .catch(() => {})
+      .catch(err => { console.warn('Cluster refresh failed:', name, err); })
   );
   await Promise.allSettled(promises);
 }
@@ -490,19 +596,23 @@ function _renderAll() {
 }
 
 async function refreshCluster(name) {
+  const grid = document.getElementById('grid');
   const card = document.getElementById(`card-${name}`);
   if (card) {
     const si = card.querySelector('.status-indicator');
     if (si) si.className = 'status-indicator loading';
   }
+  grid.classList.add('grid-loading');
   try {
     const res = await fetch(`/api/jobs/${name}`);
     const data = await res.json();
     allData[name] = data;
     _renderAll();
-    prefetchVisibleJobs({ [name]: data });
+    prefetchAndUpdateProgress({ [name]: data });
   } catch (e) {
     toast(`Failed to refresh ${name}`, 'error');
+  } finally {
+    grid.classList.remove('grid-loading');
   }
 }
 

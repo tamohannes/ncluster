@@ -9,24 +9,30 @@ from datetime import datetime
 
 from .config import (
     APP_ROOT, CLUSTERS, DEFAULT_USER, STATE_ORDER, SQUEUE_FMT, SQUEUE_HDR,
-    NEMO_RUN_BASES,
     LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE,
     SSH_TIMEOUT, CACHE_FRESH_SEC,
     _cache_lock, _cache, _seen_jobs, _last_polled,
     _cache_get, _cache_set,
-    _log_index_cache, _log_content_cache, _stats_cache, _progress_cache,
+    _log_index_cache, _log_content_cache, _stats_cache, _progress_cache, _crash_cache,
     _prefetch_last, _warm_lock,
-    LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, PREFETCH_MIN_GAP_SEC,
+    LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, PREFETCH_MIN_GAP_SEC,
     extract_project,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
-from .db import upsert_job, get_db
+from .db import (
+    upsert_job, get_db, get_board_pinned,
+    upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
+)
 from .logs import (
-    get_job_log_files, fetch_log_tail, extract_progress,
+    get_job_log_files, fetch_log_tail, extract_progress, detect_crash,
     label_and_sort_files,
 )
 
 _DEP_RE = re.compile(r'(after\w*):(\d+)')
+_EVAL_PREFIX_RE = re.compile(r'^(eval-[a-z0-9_]+)', re.I)
+_stdout_captured = set()
+_run_meta_fetched = {}          # (cluster, job_id) -> timestamp
+_RUN_META_TTL_SEC = 300
 
 
 def parse_dependency(raw):
@@ -232,6 +238,264 @@ def get_job_stats_cached(cluster, job_id, force=False):
     return value
 
 
+# ─── Run detection & metadata ────────────────────────────────────────────────
+
+def _group_key_for_job(name):
+    """Server-side equivalent of the frontend's groupKeyForJob()."""
+    n = (name or "").strip()
+    if not n:
+        return "misc"
+    m = _EVAL_PREFIX_RE.match(n)
+    if m:
+        return m.group(1).lower()
+    return re.sub(
+        r'(?:-|_)rs\d+$', '',
+        re.sub(r'(?:-|_)(?:judge|summarize[-_]results?)(?:-rs\d+)?$', '', n, flags=re.I),
+        flags=re.I,
+    ).lower()
+
+
+def _group_jobs_for_runs(jobs):
+    """Group jobs using union-find on dependency chains + name prefixes.
+
+    Returns list of (group_key, root_job_id, [job_ids]).
+    """
+    by_id = {j["jobid"]: j for j in jobs}
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    for j in jobs:
+        for pid in j.get("depends_on", []):
+            if pid in by_id:
+                union(j["jobid"], pid)
+
+    name_groups = {}
+    for j in jobs:
+        key = _group_key_for_job(j.get("name", ""))
+        name_groups.setdefault(key, []).append(j["jobid"])
+    for ids in name_groups.values():
+        for i in range(1, len(ids)):
+            union(ids[0], ids[i])
+
+    groups = {}
+    for j in jobs:
+        root = find(j["jobid"])
+        groups.setdefault(root, []).append(j)
+
+    result = []
+    for grp in groups.values():
+        root_job = next((j for j in grp if not j.get("depends_on")), grp[0])
+        label = _group_key_for_job(root_job.get("name", ""))
+        result.append((label, root_job["jobid"], [j["jobid"] for j in grp]))
+    return result
+
+
+def _detect_and_register_runs(cluster, jobs):
+    """Create run records for job groups and schedule metadata capture."""
+    if not jobs:
+        return
+    groups = _group_jobs_for_runs(jobs)
+    for run_name, root_job_id, job_ids in groups:
+        root_job = next((j for j in jobs if j["jobid"] == root_job_id), None)
+        project = root_job.get("project", "") if root_job else ""
+        run_id = upsert_run(cluster, root_job_id, run_name, project)
+        associate_jobs_to_run(cluster, run_id, job_ids)
+
+        started = root_job.get("started") or root_job.get("submitted") if root_job else None
+        if started:
+            update_run_times(run_id, started_at=started)
+
+        key = (cluster, root_job_id)
+        cached_ts = _run_meta_fetched.get(key)
+        if cached_ts is None or (time.monotonic() - cached_ts) > _RUN_META_TTL_SEC:
+            existing = get_run(cluster, root_job_id)
+            if existing and not existing.get("meta_fetched"):
+                _run_meta_fetched[key] = time.monotonic()
+                t = threading.Thread(
+                    target=_capture_run_metadata,
+                    args=(cluster, root_job_id, run_id),
+                    daemon=True,
+                )
+                t.start()
+
+
+def _capture_run_metadata(cluster, root_job_id, run_id):
+    """SSH to cluster and capture batch script, scontrol output, and conda state."""
+    script = f"""#!/bin/sh
+echo "===SCONTROL_START==="
+scontrol show job {root_job_id} 2>/dev/null
+echo "===SCONTROL_END==="
+echo "===BATCH_START==="
+scontrol write batch_script {root_job_id} - 2>/dev/null
+echo "===BATCH_END==="
+echo "===CONDA_START==="
+conda env export 2>/dev/null || conda list 2>/dev/null || pip freeze 2>/dev/null || echo "(conda/pip not available)"
+echo "===CONDA_END==="
+"""
+    try:
+        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=25)
+    except Exception:
+        _run_meta_fetched.pop((cluster, root_job_id), None)
+        return
+
+    def _extract(text, start_marker, end_marker):
+        s = text.find(start_marker)
+        e = text.find(end_marker)
+        if s < 0 or e < 0:
+            return ""
+        return text[s + len(start_marker):e].strip()
+
+    scontrol_raw = _extract(out, "===SCONTROL_START===", "===SCONTROL_END===")
+    batch_script = _extract(out, "===BATCH_START===", "===BATCH_END===")
+    conda_state = _extract(out, "===CONDA_START===", "===CONDA_END===")
+
+    if not scontrol_raw:
+        scontrol_raw = _sacct_fallback_metadata(cluster, root_job_id)
+
+    env_vars = _parse_env_from_scontrol(scontrol_raw)
+
+    success = any([batch_script, scontrol_raw, env_vars])
+    update_run_meta(run_id, batch_script, scontrol_raw, env_vars, conda_state)
+
+    if not success:
+        _run_meta_fetched.pop((cluster, root_job_id), None)
+
+
+def _sacct_fallback_metadata(cluster, job_id):
+    """Fall back to sacct when scontrol returns nothing (job already completed)."""
+    fmt = "JobID,JobName,Partition,Account,AllocCPUS,State,ExitCode,Start,End,Elapsed,MaxRSS,NodeList,WorkDir"
+    try:
+        if cluster == "local":
+            result = subprocess.run(
+                ["sacct", "-j", str(job_id), f"--format={fmt}", "--noheader", "--parsable2"],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = result.stdout.strip()
+        else:
+            out, _ = ssh_run_with_timeout(
+                cluster,
+                f"sacct -j {job_id} --format={fmt} --noheader --parsable2 2>/dev/null",
+                timeout_sec=15,
+            )
+            out = out.strip()
+    except Exception:
+        return ""
+    if not out:
+        return ""
+    headers = fmt.split(",")
+    lines = []
+    for row in out.splitlines():
+        parts = row.split("|")
+        if len(parts) >= len(headers):
+            lines.append("  ".join(f"{h}={parts[i]}" for i, h in enumerate(headers)))
+    return "\n".join(lines) if lines else ""
+
+
+def _parse_env_from_scontrol(scontrol_raw):
+    """Extract environment-related fields from scontrol show job output."""
+    if not scontrol_raw:
+        return ""
+    interesting = [
+        "WorkDir", "Command", "StdOut", "StdErr", "Partition", "TimeLimit",
+        "NumNodes", "NumCPUs", "NumTasks", "TRES", "TresPerNode",
+        "MinMemoryNode", "Gres", "Constraint", "Features", "Account",
+        "QOS", "Reservation",
+    ]
+    lines = []
+    for token in scontrol_raw.replace("\n", " ").split():
+        if "=" in token:
+            key = token.split("=", 1)[0]
+            if key in interesting:
+                lines.append(token)
+    return "\n".join(lines)
+
+
+def fetch_run_metadata_sync(cluster, root_job_id):
+    """Fetch run metadata synchronously (called when popup is opened and
+    meta_fetched=0). Returns the updated run dict."""
+    run = get_run(cluster, root_job_id)
+    if not run:
+        return None
+    if not run.get("meta_fetched"):
+        _capture_run_metadata(cluster, root_job_id, run["id"])
+        run = get_run(cluster, root_job_id)
+    return run
+
+
+def create_run_on_demand(cluster, root_job_id):
+    """Create a run record from existing DB jobs when no run exists yet.
+
+    This handles the case where a user clicks a run badge for jobs that
+    were already tracked before the run feature was deployed, or for
+    pinned/historical jobs.
+    """
+    con = get_db()
+    root_row = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, root_job_id),
+    ).fetchone()
+    if not root_row:
+        con.close()
+        return None
+
+    root_job = dict(root_row)
+    run_name = _group_key_for_job(root_job.get("job_name", ""))
+    project = root_job.get("project", "") or extract_project(root_job.get("job_name", ""))
+
+    related_rows = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND project=? AND job_name LIKE ?",
+        (cluster, project, f"%{run_name}%"),
+    ).fetchall()
+    con.close()
+
+    if not related_rows:
+        related_rows = [root_row]
+
+    job_dicts = []
+    for r in related_rows:
+        d = dict(r)
+        d["jobid"] = d["job_id"]
+        d["name"] = d.get("job_name", "")
+        deps = parse_dependency(d.get("dependency", ""))
+        d["depends_on"] = [dep["job_id"] for dep in deps]
+        d["dep_details"] = deps
+        job_dicts.append(d)
+
+    groups = _group_jobs_for_runs(job_dicts)
+
+    target_group = None
+    for gk, gk_root_id, gk_job_ids in groups:
+        if root_job_id in gk_job_ids:
+            target_group = (gk, gk_root_id, gk_job_ids)
+            break
+
+    if not target_group:
+        target_group = (run_name, root_job_id, [root_job_id])
+
+    gk, actual_root, job_ids = target_group
+
+    run_id = upsert_run(cluster, actual_root, gk, project)
+    associate_jobs_to_run(cluster, run_id, job_ids)
+
+    started = root_job.get("started") or root_job.get("submitted")
+    ended = root_job.get("ended_at")
+    if started:
+        update_run_times(run_id, started_at=started)
+    if ended:
+        update_run_times(run_id, ended_at=ended)
+
+    return actual_root
+
+
 # ─── Polling ─────────────────────────────────────────────────────────────────
 
 def _is_cache_fresh(cluster_name):
@@ -278,8 +542,95 @@ def poll_cluster(name):
         for job in data.get("jobs", []):
             upsert_job(name, job, terminal=False)
 
+        running_ids = [j["jobid"] for j in data.get("jobs", [])
+                       if j.get("state", "").upper() in ("RUNNING", "COMPLETING")]
+        uncaptured = [jid for jid in running_ids
+                      if (name, jid) not in _stdout_captured]
+        if uncaptured:
+            _capture_stdout_paths(name, uncaptured)
+
+        all_jobs_for_runs = list(data.get("jobs", []))
+        pinned = get_board_pinned(name)
+        live_ids = {j["jobid"] for j in all_jobs_for_runs}
+        for p in pinned:
+            pid = p.get("job_id", "")
+            if pid and pid not in live_ids:
+                all_jobs_for_runs.append({
+                    "jobid": pid,
+                    "name": p.get("job_name", ""),
+                    "depends_on": p.get("depends_on", []),
+                    "dep_details": p.get("dep_details", []),
+                    "dependents": p.get("dependents", []),
+                    "project": p.get("project", ""),
+                    "state": p.get("state", ""),
+                    "started": p.get("started", ""),
+                    "submitted": p.get("submitted", ""),
+                })
+        _detect_and_register_runs(name, all_jobs_for_runs)
+
     if not prev_ids and name != "local":
         _reconcile_db_with_squeue(name, current_ids)
+
+
+def _capture_stdout_paths(cluster_name, job_ids):
+    """Bulk-capture StdOut paths via scontrol for running jobs, store in DB.
+
+    Called during poll so that short-lived jobs have their log path recorded
+    before scontrol purges them.
+    """
+    if not job_ids:
+        return
+    ids_str = " ".join(str(j) for j in job_ids)
+    script = f"""for JOB in {ids_str}; do
+  STDOUT=$(scontrol show job "$JOB" 2>/dev/null | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2-)
+  [ -n "$STDOUT" ] && [ "$STDOUT" != "(null)" ] && echo "LOGPATH:$JOB:$STDOUT"
+done"""
+    try:
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
+    except Exception:
+        return
+
+    con = get_db()
+    for line in out.splitlines():
+        if not line.startswith("LOGPATH:"):
+            continue
+        parts = line[8:].split(":", 1)
+        if len(parts) != 2:
+            continue
+        jid, path = parts[0].strip(), parts[1].strip()
+        if path:
+            con.execute(
+                "UPDATE job_history SET log_path=? WHERE cluster=? AND job_id=? AND (log_path IS NULL OR log_path='')",
+                (path, cluster_name, jid),
+            )
+            _stdout_captured.add((cluster_name, jid))
+    con.commit()
+    con.close()
+
+
+def _detect_crash_on_complete(cluster, job_id, log_path=""):
+    """Check log content for crash patterns when sacct reports COMPLETED.
+
+    Returns a short crash reason string, or None if no crash detected.
+    """
+    jid = str(job_id)
+
+    cached = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC)
+    if cached:
+        return cached
+
+    try:
+        if log_path:
+            content = fetch_log_tail(cluster, log_path, lines=150)
+        else:
+            log_result = get_job_log_files(cluster, jid)
+            files = log_result.get("files", [])
+            if not files:
+                return None
+            content = fetch_log_tail(cluster, files[0]["path"], lines=150)
+        return detect_crash(content)
+    except Exception:
+        return None
 
 
 def _finalize_gone_job(cluster, job_id, prev_job):
@@ -312,6 +663,14 @@ def _finalize_gone_job(cluster, job_id, prev_job):
     if not log_path and cluster != "local":
         log_path = _try_get_stdout_path(cluster, job_id)
 
+    # Sacct may report COMPLETED even when the process crashed internally
+    # (e.g. Python traceback with exit code 0). Check logs for crash patterns.
+    if final_state == "COMPLETED" and cluster != "local":
+        crash = _detect_crash_on_complete(cluster, job_id, log_path)
+        if crash:
+            final_state = "FAILED"
+            reason = f"log crash: {crash}"
+
     record = final if final else {
         "jobid": job_id, "name": prev_job.get("name", ""), "state": final_state,
         "elapsed": prev_job.get("elapsed", ""), "nodes": prev_job.get("nodes", ""),
@@ -320,7 +679,7 @@ def _finalize_gone_job(cluster, job_id, prev_job):
     }
     if not record.get("name") and prev_job.get("name"):
         record["name"] = prev_job["name"]
-    record.setdefault("state", final_state)
+    record["state"] = final_state
     if reason:
         record["reason"] = reason
     if not record.get("reason") and prev_reason:
@@ -340,7 +699,7 @@ def _reconcile_db_with_squeue(cluster, live_ids):
     con = get_db()
     rows = con.execute(
         """SELECT job_id, state FROM job_history
-           WHERE cluster=? AND board_visible=0
+           WHERE cluster=?
              AND state IN ('RUNNING','COMPLETING','PENDING')""",
         (cluster,)
     ).fetchall()
@@ -350,7 +709,15 @@ def _reconcile_db_with_squeue(cluster, live_ids):
         if jid not in live_ids:
             final = sacct_final(cluster, jid)
             final_state = (final.get("state", "") or "COMPLETED").upper().split()[0]
+            crash = None
+            if final_state == "COMPLETED":
+                crash = _detect_crash_on_complete(cluster, jid)
+                if crash:
+                    final_state = "FAILED"
             record = final if final else {"jobid": jid, "state": final_state, "ended_at": datetime.now().isoformat()}
+            if crash:
+                record["state"] = "FAILED"
+                record["reason"] = f"log crash: {crash}"
             record.setdefault("jobid", jid)
             record.setdefault("ended_at", datetime.now().isoformat())
             upsert_job(cluster, record, terminal=True)
@@ -382,6 +749,9 @@ def _prefetch_job_data(cluster, job_id):
             pct = extract_progress(content)
             if pct is not None:
                 _cache_set(_progress_cache, (cluster, job_id), pct)
+            crash = detect_crash(content)
+            if crash is not None:
+                _cache_set(_crash_cache, (cluster, job_id), crash)
     except Exception:
         pass
     try:
@@ -396,68 +766,41 @@ def prefetch_cluster_bulk(cluster, job_ids):
         return
     ids = [str(j) for j in job_ids if j]
     ids_csv = ",".join(ids)
-    user = CLUSTERS[cluster]["user"]
+
+    # Bulk stats via SSH (lightweight squeue call)
     script = f"""#!/bin/sh
-IDS="{ids_csv}"
-USER="{user}"
-squeue -h -j "$IDS" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
-for BASE in {" ".join(NEMO_RUN_BASES)}; do
-  [ -d "$BASE" ] || continue
-  find "$BASE" -maxdepth 5 -name "*sbatch.sh" -type f 2>/dev/null | while read SB; do
-    OL=$(grep '#SBATCH --output=' "$SB" 2>/dev/null | head -1)
-    [ -z "$OL" ] && continue
-    D=$(dirname "$(echo "$OL" | sed 's/.*--output=//' | tr -d ' ')")
-    [ -d "$D" ] || continue
-    echo "LOGDIR:$D"
-    find "$D" -maxdepth 1 -type f 2>/dev/null | sed 's/^/FILE:/'
-  done
-  break
-done
+squeue -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
 """
     try:
-        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=20)
+        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=15)
     except Exception:
-        return
+        out = ""
 
-    stat_map = {}
-    logdir = ""
-    all_files = []
     for line in out.splitlines():
         if line.startswith("STAT:"):
             parts = line[5:].split("|")
             if len(parts) >= 7:
                 jid = parts[0].strip()
-                stat_map[jid] = {
+                _cache_set(_stats_cache, (cluster, jid), {
                     "status": "ok", "job_id": jid, "state": parts[1].strip(),
                     "nodes": parts[2].strip(), "cpus": parts[3].strip(),
                     "gres": parts[4].strip(), "node_list": parts[5].strip(),
                     "elapsed": parts[6].strip(), "gpus": [],
                     "ave_cpu": "", "ave_rss": "", "max_rss": "", "max_vmsize": "", "_partial": True,
-                }
-        elif line.startswith("LOGDIR:"):
-            logdir = line[7:].strip()
-        elif line.startswith("FILE:"):
-            fp = line[5:].strip()
-            if fp:
-                all_files.append(fp)
+                })
 
+    # Log discovery per job (SSH scontrol first, mount fallback)
     for jid in ids:
-        if jid in stat_map:
-            _cache_set(_stats_cache, (cluster, jid), stat_map[jid])
-
-    for jid in ids:
-        matched = [p for p in all_files if jid in os.path.basename(p)]
-        if matched:
-            files = label_and_sort_files(matched)
-            dirs = []
-            if logdir:
-                outdir = os.path.dirname(logdir)
-                dirs = [{"label": "output", "path": outdir}]
-            result = {"files": files, "dirs": dirs}
-            _cache_set(_log_index_cache, (cluster, jid), result)
-            first = files[0]["path"]
+        from .logs import get_job_log_files
+        log_result = get_job_log_files(cluster, jid)
+        if log_result and log_result.get("files"):
+            _cache_set(_log_index_cache, (cluster, jid), log_result)
+            first = log_result["files"][0]["path"]
             content = fetch_log_tail(cluster, first, lines=220)
             _cache_set(_log_content_cache, (cluster, jid, first), content)
             pct = extract_progress(content)
             if pct is not None:
                 _cache_set(_progress_cache, (cluster, jid), pct)
+            crash = detect_crash(content)
+            if crash is not None:
+                _cache_set(_crash_cache, (cluster, jid), crash)

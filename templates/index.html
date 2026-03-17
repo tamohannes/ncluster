@@ -77,7 +77,7 @@
           <table id="hist-table">
             <thead><tr>
               <th>Cluster</th><th>ID</th><th>Name</th>
-              <th>State</th><th>Logs</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
+              <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
             </tr></thead>
             <tbody id="hist-body"></tbody>
           </table>
@@ -192,6 +192,22 @@
   </div>
 </div>
 
+<!-- Run info modal -->
+<div class="run-overlay" id="run-overlay" onclick="closeRunInfo(event)">
+  <div class="run-modal">
+    <div class="run-head">
+      <div class="run-head-info">
+        <div class="run-title" id="run-title">Run Info</div>
+        <div class="run-subtitle" id="run-subtitle"></div>
+      </div>
+      <button class="modal-close" onclick="closeRunInfoDirect()">×</button>
+    </div>
+    <div class="run-body" id="run-body">
+      <div class="log-loading">Loading run info…</div>
+    </div>
+  </div>
+</div>
+
 <!-- Stats modal -->
 <div class="stats-overlay" id="stats-overlay" onclick="closeStats(event)">
   <div class="stats-modal">
@@ -287,8 +303,10 @@
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>
+<script src="{{ url_for('static', filename='js/crash_detect.js') }}"></script>
 <script src="{{ url_for('static', filename='js/logs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
+<script src="{{ url_for('static', filename='js/runs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/projects.js') }}"></script>
 <script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>

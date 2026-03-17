@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Mount/unmount cluster log roots via sshfs for faster job-monitor log reads.
-# Cluster definitions are read from config.json (no hardcoded values here).
+# Mount/unmount per-user cluster directories via sshfs.
+# Each cluster has mount_paths[] in config.json — each path gets its own
+# sshfs mount at ~/.job-monitor/mounts/<cluster>/<index>/.
 #
 # Usage:
 #   ./scripts/sshfs_logs.sh mount
@@ -13,7 +14,7 @@ set -euo pipefail
 #   ./scripts/sshfs_logs.sh status <cluster>
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="${SCRIPT_DIR}/../config.json"
+CONFIG_FILE="${SCRIPT_DIR}/../conf/config.json"
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Config file not found: ${CONFIG_FILE}"
@@ -51,47 +52,103 @@ for name in cfg.get('clusters', {}):
 "
 }
 
+_cluster_mount_paths() {
+  python3 -c "
+import json, os
+with open('${CONFIG_FILE}') as f:
+    cfg = json.load(f)
+c = cfg.get('clusters', {}).get('$1', {})
+paths = c.get('mount_paths', [])
+user = os.environ.get('JOB_MONITOR_SSH_USER') or os.environ.get('USER') or 'user'
+for p in paths:
+    print(p.replace('\$USER', user))
+"
+}
+
 mount_cluster() {
   local c="$1"
   local host; host="$(_cluster_field "$c" host)"
   local port; port="$(_cluster_field "$c" port 22)"
-  local remote_root; remote_root="$(_cluster_field "$c" remote_root /)"
-  local target="${BASE}/${c}"
   local ssh_cmd
   ssh_cmd="ssh -F ${HOME}/.ssh/config -o BatchMode=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new -p ${port}"
 
-  mkdir -p "$target"
-  if mountpoint -q "$target"; then
-    echo "[${c}] already mounted at ${target}"
-    return 0
-  fi
+  local idx=0
+  while IFS= read -r remote_path; do
+    [[ -z "$remote_path" ]] && continue
+    local target="${BASE}/${c}/${idx}"
+    mkdir -p "$target"
 
-  echo "[${c}] mounting ${host}:${remote_root} -> ${target}"
-  sshfs "${USER_NAME}@${host}:${remote_root}" "$target" \
-    -o ssh_command="${ssh_cmd}" \
-    -o IdentityFile="${KEY_PATH}" \
-    -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3 \
-    -o cache=yes,kernel_cache,auto_cache \
-    -o attr_timeout=60,entry_timeout=60,negative_timeout=15
+    if mountpoint -q "$target"; then
+      echo "[${c}/${idx}] already mounted at ${target}"
+      idx=$((idx + 1))
+      continue
+    fi
+
+    echo "[${c}/${idx}] mounting ${host}:${remote_path} -> ${target}"
+    if sshfs "${USER_NAME}@${host}:${remote_path}" "$target" \
+      -o ssh_command="${ssh_cmd}" \
+      -o IdentityFile="${KEY_PATH}" \
+      -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3 \
+      -o cache=yes,kernel_cache,auto_cache \
+      -o attr_timeout=60,entry_timeout=60,negative_timeout=15 2>/dev/null; then
+      echo "[${c}/${idx}] ok"
+    else
+      echo "[${c}/${idx}] mount failed (${remote_path})"
+      rmdir "$target" 2>/dev/null || true
+    fi
+    idx=$((idx + 1))
+  done < <(_cluster_mount_paths "$c")
+
+  if [[ "$idx" -eq 0 ]]; then
+    echo "[${c}] no mount_paths configured"
+  fi
 }
 
 unmount_cluster() {
   local c="$1"
-  local target="${BASE}/${c}"
-  if mountpoint -q "$target"; then
-    echo "[${c}] unmounting ${target}"
-    fusermount -u "$target" || umount "$target"
-  else
-    echo "[${c}] not mounted"
+  local cluster_base="${BASE}/${c}"
+
+  # Unmount old-style single mount (migration from remote_root)
+  if mountpoint -q "$cluster_base" 2>/dev/null; then
+    echo "[${c}] unmounting old-style mount at ${cluster_base}"
+    fusermount -u "$cluster_base" 2>/dev/null || umount "$cluster_base" 2>/dev/null || true
+  fi
+
+  # Unmount indexed submounts
+  if [[ -d "$cluster_base" ]]; then
+    for sub in "$cluster_base"/*/; do
+      [[ -d "$sub" ]] || continue
+      if mountpoint -q "$sub"; then
+        echo "[${c}] unmounting ${sub}"
+        fusermount -u "$sub" 2>/dev/null || umount "$sub" 2>/dev/null || true
+      fi
+      rmdir "$sub" 2>/dev/null || true
+    done
   fi
 }
 
 status_cluster() {
   local c="$1"
-  local target="${BASE}/${c}"
-  if mountpoint -q "$target"; then
-    echo "[${c}] mounted at ${target}"
-  else
+  local cluster_base="${BASE}/${c}"
+
+  # Check old-style single mount
+  if mountpoint -q "$cluster_base" 2>/dev/null; then
+    echo "[${c}] old-style mount at ${cluster_base} (should migrate)"
+    return
+  fi
+
+  local found=0
+  if [[ -d "$cluster_base" ]]; then
+    for sub in "$cluster_base"/*/; do
+      [[ -d "$sub" ]] || continue
+      if mountpoint -q "$sub"; then
+        echo "[${c}] mounted: ${sub}"
+        found=1
+      fi
+    done
+  fi
+
+  if [[ "$found" -eq 0 ]]; then
     echo "[${c}] not mounted"
   fi
 }

@@ -10,6 +10,7 @@ from mcp_server import (
     get_job_stats, get_history, cancel_job, cancel_jobs,
     list_projects, get_project_jobs,
     cleanup_history, jobs_summary, _slim_job, _api_get,
+    get_mounts, mount_cluster, clear_failed, clear_completed,
 )
 
 
@@ -234,31 +235,26 @@ class TestCancelJob:
 
 @pytest.mark.mcp
 class TestCancelJobs:
-    def test_all_succeed(self):
-        with _mock_api_post({"status": "ok"}):
+    def test_batch_success(self):
+        with patch.object(mcp_server, "_api_post_json",
+                          return_value={"status": "ok", "cancelled": 3}):
             result = cancel_jobs("c1", ["100", "200", "300"])
         assert result["status"] == "ok"
         assert result["cancelled"] == 3
-        assert result["failed"] == 0
 
-    def test_partial_failure(self):
-        call_count = [0]
-        def _mock_post(path):
-            call_count[0] += 1
-            if "200" in path:
-                return {"status": "error", "error": "not found"}
-            return {"status": "ok"}
-        with patch.object(mcp_server, "_api_post", side_effect=_mock_post):
-            result = cancel_jobs("c1", ["100", "200", "300"])
-        assert result["status"] == "partial"
-        assert result["cancelled"] == 2
-        assert result["failed"] == 1
-        assert result["details"]["200"]["status"] == "error"
+    def test_batch_error(self):
+        with patch.object(mcp_server, "_api_post_json",
+                          return_value={"status": "error", "error": "No valid job IDs"}):
+            result = cancel_jobs("c1", ["bad"])
+        assert result["status"] == "error"
 
-    def test_empty_list(self):
-        result = cancel_jobs("c1", [])
-        assert result["status"] == "ok"
-        assert result["cancelled"] == 0
+    def test_calls_correct_endpoint(self):
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "cancelled": 1}
+            cancel_jobs("c1", ["100"])
+            url = mock.call_args[0][0]
+            assert "/api/cancel_jobs/c1" in url
+            assert mock.call_args[0][1] == {"job_ids": ["100"]}
 
 
 # ── cleanup_history ──────────────────────────────────────────────────────────
@@ -305,3 +301,101 @@ class TestJobsSummary:
         with _mock_api_get({"status": "error", "error": "down"}):
             result = jobs_summary()
         assert "Error" in result
+
+
+# ── _slim_job crash_detected / exit_code ─────────────────────────────────────
+
+@pytest.mark.mcp
+class TestSlimJobCrashFields:
+    def test_preserves_crash_detected(self):
+        result = _slim_job("c1", {"jobid": "1", "state": "RUNNING", "crash_detected": "OOM killed"})
+        assert result["crash_detected"] == "OOM killed"
+
+    def test_preserves_exit_code(self):
+        result = _slim_job("c1", {"jobid": "1", "state": "FAILED", "exit_code": "1:0"})
+        assert result["exit_code"] == "1:0"
+
+    def test_omits_when_absent(self):
+        result = _slim_job("c1", {"jobid": "1", "state": "RUNNING"})
+        assert "crash_detected" not in result
+        assert "exit_code" not in result
+
+    def test_omits_when_empty(self):
+        result = _slim_job("c1", {"jobid": "1", "crash_detected": "", "exit_code": ""})
+        assert "crash_detected" not in result
+        assert "exit_code" not in result
+
+
+# ── get_mounts ───────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestGetMounts:
+    def test_returns_dict(self):
+        resp = {"status": "ok", "mounts": {"dfw": {"mounted": True, "root": "/mnt/dfw"}}}
+        with _mock_api_get(resp):
+            result = get_mounts()
+        assert result["status"] == "ok"
+        assert "mounts" in result
+
+    def test_error(self):
+        with _mock_api_get({"status": "error", "error": "unreachable"}):
+            result = get_mounts()
+        assert result["status"] == "error"
+
+
+# ── mount_cluster ────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestMountCluster:
+    def test_mount(self):
+        with _mock_api_post({"status": "ok", "message": "Mounted"}):
+            result = mount_cluster("dfw", "mount")
+        assert result["status"] == "ok"
+
+    def test_unmount(self):
+        with _mock_api_post({"status": "ok", "message": "Unmounted"}):
+            result = mount_cluster("dfw", "unmount")
+        assert result["status"] == "ok"
+
+    def test_invalid_action(self):
+        result = mount_cluster("dfw", "restart")
+        assert result["status"] == "error"
+        assert "mount" in result["error"]
+
+    def test_calls_correct_url(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            mock.return_value = {"status": "ok"}
+            mount_cluster("dfw", "mount")
+            assert "/api/mount/mount/dfw" in mock.call_args[0][0]
+
+
+# ── clear_failed ─────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestClearFailed:
+    def test_success(self):
+        with _mock_api_post({"status": "ok"}):
+            result = clear_failed("dfw")
+        assert result["status"] == "ok"
+
+    def test_calls_correct_url(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            mock.return_value = {"status": "ok"}
+            clear_failed("dfw")
+            assert "/api/clear_failed/dfw" in mock.call_args[0][0]
+
+
+# ── clear_completed ──────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestClearCompleted:
+    def test_success(self):
+        with _mock_api_post({"status": "ok"}):
+            result = clear_completed("dfw")
+        assert result["status"] == "ok"
+
+    def test_calls_correct_url(self):
+        with patch.object(mcp_server, "_api_post") as mock:
+            mock.return_value = {"status": "ok"}
+            clear_completed("dfw")
+            assert "/api/clear_completed/dfw" in mock.call_args[0][0]
