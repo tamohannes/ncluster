@@ -13,8 +13,8 @@ from .config import (
     CLUSTERS, DEFAULT_USER, TERMINAL_STATES, RESULT_DIR_NAMES,
     _CONFIG, _cache_lock, _cache,
     _cache_get, _cache_set,
-    _log_content_cache, _dir_list_cache, _progress_cache, _crash_cache,
-    LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC,
+    _log_content_cache, _dir_list_cache, _progress_cache, _crash_cache, _est_start_cache,
+    LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
     reload_config, settings_response,
     get_project_color, get_project_emoji, extract_project,
 )
@@ -37,7 +37,7 @@ from .logs import (
 )
 from .jobs import (
     refresh_all_clusters, refresh_cluster,
-    schedule_prefetch, prefetch_cluster_bulk,
+    schedule_prefetch, prefetch_cluster_bulk, fetch_est_start_bulk,
     get_job_stats_cached, fetch_run_metadata_sync,
     create_run_on_demand,
     _last_polled,
@@ -129,6 +129,10 @@ def api_jobs():
                 crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC)
                 if crash:
                     j["crash_detected"] = crash
+            if st == "PENDING":
+                est = _cache_get(_est_start_cache, (name, jid), EST_START_TTL_SEC)
+                if est:
+                    j["est_start"] = est
             if not j.get("project"):
                 j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
@@ -304,6 +308,11 @@ def api_jobs_cluster(cluster):
                 crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC)
                 if crash:
                     j["crash_detected"] = crash
+            if s == "PENDING":
+                jid = j.get("jobid")
+                est = _cache_get(_est_start_cache, (cluster, jid), EST_START_TTL_SEC)
+                if est:
+                    j["est_start"] = est
             if not j.get("project"):
                 j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
             proj = j.get("project", "")
@@ -320,12 +329,16 @@ def api_prefetch_visible():
     payload = request.get_json(silent=True) or {}
     jobs = payload.get("jobs", [])
     by_cluster = {}
+    pending_by_cluster = {}
     for item in jobs:
         c = item.get("cluster")
         jid = str(item.get("job_id", "")).strip()
         if not c or not jid or c not in CLUSTERS:
             continue
-        by_cluster.setdefault(c, []).append(jid)
+        if item.get("state", "").upper() == "PENDING":
+            pending_by_cluster.setdefault(c, []).append(jid)
+        else:
+            by_cluster.setdefault(c, []).append(jid)
 
     def _run():
         threads = []
@@ -333,19 +346,25 @@ def api_prefetch_visible():
             t = threading.Thread(target=prefetch_cluster_bulk, args=(c, ids), daemon=True)
             threads.append(t)
             t.start()
+        for c, ids in pending_by_cluster.items():
+            t = threading.Thread(target=fetch_est_start_bulk, args=(c, ids), daemon=True)
+            threads.append(t)
+            t.start()
         for t in threads:
             t.join(timeout=25)
 
     threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "ok", "clusters": list(by_cluster.keys()), "jobs": sum(len(v) for v in by_cluster.values())})
+    total = sum(len(v) for v in by_cluster.values()) + sum(len(v) for v in pending_by_cluster.values())
+    return jsonify({"status": "ok", "clusters": list(set(list(by_cluster.keys()) + list(pending_by_cluster.keys()))), "jobs": total})
 
 
 @api.route("/api/progress", methods=["POST"])
 def api_progress():
-    """Return cached progress percentages for a batch of jobs."""
+    """Return cached progress percentages and estimated start times."""
     payload = request.get_json(silent=True) or {}
     jobs = payload.get("jobs", [])
-    result = {}
+    progress = {}
+    est_starts = {}
     for item in jobs:
         c = item.get("cluster")
         jid = str(item.get("job_id", "")).strip()
@@ -353,8 +372,11 @@ def api_progress():
             continue
         pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC)
         if pct is not None:
-            result[f"{c}:{jid}"] = pct
-    return jsonify(result)
+            progress[f"{c}:{jid}"] = pct
+        est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC)
+        if est:
+            est_starts[f"{c}:{jid}"] = est
+    return jsonify({"progress": progress, "est_starts": est_starts})
 
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])

@@ -50,7 +50,7 @@ _JOB_FIELDS = [
     "started_local", "ended_local",
     "progress", "depends_on", "dependents", "dep_details",
     "project", "project_color", "project_emoji",
-    "_pinned", "exit_code", "crash_detected",
+    "_pinned", "exit_code", "crash_detected", "est_start",
 ]
 
 

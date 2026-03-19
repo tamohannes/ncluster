@@ -8,6 +8,24 @@ let _projCurrentName = '';
 let _projRefreshTimer = null;
 const PROJ_GROUPS_PER_PAGE = 50;
 
+function _projSearchStorageKey(projectName) {
+  return `ncluster.projectSearch.${projectName || ''}`;
+}
+
+function _restoreProjectSearch(projectName) {
+  try {
+    return sessionStorage.getItem(_projSearchStorageKey(projectName)) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function _saveProjectSearch(projectName, value) {
+  try {
+    sessionStorage.setItem(_projSearchStorageKey(projectName), value || '');
+  } catch (_) {}
+}
+
 async function loadProjectButtons() {
   const el = document.getElementById('nav-project-grid');
   if (!el) return;
@@ -33,7 +51,7 @@ async function openProject(projectName) {
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';
   document.getElementById('project-detail-title').textContent = `${emoji ? emoji + ' ' : ''}${projectName}`;
-  document.getElementById('proj-search').value = '';
+  document.getElementById('proj-search').value = _restoreProjectSearch(projectName);
   document.querySelectorAll('#proj-state-filters .hist-state-btn').forEach(b => b.classList.add('active'));
 
   document.getElementById('proj-stats-bar').innerHTML = '<span class="proj-stat-lbl">loading…</span>';
@@ -87,14 +105,13 @@ async function _fetchProjectData() {
     }
   }
 
-  const liveIds = new Set(_projLiveJobs.map(j => String(j.jobid)));
-  _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !liveIds.has(String(r.job_id)));
+  const activeLiveIds = new Set(_projLiveJobs.filter(j => !j._pinned).map(j => String(j.jobid)));
+  _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !activeLiveIds.has(String(r.job_id)));
   _projPage = 0;
 
   _renderProjStats(clusterActivity);
   _renderProjLive();
-  _buildProjGroups(_projData);
-  _renderProjPage();
+  filterProjectRuns();
   _saveProgressCache();
 }
 
@@ -177,7 +194,7 @@ function _renderProjLive() {
         const resourceCell = gpuStr
           ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
           : `<span class="dim">${j.nodes || '—'}n</span>`;
-        const startTime = fmtTime(j.started_local || j.started || j.start);
+        const startTime = fmtStartCell(j);
         const endTime = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
         const safeName = (j.name || '').replace(/'/g, "\\'");
         const isPending = st === 'PENDING';
@@ -200,7 +217,7 @@ function _renderProjLive() {
         rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}" style="${_rowBg}">
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span></td>
-          <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected)} ${depBadge}</td>
+          <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start)} ${depBadge}</td>
           <td>${logBtn} ${statsBtn}</td>
           <td class="dim">${startTime}</td>
           <td class="dim">${endTime}</td>
@@ -226,13 +243,22 @@ function _getProjCheckedStates() {
   return Array.from(btns).map(b => b.dataset.state);
 }
 
+function _projectSearchMatches(row, query) {
+  if (!query) return true;
+  const jobName = (row.job_name || row.name || '').toLowerCase();
+  const jobId = String(row.job_id || row.jobid || '').toLowerCase();
+  const runName = groupKeyForJob(row.job_name || row.name || '').toLowerCase();
+  return jobName.includes(query) || jobId.includes(query) || runName.includes(query);
+}
+
 function filterProjectRuns() {
   const q = document.getElementById('proj-search').value.toLowerCase();
+  _saveProjectSearch(_projCurrentName, q);
   const allowedStates = _getProjCheckedStates();
   const filtered = _projData.filter(r => {
     const st = (r.state || '').toUpperCase().split(' ')[0];
     if (!allowedStates.some(s => st.startsWith(s))) return false;
-    if (q && !(r.job_name||'').toLowerCase().includes(q) && !(r.job_id||'').includes(q)) return false;
+    if (!_projectSearchMatches(r, q)) return false;
     return true;
   });
   _projPage = 0;

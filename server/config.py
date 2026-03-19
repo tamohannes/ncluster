@@ -137,6 +137,7 @@ _stats_cache = {}
 _dir_list_cache = {}
 _progress_cache = {}
 _crash_cache = {}
+_est_start_cache = {}
 _prefetch_last = {}
 LOG_INDEX_TTL_SEC = 120
 LOG_CONTENT_TTL_SEC = 45
@@ -144,6 +145,7 @@ STATS_TTL_SEC = 15
 DIR_LIST_TTL_SEC = 20
 PROGRESS_TTL_SEC = 60
 CRASH_TTL_SEC = 60
+EST_START_TTL_SEC = 120
 PREFETCH_MIN_GAP_SEC = 120
 
 TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL"}

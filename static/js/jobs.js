@@ -250,8 +250,9 @@ function renderCard(name, data) {
       const rowDisplay = backupHidden ? 'display:none;' : '';
       const parentAttr = isBackup ? ` data-backup-parent="${backupParentId}"` : '';
 
-      const startTime = fmtTime(j.started_local || j.started || j.start);
+      const startTime = fmtStartCell(j);
       const endTime   = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
+      const elapsedCell = fmtElapsedCell(j);
       const safeName = (j.name || '').replace(/'/g, "\\'");
       const isPending = st === 'PENDING';
       const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${name}','${j.jobid}','${safeName}')">log</button>`;
@@ -284,11 +285,11 @@ function renderCard(name, data) {
       return `<tr class="${rowClass}"${parentAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected)} ${bkBadge}${depBadge}</td>
+        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start)} ${bkBadge}${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
-        <td class="dim">${j.elapsed || '—'}</td>
+        <td class="dim">${elapsedCell}</td>
         <td>${resourceCell}</td>
         <td class="dim">${j.partition || '—'}</td>
         <td>${tailAction}</td>
@@ -452,24 +453,24 @@ function renderGrid(data) {
   grid.innerHTML = html;
 }
 
-function _collectRunningJobs(data) {
+function _collectVisibleJobs(data) {
   const jobs = [];
   for (const [cluster, d] of Object.entries(data || {})) {
     if (!d || d.status !== 'ok') continue;
     for (const j of (d.jobs || [])) {
       const s = (j.state || '').toUpperCase();
       if (j._pinned) continue;
-      if (s === 'RUNNING' || s === 'COMPLETING') {
-        jobs.push({ cluster, job_id: j.jobid });
+      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING') {
+        jobs.push({ cluster, job_id: j.jobid, state: s });
       }
     }
   }
-  return jobs.slice(0, 40);
+  return jobs.slice(0, 60);
 }
 
 async function prefetchAndUpdateProgress(data) {
   if (document.hidden) return;
-  const batch = _collectRunningJobs(data);
+  const batch = _collectVisibleJobs(data);
   if (!batch.length) { _saveProgressCache(); return; }
   try {
     await fetch('/api/prefetch_visible', {
@@ -490,14 +491,27 @@ async function _fetchProgressUpdate(batch) {
       body: JSON.stringify({ jobs: batch }),
     });
     const result = await res.json();
+    const progressMap = result.progress || result;
+    const estStarts = result.est_starts || {};
     let changed = false;
-    for (const [key, pct] of Object.entries(result)) {
+    for (const [key, pct] of Object.entries(progressMap)) {
       const [cluster, jobid] = key.split(':');
       _progressCache[key] = pct;
       if (allData[cluster]) {
         for (const j of (allData[cluster].jobs || [])) {
           if (String(j.jobid) === jobid && j.progress !== pct) {
             j.progress = pct;
+            changed = true;
+          }
+        }
+      }
+    }
+    for (const [key, est] of Object.entries(estStarts)) {
+      const [cluster, jobid] = key.split(':');
+      if (allData[cluster]) {
+        for (const j of (allData[cluster].jobs || [])) {
+          if (String(j.jobid) === jobid && j.est_start !== est) {
+            j.est_start = est;
             changed = true;
           }
         }

@@ -13,9 +13,11 @@ from .config import (
     SSH_TIMEOUT, CACHE_FRESH_SEC,
     _cache_lock, _cache, _seen_jobs, _last_polled,
     _cache_get, _cache_set,
-    _log_index_cache, _log_content_cache, _stats_cache, _progress_cache, _crash_cache,
+    _log_index_cache, _log_content_cache, _stats_cache,
+    _progress_cache, _crash_cache, _est_start_cache,
     _prefetch_last, _warm_lock,
-    LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, PREFETCH_MIN_GAP_SEC,
+    LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC,
+    EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
     extract_project,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
@@ -759,6 +761,29 @@ def _prefetch_job_data(cluster, job_id):
         _cache_set(_stats_cache, (cluster, job_id), stats)
     except Exception:
         pass
+
+
+def fetch_est_start_bulk(cluster, pending_job_ids):
+    """Fetch estimated start times for pending jobs via squeue --start."""
+    if not pending_job_ids or cluster == "local":
+        return
+    ids = [str(j) for j in pending_job_ids if j]
+    ids_csv = ",".join(ids)
+    try:
+        out, _ = ssh_run_with_timeout(
+            cluster,
+            f'squeue -h -j "{ids_csv}" --start -o "%i|%S" 2>/dev/null',
+            timeout_sec=10,
+        )
+    except Exception:
+        return
+    for line in out.splitlines():
+        parts = line.strip().split("|", 1)
+        if len(parts) != 2:
+            continue
+        jid, start = parts[0].strip(), parts[1].strip()
+        if start and start not in ("N/A", "Unknown", "(null)"):
+            _cache_set(_est_start_cache, (cluster, jid), start)
 
 
 def prefetch_cluster_bulk(cluster, job_ids):

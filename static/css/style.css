@@ -296,6 +296,10 @@ td.dim { color: var(--muted); }
 td.bold { font-weight: 500; }
 .name-cpu { color: var(--muted); font-weight: 400; }
 
+.est-inline {
+  font-weight: 400; opacity: 0.85; font-size: 9px;
+}
+
 .state-chip {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 500;

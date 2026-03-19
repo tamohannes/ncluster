@@ -114,6 +114,7 @@ def _reset_caches():
         config._stats_cache.clear()
         config._dir_list_cache.clear()
         config._progress_cache.clear()
+        config._est_start_cache.clear()
         config._prefetch_last.clear()
     yield
 

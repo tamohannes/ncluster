@@ -84,7 +84,7 @@ function progressRing(pct) {
   </svg>`;
 }
 
-function stateChip(s, progress, reason, exitCode, crashDetected) {
+function stateChip(s, progress, reason, exitCode, crashDetected, estStart) {
   const cls = stateClass(s);
   const st = (s || '').toUpperCase();
   if (crashDetected && (st === 'RUNNING' || st === 'COMPLETING')) {
@@ -93,6 +93,15 @@ function stateChip(s, progress, reason, exitCode, crashDetected) {
   }
   if (progress != null && st === 'RUNNING') {
     return `<span class="state-chip ${cls}">${s}${progressRing(progress)}<span class="progress-pct">${progress}%</span></span>`;
+  }
+  if (st === 'PENDING' && estStart) {
+    const d = new Date(estStart.replace('T', ' '));
+    if (!isNaN(d)) {
+      const now = new Date();
+      const diffH = Math.round((d - now) / 3600000);
+      const when = diffH >= 24 ? `~${Math.round(diffH / 24)}d` : diffH > 0 ? `~${diffH}h` : 'soon';
+      return `<span class="state-chip ${cls}" title="Est. start: ${d.toLocaleString()}">PENDING <span class="est-inline">(${when})</span></span>`;
+    }
   }
   const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
   let extra = '';
@@ -249,18 +258,35 @@ function depBadgeHtml(job, byId) {
 
 function fmtTime(s) {
   if (!s || s === 'N/A' || s === 'Unknown') return '—';
-  // Slurm gives "2026-03-09T13:22:55" or "2026-03-09 13:22:55"
   const d = new Date(s.replace('T', ' '));
   if (isNaN(d)) return s;
   const now = new Date();
-  const diffMs = now - d;
-  // If today, just show time; otherwise show date+time
   const sameDay = d.toDateString() === now.toDateString();
   if (sameDay) {
     return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
   }
   return d.toLocaleDateString([], {month: 'short', day: 'numeric'})
        + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+function fmtStartCell(job) {
+  const st = (job.state || '').toUpperCase();
+  if (st === 'PENDING' && job.est_start) {
+    return fmtTime(job.est_start);
+  }
+  return fmtTime(job.started_local || job.started || job.start);
+}
+
+function fmtElapsedCell(job) {
+  const st = (job.state || '').toUpperCase();
+  if (st === 'PENDING') {
+    const tl = job.timelimit;
+    if (tl && tl !== '—' && tl !== 'N/A') {
+      return `<span class="dim" title="Time limit">${tl} limit</span>`;
+    }
+    return '—';
+  }
+  return job.elapsed || '—';
 }
 
 function parseGpus(nodes, gres) {
