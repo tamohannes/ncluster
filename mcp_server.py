@@ -298,7 +298,7 @@ def get_storage_quota(cluster: str) -> dict:
       project_quotas — PPP quotas for llmservice_nemo_reasoning and
                        llmservice_nemo_robustness (space + inodes with % used)
 
-    Works on clusters with Lustre (dfw, eos, iad, ord, nrt).
+    Works on clusters with Lustre (dfw, eos, iad, ord).
     Returns an error for clusters using NFS (lax) or without lfs.
 
     Use this alongside get_cluster_availability() to make submission

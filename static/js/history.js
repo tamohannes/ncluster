@@ -103,7 +103,7 @@ function _renderHistPage() {
     const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
     const rootJobId = rootJob.jobid;
     const safeLabel = g.label.replace(/'/g, "\\'");
-    const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+    const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
     const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const groupLabel = `${runBadge}${_projBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;

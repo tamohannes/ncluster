@@ -438,16 +438,45 @@ function depthInGroup(job, byId, idSet, memo) {
   return d;
 }
 
+function _isDarkTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+
 function lightenColor(hex, lightness) {
   if (!hex || !hex.startsWith('#')) return '';
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
+  if (_isDarkTheme()) {
+    const mix = lightness || 0.15;
+    const br = 0x1c, bg = 0x1c, bb = 0x28;
+    const lr = Math.round(br + (r - br) * mix);
+    const lg = Math.round(bg + (g - bg) * mix);
+    const lb = Math.round(bb + (b - bb) * mix);
+    return `rgb(${lr},${lg},${lb})`;
+  }
   const t = lightness || 0.92;
   const lr = Math.round(r + (255 - r) * t);
   const lg = Math.round(g + (255 - g) * t);
   const lb = Math.round(b + (255 - b) * t);
   return `rgb(${lr},${lg},${lb})`;
+}
+
+function darkenColor(hex, factor) {
+  if (!hex || !hex.startsWith('#')) return hex;
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const f = factor || 0.45;
+  const dr = Math.round(r * f);
+  const dg = Math.round(g * f);
+  const db = Math.round(b * f);
+  return `#${dr.toString(16).padStart(2,'0')}${dg.toString(16).padStart(2,'0')}${db.toString(16).padStart(2,'0')}`;
+}
+
+function projectBadgeBg(hex) {
+  if (!hex) return '';
+  return _isDarkTheme() ? darkenColor(hex, 0.45) : hex;
 }
 
 function contrastTextColor(hex) {
@@ -457,6 +486,13 @@ function contrastTextColor(hex) {
   const b = parseInt(hex.slice(5, 7), 16);
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return lum > 0.55 ? '#000' : '#fff';
+}
+
+function projectBadgeStyle(hex) {
+  if (!hex) return '';
+  const bg = projectBadgeBg(hex);
+  const text = contrastTextColor(bg);
+  return ` style="background:${bg};border-color:${bg};color:${text}"`;
 }
 
 /* ── Job name highlighting (dim common prefix/suffix, bold unique part) ── */

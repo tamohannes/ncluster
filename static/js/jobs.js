@@ -207,7 +207,7 @@ function renderCard(name, data) {
       const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
-      const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
       const runBadge = name !== 'local'
         ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`

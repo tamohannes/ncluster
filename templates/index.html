@@ -6,6 +6,9 @@
 <title>Cluster Monitor</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%231a4731'/><rect x='38' y='12' width='24' height='24' rx='5' fill='white'/><rect x='12' y='64' width='24' height='24' rx='5' fill='white'/><rect x='64' y='64' width='24' height='24' rx='5' fill='white'/><line x1='50' y1='36' x2='24' y2='64' stroke='white' stroke-width='5' stroke-linecap='round'/><line x1='50' y1='36' x2='76' y2='64' stroke='white' stroke-width='5' stroke-linecap='round'/><line x1='36' y1='76' x2='64' y2='76' stroke='white' stroke-width='5' stroke-linecap='round'/><path d='M72 18 Q78 12 84 18' stroke='%234ade80' stroke-width='4' fill='none' stroke-linecap='round'/><path d='M69 13 Q78 4 87 13' stroke='%234ade80' stroke-width='4' fill='none' stroke-linecap='round'/></svg>">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<script>
+(function(){var t=localStorage.getItem('ncluster.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
+</script>
 </head>
 <body>
 
@@ -35,6 +38,10 @@
       <div class="nav-section-label">Projects</div>
       <div class="nav-project-grid" id="nav-project-grid"></div>
     </div>
+    <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme">
+      <span class="theme-icon" id="theme-icon"></span>
+      <span class="theme-label" id="theme-label"></span>
+    </button>
     <div class="nav-user-btn" onclick="openSettingsModal()">
       <img class="nav-user-img" src="/api/user_avatar" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
       <span class="nav-user-avatar" style="display:none">{{ username[0] | upper }}</span>
@@ -238,6 +245,7 @@
     <div class="settings-layout">
       <div class="settings-nav">
         <div class="settings-nav-item active" data-section="sec-profile" onclick="showSettingsSection(this)">Profile</div>
+        <div class="settings-nav-item" data-section="sec-appearance" onclick="showSettingsSection(this)">Appearance</div>
         <div class="settings-nav-item" data-section="sec-refresh" onclick="showSettingsSection(this)">Refresh</div>
         <div class="settings-nav-item" data-section="sec-mounts" onclick="showSettingsSection(this)">Mounts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
@@ -265,6 +273,20 @@
             <button class="btn" style="margin-top:6px;width:100%" onclick="addPppRow()">+ add PPP</button>
           </div>
           <button class="btn" style="margin-top:10px;width:100%" onclick="saveProfile()">save profile</button>
+        </div>
+        <div class="settings-section" id="sec-appearance">
+          <div class="settings-sub-label">Theme</div>
+          <div class="theme-options" id="theme-options">
+            <button class="theme-option" data-theme="system" onclick="setTheme('system')">
+              <span class="theme-option-icon">&#9684;</span> System
+            </button>
+            <button class="theme-option" data-theme="light" onclick="setTheme('light')">
+              <span class="theme-option-icon">&#9728;</span> Light
+            </button>
+            <button class="theme-option" data-theme="dark" onclick="setTheme('dark')">
+              <span class="theme-option-icon">&#9790;</span> Dark
+            </button>
+          </div>
         </div>
         <div class="settings-section" id="sec-refresh">
           <div class="settings-sub-label">Refresh Behavior</div>

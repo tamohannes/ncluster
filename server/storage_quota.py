@@ -28,7 +28,6 @@ CLUSTER_FS_MAP = {
     "eos": "/lustre/fsw",
     "iad": "/lustre/fs12",
     "ord": "/lustre/fsw",
-    "nrt": "/lustre/fsw",
 }
 
 

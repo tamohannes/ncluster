@@ -38,7 +38,8 @@ async function loadProjectButtons() {
     }
     el.innerHTML = projects.map(p => {
       const emoji = p.emoji || '';
-      const color = p.color || 'var(--surface)';
+      const rawColor = p.color || '';
+      const color = rawColor ? (_isDarkTheme() ? darkenColor(rawColor, 0.6) : rawColor) : 'var(--surface)';
       return `<button class="nav-project-btn" style="border-color:${color}" onclick="openProject('${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
     }).join('');
   } catch (_) {}
@@ -189,7 +190,7 @@ function _renderProjLive() {
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
       const _projColor = groupJobs[0]?.project_color || '';
-      const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
       const highlightedGk = highlightJobName(gk, _liveGkHL.prefix, _liveGkHL.suffix);
       const runBadge = cluster !== 'local'
         ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
@@ -338,7 +339,7 @@ function _renderProjPage() {
     const rootJobId = rootJob.jobid;
     const safeLabel = g.label.replace(/'/g, "\\'");
     const _projColor = groupJobs[0]?.project_color || '';
-    const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+    const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
     const highlightedLabel = highlightJobName(g.label, _projGkHL.prefix, _projGkHL.suffix);
     const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const groupLabel = `${runBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;

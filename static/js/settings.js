@@ -1,3 +1,55 @@
+// ── Theme ──
+const _themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+function getThemePreference() {
+  return localStorage.getItem('ncluster.theme') || 'system';
+}
+
+function resolveTheme(pref) {
+  if (pref === 'dark') return 'dark';
+  if (pref === 'light') return 'light';
+  return _themeMediaQuery.matches ? 'dark' : 'light';
+}
+
+function applyTheme(pref) {
+  const resolved = resolveTheme(pref || getThemePreference());
+  document.documentElement.setAttribute('data-theme', resolved);
+  updateThemeUI(pref || getThemePreference());
+  if (typeof _renderAll === 'function' && Object.keys(allData || {}).length) _renderAll();
+  if (typeof loadProjectButtons === 'function') loadProjectButtons();
+}
+
+function updateThemeUI(pref) {
+  const iconEl = document.getElementById('theme-icon');
+  const labelEl = document.getElementById('theme-label');
+  if (!iconEl) return;
+  const icons = { system: '\u25D4', light: '\u2600', dark: '\u263E' };
+  const labels = { system: 'system', light: 'light', dark: 'dark' };
+  iconEl.textContent = icons[pref] || icons.system;
+  if (labelEl) labelEl.textContent = labels[pref] || labels.system;
+  document.querySelectorAll('.theme-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.theme === pref);
+  });
+}
+
+function setTheme(mode) {
+  localStorage.setItem('ncluster.theme', mode);
+  applyTheme(mode);
+}
+
+function cycleTheme() {
+  const order = ['system', 'light', 'dark'];
+  const cur = getThemePreference();
+  const next = order[(order.indexOf(cur) + 1) % order.length];
+  setTheme(next);
+}
+
+_themeMediaQuery.addEventListener('change', () => {
+  if (getThemePreference() === 'system') applyTheme('system');
+});
+
+applyTheme();
+
 // ── Stats popup ──
 async function openStats(cluster, jobId, jobName) {
   document.getElementById('stats-overlay').classList.add('open');
@@ -227,6 +279,7 @@ function openSettingsModal() {
   document.getElementById('settings-overlay').classList.add('open');
   loadSettingsPanel();
   renderMountPanel(allData);
+  updateThemeUI(getThemePreference());
 }
 
 function closeSettingsModal() {
