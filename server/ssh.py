@@ -24,11 +24,15 @@ def _ssh_client(cluster_name):
     cfg = CLUSTERS[cluster_name]
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        cfg["host"], port=cfg["port"], username=cfg["user"],
-        key_filename=cfg["key"],
-        timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
-    )
+    try:
+        client.connect(
+            cfg["host"], port=cfg["port"], username=cfg["user"],
+            key_filename=cfg["key"],
+            timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
+        )
+    except Exception:
+        client.close()
+        raise
     try:
         client.get_transport().set_keepalive(30)
     except Exception:
