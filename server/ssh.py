@@ -1,8 +1,13 @@
 """SSH connection pool and command execution.
 
-One pooled paramiko client per cluster.  The per-cluster lock is held for the
-*entire* exec_command lifecycle so two threads never share a transport
-concurrently (which caused orphaned sshd processes on the remote host).
+Two-lane pool: a *primary* lane for request threads and a *background*
+lane for worker threads.  Each lane has one pooled paramiko client per
+cluster and its own per-cluster lock, so background work never blocks
+the main polling path and vice-versa.  Total connections per cluster: 2.
+
+Background threads call ``enable_standalone_ssh()`` once at startup;
+all subsequent ``ssh_run`` / ``ssh_run_with_timeout`` calls are
+automatically routed to the background lane.
 """
 
 import atexit
@@ -21,6 +26,12 @@ log = logging.getLogger(__name__)
 
 _thread_ctx = threading.local()
 
+# Background lane — mirrors the primary pool structure.
+_bg_pool = {}           # cluster -> {"client": SSHClient, "last_used": float}
+_bg_locks = {}          # cluster -> Lock
+
+
+# ── Client creation ──────────────────────────────────────────────────────────
 
 def _ssh_client(cluster_name):
     cfg = CLUSTERS[cluster_name]
@@ -42,6 +53,8 @@ def _ssh_client(cluster_name):
     return client
 
 
+# ── Per-cluster locks ────────────────────────────────────────────────────────
+
 def _get_cluster_lock(cluster_name):
     with _ssh_pool_lock:
         if cluster_name not in _ssh_cluster_locks:
@@ -49,13 +62,22 @@ def _get_cluster_lock(cluster_name):
         return _ssh_cluster_locks[cluster_name]
 
 
-def _get_pooled_client(cluster_name, force_new=False):
-    """Return a pooled client.  Caller MUST hold the per-cluster lock."""
+def _get_bg_lock(cluster_name):
+    with _ssh_pool_lock:
+        if cluster_name not in _bg_locks:
+            _bg_locks[cluster_name] = threading.Lock()
+        return _bg_locks[cluster_name]
+
+
+# ── Pooled client helpers ────────────────────────────────────────────────────
+
+def _get_pooled_client(pool, cluster_name, force_new=False):
+    """Return a pooled client from *pool*.  Caller MUST hold the matching lock."""
     now = time.monotonic()
     old_to_close = None
     with _ssh_pool_lock:
         if not force_new:
-            rec = _ssh_pool.get(cluster_name)
+            rec = pool.get(cluster_name)
             if rec:
                 client = rec["client"]
                 try:
@@ -65,9 +87,9 @@ def _get_pooled_client(cluster_name, force_new=False):
                         return client
                 except Exception:
                     pass
-                old_to_close = _ssh_pool.pop(cluster_name, None)
+                old_to_close = pool.pop(cluster_name, None)
         else:
-            old_to_close = _ssh_pool.pop(cluster_name, None)
+            old_to_close = pool.pop(cluster_name, None)
 
     if old_to_close:
         try:
@@ -77,13 +99,13 @@ def _get_pooled_client(cluster_name, force_new=False):
 
     client = _ssh_client(cluster_name)
     with _ssh_pool_lock:
-        _ssh_pool[cluster_name] = {"client": client, "last_used": now}
+        pool[cluster_name] = {"client": client, "last_used": now}
     return client
 
 
-def close_cluster_client(cluster_name):
+def _close_pool_client(pool, cluster_name):
     with _ssh_pool_lock:
-        rec = _ssh_pool.pop(cluster_name, None)
+        rec = pool.pop(cluster_name, None)
     if rec:
         try:
             rec["client"].close()
@@ -91,37 +113,47 @@ def close_cluster_client(cluster_name):
             pass
 
 
+def close_cluster_client(cluster_name):
+    _close_pool_client(_ssh_pool, cluster_name)
+
+
 def close_all_clients():
-    """Close every pooled connection.  Called at interpreter exit."""
-    with _ssh_pool_lock:
-        clusters = list(_ssh_pool.keys())
-    for c in clusters:
-        close_cluster_client(c)
+    """Close every pooled connection (both lanes).  Called at interpreter exit."""
+    for pool in (_ssh_pool, _bg_pool):
+        with _ssh_pool_lock:
+            clusters = list(pool.keys())
+        for c in clusters:
+            _close_pool_client(pool, c)
     log.info("SSH pool: closed all connections")
 
 
 atexit.register(close_all_clients)
 
 
+# ── GC loop ──────────────────────────────────────────────────────────────────
+
 def ssh_pool_gc_loop():
     while True:
         now = time.monotonic()
-        stale = []
-        with _ssh_pool_lock:
-            for cluster, rec in list(_ssh_pool.items()):
-                if now - rec.get("last_used", 0) > SSH_IDLE_TTL_SEC:
-                    stale.append(cluster)
-                else:
-                    try:
-                        tr = rec["client"].get_transport()
-                        if not tr or not tr.is_active():
-                            stale.append(cluster)
-                    except Exception:
+        for pool in (_ssh_pool, _bg_pool):
+            stale = []
+            with _ssh_pool_lock:
+                for cluster, rec in list(pool.items()):
+                    if now - rec.get("last_used", 0) > SSH_IDLE_TTL_SEC:
                         stale.append(cluster)
-        for cluster in stale:
-            close_cluster_client(cluster)
+                    else:
+                        try:
+                            tr = rec["client"].get_transport()
+                            if not tr or not tr.is_active():
+                                stale.append(cluster)
+                        except Exception:
+                            stale.append(cluster)
+            for cluster in stale:
+                _close_pool_client(pool, cluster)
         time.sleep(60)
 
+
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def _shell_quote(s):
     """Quote a string for use as a single argument to bash -lc."""
@@ -136,54 +168,29 @@ def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
     return _ssh_exec(cluster_name, command, timeout_sec)
 
 
-def ssh_run_standalone(cluster_name, command, timeout_sec=20):
-    """Run a command over a *fresh* SSH connection without acquiring the
-    per-cluster lock.  Use this for background/non-critical work so it
-    never blocks the main polling path."""
-    return _ssh_exec_standalone(cluster_name, command, timeout_sec)
-
-
-def _ssh_exec_standalone(cluster_name, command, timeout_sec):
-    client = _ssh_client(cluster_name)
-    try:
-        stdin_ch, stdout, stderr = client.exec_command(
-            "bash", timeout=timeout_sec,
-        )
-        try:
-            stdin_ch.write(command + "\nexit\n")
-            stdin_ch.flush()
-            stdin_ch.channel.shutdown_write()
-            out = stdout.read().decode().strip()
-            err = stderr.read().decode().strip()
-        finally:
-            try:
-                stdout.channel.close()
-            except Exception:
-                pass
-        return out, err
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
-
-
 def enable_standalone_ssh():
-    """Mark the current thread to use standalone (non-pooled) SSH.
+    """Mark the current thread to use the background SSH lane.
 
     Call at the start of any background/worker thread so all subsequent
-    ssh_run / ssh_run_with_timeout calls bypass the per-cluster lock.
+    ssh_run / ssh_run_with_timeout calls use the background pool instead
+    of the primary pool, avoiding lock contention with request threads.
     """
     _thread_ctx.standalone = True
 
 
+# ── Core execution ───────────────────────────────────────────────────────────
+
 def _ssh_exec(cluster_name, command, timeout_sec):
     if getattr(_thread_ctx, "standalone", False):
-        return _ssh_exec_standalone(cluster_name, command, timeout_sec)
-    lock = _get_cluster_lock(cluster_name)
+        pool = _bg_pool
+        lock = _get_bg_lock(cluster_name)
+    else:
+        pool = _ssh_pool
+        lock = _get_cluster_lock(cluster_name)
+
     for attempt in (1, 2):
         with lock:
-            client = _get_pooled_client(cluster_name, force_new=(attempt == 2))
+            client = _get_pooled_client(pool, cluster_name, force_new=(attempt == 2))
             try:
                 stdin_ch, stdout, stderr = client.exec_command(
                     "bash", timeout=timeout_sec,
@@ -200,11 +207,11 @@ def _ssh_exec(cluster_name, command, timeout_sec):
                     except Exception:
                         pass
                 with _ssh_pool_lock:
-                    rec = _ssh_pool.get(cluster_name)
+                    rec = pool.get(cluster_name)
                     if rec:
                         rec["last_used"] = time.monotonic()
                 return out, err
             except Exception:
-                close_cluster_client(cluster_name)
+                _close_pool_client(pool, cluster_name)
                 if attempt == 2:
                     raise

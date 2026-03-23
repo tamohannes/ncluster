@@ -20,7 +20,7 @@ from .config import (
     EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
     extract_project,
 )
-from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_standalone, enable_standalone_ssh
+from .ssh import ssh_run, ssh_run_with_timeout, enable_standalone_ssh
 from .db import (
     upsert_job, get_db, get_board_pinned,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
@@ -345,7 +345,7 @@ conda env export 2>/dev/null || conda list 2>/dev/null || pip freeze 2>/dev/null
 echo "===CONDA_END==="
 """
     try:
-        out, _ = ssh_run_standalone(cluster, script, timeout_sec=25)
+        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=25)
     except Exception:
         _run_meta_fetched.pop((cluster, root_job_id), None)
         return
@@ -591,7 +591,7 @@ def _capture_stdout_paths(cluster_name, job_ids):
   [ -n "$STDOUT" ] && [ "$STDOUT" != "(null)" ] && echo "LOGPATH:$JOB:$STDOUT"
 done"""
     try:
-        out, _ = ssh_run_standalone(cluster_name, script, timeout_sec=15)
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
     except Exception:
         return
 
@@ -730,6 +730,11 @@ def _reconcile_db_with_squeue(cluster, live_ids):
 
 # ─── Prefetch ────────────────────────────────────────────────────────────────
 
+_prefetch_active = {}          # cluster -> count of active prefetch threads
+_prefetch_active_lock = threading.Lock()
+_MAX_PREFETCH_THREADS = 4      # per cluster
+
+
 def schedule_prefetch(cluster, job_id):
     k = (cluster, str(job_id))
     now = time.monotonic()
@@ -738,6 +743,10 @@ def schedule_prefetch(cluster, job_id):
         if now - last < PREFETCH_MIN_GAP_SEC:
             return
         _prefetch_last[k] = now
+    with _prefetch_active_lock:
+        if _prefetch_active.get(cluster, 0) >= _MAX_PREFETCH_THREADS:
+            return
+        _prefetch_active[cluster] = _prefetch_active.get(cluster, 0) + 1
     t = threading.Thread(target=_prefetch_job_data, args=(cluster, str(job_id)), daemon=True)
     t.start()
 
@@ -745,26 +754,30 @@ def schedule_prefetch(cluster, job_id):
 def _prefetch_job_data(cluster, job_id):
     enable_standalone_ssh()
     try:
-        log_result = get_job_log_files(cluster, job_id)
-        _cache_set(_log_index_cache, (cluster, job_id), log_result)
-        files = log_result.get("files", [])
-        if files:
-            first = files[0]["path"]
-            content = fetch_log_tail(cluster, first, lines=220)
-            _cache_set(_log_content_cache, (cluster, job_id, first), content)
-            pct = extract_progress(content)
-            if pct is not None:
-                _cache_set(_progress_cache, (cluster, job_id), pct)
-            crash = detect_crash(content)
-            if crash is not None:
-                _cache_set(_crash_cache, (cluster, job_id), crash)
-    except Exception:
-        pass
-    try:
-        stats = get_job_stats(cluster, job_id)
-        _cache_set(_stats_cache, (cluster, job_id), stats)
-    except Exception:
-        pass
+        try:
+            log_result = get_job_log_files(cluster, job_id)
+            _cache_set(_log_index_cache, (cluster, job_id), log_result)
+            files = log_result.get("files", [])
+            if files:
+                first = files[0]["path"]
+                content = fetch_log_tail(cluster, first, lines=220)
+                _cache_set(_log_content_cache, (cluster, job_id, first), content)
+                pct = extract_progress(content)
+                if pct is not None:
+                    _cache_set(_progress_cache, (cluster, job_id), pct)
+                crash = detect_crash(content)
+                if crash is not None:
+                    _cache_set(_crash_cache, (cluster, job_id), crash)
+        except Exception:
+            pass
+        try:
+            stats = get_job_stats(cluster, job_id)
+            _cache_set(_stats_cache, (cluster, job_id), stats)
+        except Exception:
+            pass
+    finally:
+        with _prefetch_active_lock:
+            _prefetch_active[cluster] = max(0, _prefetch_active.get(cluster, 0) - 1)
 
 
 def fetch_est_start_bulk(cluster, pending_job_ids):
@@ -775,7 +788,7 @@ def fetch_est_start_bulk(cluster, pending_job_ids):
     ids = [str(j) for j in pending_job_ids if j]
     ids_csv = ",".join(ids)
     try:
-        out, _ = ssh_run_standalone(
+        out, _ = ssh_run_with_timeout(
             cluster,
             f'squeue -h -j "{ids_csv}" --start -o "%i|%S" 2>/dev/null',
             timeout_sec=10,
@@ -803,7 +816,7 @@ def prefetch_cluster_bulk(cluster, job_ids):
 squeue -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
 """
     try:
-        out, _ = ssh_run_standalone(cluster, script, timeout_sec=15)
+        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=15)
     except Exception:
         out = ""
 
