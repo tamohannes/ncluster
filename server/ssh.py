@@ -1,9 +1,14 @@
 """SSH connection pool and command execution.
 
-Two-lane pool: a *primary* lane for request threads and a *background*
-lane for worker threads.  Each lane has one pooled paramiko client per
-cluster and its own per-cluster lock, so background work never blocks
-the main polling path and vice-versa.  Total connections per cluster: 2.
+Three-lane pool:
+
+* **primary** — request threads (Slurm queries, job listing).
+* **background** — worker threads (metadata fetching, progress).
+* **data** — file-I/O operations routed to the cluster's data-copier
+  (DC) node when configured, falling back to the login node otherwise.
+
+Each lane has one pooled paramiko client per cluster and its own
+per-cluster lock, so lanes never block each other.
 
 Background threads call ``enable_standalone_ssh()`` once at startup;
 all subsequent ``ssh_run`` / ``ssh_run_with_timeout`` calls are
@@ -30,16 +35,21 @@ _thread_ctx = threading.local()
 _bg_pool = {}           # cluster -> {"client": SSHClient, "last_used": float}
 _bg_locks = {}          # cluster -> Lock
 
+# Data lane — connects to data_host (DC node) when configured.
+_data_pool = {}         # cluster -> {"client": SSHClient, "last_used": float}
+_data_locks = {}        # cluster -> Lock
+
 
 # ── Client creation ──────────────────────────────────────────────────────────
 
-def _ssh_client(cluster_name):
+def _ssh_client(cluster_name, host_override=None):
     cfg = CLUSTERS[cluster_name]
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    host = host_override or cfg["host"]
     try:
         client.connect(
-            cfg["host"], port=cfg["port"], username=cfg["user"],
+            host, port=cfg["port"], username=cfg["user"],
             key_filename=cfg["key"],
             timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
         )
@@ -69,9 +79,16 @@ def _get_bg_lock(cluster_name):
         return _bg_locks[cluster_name]
 
 
+def _get_data_lock(cluster_name):
+    with _ssh_pool_lock:
+        if cluster_name not in _data_locks:
+            _data_locks[cluster_name] = threading.Lock()
+        return _data_locks[cluster_name]
+
+
 # ── Pooled client helpers ────────────────────────────────────────────────────
 
-def _get_pooled_client(pool, cluster_name, force_new=False):
+def _get_pooled_client(pool, cluster_name, force_new=False, host_override=None):
     """Return a pooled client from *pool*.  Caller MUST hold the matching lock."""
     now = time.monotonic()
     old_to_close = None
@@ -97,7 +114,7 @@ def _get_pooled_client(pool, cluster_name, force_new=False):
         except Exception:
             pass
 
-    client = _ssh_client(cluster_name)
+    client = _ssh_client(cluster_name, host_override=host_override)
     with _ssh_pool_lock:
         pool[cluster_name] = {"client": client, "last_used": now}
     return client
@@ -118,8 +135,8 @@ def close_cluster_client(cluster_name):
 
 
 def close_all_clients():
-    """Close every pooled connection (both lanes).  Called at interpreter exit."""
-    for pool in (_ssh_pool, _bg_pool):
+    """Close every pooled connection (all lanes).  Called at interpreter exit."""
+    for pool in (_ssh_pool, _bg_pool, _data_pool):
         with _ssh_pool_lock:
             clusters = list(pool.keys())
         for c in clusters:
@@ -135,7 +152,7 @@ atexit.register(close_all_clients)
 def ssh_pool_gc_loop():
     while True:
         now = time.monotonic()
-        for pool in (_ssh_pool, _bg_pool):
+        for pool in (_ssh_pool, _bg_pool, _data_pool):
             stale = []
             with _ssh_pool_lock:
                 for cluster, rec in list(pool.items()):
@@ -168,6 +185,20 @@ def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
     return _ssh_exec(cluster_name, command, timeout_sec)
 
 
+def ssh_run_data(cluster_name, command):
+    """Run a command on the cluster's data-copier node if configured.
+
+    Falls back to the login node (via ssh_run) when no data_host is set
+    or when the DC node is unreachable.
+    """
+    return _ssh_exec_data(cluster_name, command, SSH_TIMEOUT)
+
+
+def ssh_run_data_with_timeout(cluster_name, command, timeout_sec=20):
+    """Like ssh_run_data but with a custom timeout."""
+    return _ssh_exec_data(cluster_name, command, timeout_sec)
+
+
 def enable_standalone_ssh():
     """Mark the current thread to use the background SSH lane.
 
@@ -179,6 +210,53 @@ def enable_standalone_ssh():
 
 
 # ── Core execution ───────────────────────────────────────────────────────────
+
+def _ssh_exec_data(cluster_name, command, timeout_sec):
+    """Execute on the data-copier node, falling back to login on failure."""
+    cfg = CLUSTERS.get(cluster_name, {})
+    data_host = cfg.get("data_host", "")
+    if not data_host:
+        return _ssh_exec(cluster_name, command, timeout_sec)
+
+    pool = _data_pool
+    lock = _get_data_lock(cluster_name)
+
+    for attempt in (1, 2):
+        try:
+            with lock:
+                client = _get_pooled_client(
+                    pool, cluster_name,
+                    force_new=(attempt == 2),
+                    host_override=data_host,
+                )
+                stdin_ch, stdout, stderr = client.exec_command(
+                    "bash", timeout=timeout_sec,
+                )
+                try:
+                    stdin_ch.write(command + "\nexit\n")
+                    stdin_ch.flush()
+                    stdin_ch.channel.shutdown_write()
+                    out = stdout.read().decode().strip()
+                    err = stderr.read().decode().strip()
+                finally:
+                    try:
+                        stdout.channel.close()
+                    except Exception:
+                        pass
+                with _ssh_pool_lock:
+                    rec = pool.get(cluster_name)
+                    if rec:
+                        rec["last_used"] = time.monotonic()
+                return out, err
+        except Exception:
+            _close_pool_client(pool, cluster_name)
+            if attempt == 2:
+                log.warning(
+                    "ssh_data: DC node %s unreachable for %s, falling back to login",
+                    data_host, cluster_name,
+                )
+                return _ssh_exec(cluster_name, command, timeout_sec)
+
 
 def _ssh_exec(cluster_name, command, timeout_sec):
     if getattr(_thread_ctx, "standalone", False):

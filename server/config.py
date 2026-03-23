@@ -42,13 +42,14 @@ CLUSTERS = {}
 for _name, _cfg in _CONFIG.get("clusters", {}).items():
     CLUSTERS[_name] = {
         "host": _cfg["host"],
+        "data_host": _cfg.get("data_host", ""),
         "user": _cfg.get("user", DEFAULT_USER),
         "key": os.path.expanduser(_cfg.get("key", DEFAULT_SSH_KEY)),
         "port": _cfg.get("port", 22),
         "gpu_type": _cfg.get("gpu_type", ""),
     }
 CLUSTERS["local"] = {
-    "host": None, "user": None, "key": None,
+    "host": None, "data_host": "", "user": None, "key": None,
     "port": None, "gpu_type": "local",
 }
 
@@ -295,13 +296,14 @@ def reload_config(new_cfg):
     for cname, ccfg in new_cfg.get("clusters", {}).items():
         new_clusters[cname] = {
             "host": ccfg.get("host", ""),
+            "data_host": ccfg.get("data_host", ""),
             "user": ccfg.get("user", DEFAULT_USER),
             "key": os.path.expanduser(ccfg.get("key", DEFAULT_SSH_KEY)),
             "port": ccfg.get("port", 22),
             "gpu_type": ccfg.get("gpu_type", ""),
         }
     new_clusters["local"] = {
-        "host": None, "user": None, "key": None,
+        "host": None, "data_host": "", "user": None, "key": None,
         "port": None, "gpu_type": "local",
     }
 

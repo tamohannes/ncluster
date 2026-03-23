@@ -24,7 +24,7 @@ from .db import (
     get_history, get_projects, get_db,
     _restore_dependency_fields,
 )
-from .ssh import ssh_run, ssh_run_with_timeout
+from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout
 from .mounts import (
     resolve_mounted_path, resolve_file_path,
     list_local_dir, prefetch_nested_dir_cache_local,
@@ -612,7 +612,7 @@ def api_ls(cluster):
   name = $NF
   if (name != "." && name != "..") print type "|" size "|" name
 }}'"""
-        out, _ = ssh_run(cluster, cmd)
+        out, _ = ssh_run_data(cluster, cmd)
         entries = []
         for line in out.splitlines():
             parts = line.split("|", 2)
@@ -712,13 +712,13 @@ def api_log_full(cluster, job_id):
             return jsonify({"status": "error", "error": str(e)})
     else:
         try:
-            wc_out, _ = ssh_run_with_timeout(cluster, f"wc -l '{log_path}' 2>/dev/null", timeout_sec=10)
+            wc_out, _ = ssh_run_data_with_timeout(cluster, f"wc -l '{log_path}' 2>/dev/null", timeout_sec=10)
             total_lines = int(wc_out.strip().split()[0]) if wc_out.strip() else 0
             total_pages = max(1, -(-total_lines // page_size))
             page = max(0, min(page, total_pages - 1))
             start = page * page_size + 1
             end = start + page_size - 1
-            content, _ = ssh_run_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
+            content, _ = ssh_run_data_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
             content = content or "(empty)"
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)})
@@ -751,7 +751,7 @@ def api_jsonl_index(cluster, job_id):
     else:
         cmd = f"awk '{{printf \"%d|%d|%s\\n\", NR-1, length($0), substr($0, 1, {preview_chars})}}' '{path}' 2>/dev/null"
     try:
-        out, _ = ssh_run_with_timeout(cluster, cmd, timeout_sec=15)
+        out, _ = ssh_run_data_with_timeout(cluster, cmd, timeout_sec=15)
         all_records = []
         for line in out.splitlines():
             parts = line.split("|", 2)
@@ -791,7 +791,7 @@ def api_jsonl_record(cluster, job_id):
     sed_line = line_num + 1
     cmd = f"sed -n '{sed_line}p' '{path}' 2>/dev/null"
     try:
-        out, _ = ssh_run_with_timeout(cluster, cmd, timeout_sec=10)
+        out, _ = ssh_run_data_with_timeout(cluster, cmd, timeout_sec=10)
         return jsonify({"status": "ok", "line": line_num, "content": out.strip(), "source": "ssh"})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
