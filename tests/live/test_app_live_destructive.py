@@ -1,7 +1,7 @@
 """Live destructive tests with throwaway resources.
 
 Run with: pytest tests/live/test_app_live_destructive.py -m "live and destructive" -v
-Requires: job-monitor running, SSH + Slurm access to a configured cluster.
+Requires: ncluster running, SSH + Slurm access to a configured cluster.
 
 NOTE: cancel_all is excluded by policy.
 """

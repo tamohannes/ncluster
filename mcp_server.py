@@ -1,9 +1,9 @@
-"""MCP server for the job-monitor app.
+"""MCP server for ncluster.
 
 Exposes cluster job status, log reading, stats, and history as MCP tools
 so AI agents can inspect experiment runs without SSH or manual curl.
 
-Requires the job-monitor Flask app to be running at http://localhost:7272.
+Requires the ncluster Flask app to be running at http://localhost:7272.
 """
 
 import json
@@ -14,7 +14,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("job-monitor")
+mcp = FastMCP("ncluster")
 
 API_BASE = "http://localhost:7272"
 
@@ -27,7 +27,7 @@ def _api_get(path: str) -> dict:
         with urllib.request.urlopen(url, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"job-monitor unreachable ({exc.reason}). Is the service running?"}
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason}). Is the service running?"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -39,7 +39,7 @@ def _api_post(path: str) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"job-monitor unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -463,7 +463,7 @@ def _api_post_json(path: str, data: dict) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"job-monitor unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -477,7 +477,7 @@ def _api_put_json(path: str, data: dict) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"job-monitor unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -489,7 +489,7 @@ def _api_delete(path: str) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"job-monitor unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 

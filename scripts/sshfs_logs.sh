@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Mount/unmount per-user cluster directories via sshfs.
 # Each cluster has mount_paths[] in config.json — each path gets its own
-# sshfs mount at ~/.job-monitor/mounts/<cluster>/<index>/.
+# sshfs mount at ~/.job-monitor/mounts/<cluster>/<index>/ (ncluster).
 #
 # Usage:
 #   ./scripts/sshfs_logs.sh mount

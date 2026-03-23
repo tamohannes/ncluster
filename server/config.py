@@ -1,4 +1,4 @@
-"""Shared configuration, constants, and mutable globals for the job monitor."""
+"""Shared configuration, constants, and mutable globals for ncluster."""
 
 import json
 import os

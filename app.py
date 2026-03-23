@@ -1,4 +1,4 @@
-"""Job Monitor — entry point."""
+"""ncluster — entry point."""
 
 import threading
 

@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "job-monitor-tests",
+  "name": "ncluster-tests",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

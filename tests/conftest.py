@@ -1,4 +1,4 @@
-"""Shared fixtures for the job-monitor test suite.
+"""Shared fixtures for the ncluster test suite.
 
 Two test modes:
   - CI / GitHub:  No config.json, falls back to config.example.json.
