@@ -231,7 +231,13 @@ function renderCard(name, data) {
         }
       }
       const visibleCount = groupJobs.length - backupSet.size;
-      const groupLabel = `<span>${runBadge}${_projBadge} <span class="group-count">· ${visibleCount} job${visibleCount !== 1 ? 's' : ''}</span></span>`;
+      const groupId = `${name}:${rootJobId}`;
+      const isGroupExpanded = _expandedGroups.has(groupId);
+      const chevronCls = isGroupExpanded ? ' expanded' : '';
+      const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+      const donutHtml = statusDonut(groupJobs);
+      const summaryHtml = statusSummaryHtml(groupJobs);
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${summaryHtml}</span>`;
 
       const jobNames = groupJobs.map(j => j.name || '');
       const jnHL = computeNameHighlight(jobNames);
@@ -254,8 +260,10 @@ function renderCard(name, data) {
       const backupRowCls = isBackup ? 'backup-child-row' : '';
 
       const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls} group-bg-${gidx % 4}`;
-      const rowDisplay = backupHidden ? 'display:none;' : '';
+      const groupHidden = !isGroupExpanded;
+      const rowDisplay = (groupHidden || backupHidden) ? 'display:none;' : '';
       const parentAttr = isBackup ? ` data-backup-parent="${backupParentId}"` : '';
+      const groupAttr = ` data-run-group="${groupId}"`;
 
       const startTime = fmtStartCell(j);
       const endTime   = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
@@ -287,12 +295,13 @@ function renderCard(name, data) {
       }
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
 
-      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)};` : '';
       const _pct = resolveProgress(name, j.jobid, j.progress, j.state);
-      return `<tr class="${rowClass}"${parentAttr} style="${_rowBg}${rowDisplay}">
+      const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
+      return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start)} ${bkBadge}${depBadge}</td>
+        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start, _jobMeta)} ${bkBadge}${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
@@ -307,7 +316,7 @@ function renderCard(name, data) {
       const cancelGroupBtn = cancelableIds.length > 1 && name !== 'local'
         ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroup('${name}','${idsAttr}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
         : '';
-      return `<tr class="group-head-row"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
+      return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
     }).join('');
 
     body = `<div class="card-body">
@@ -637,7 +646,15 @@ function _attachPendingTooltips() {
     if (!card) return;
     const clusterName = (card.id || '').replace('card-', '');
     if (!clusterName) return;
-    attachPendingTooltip(chip, clusterName);
+    const jobInfo = {
+      reason: chip.dataset.reason || '',
+      nodes: chip.dataset.nodes || '',
+      gres: chip.dataset.gres || '',
+      partition: chip.dataset.partition || '',
+      timelimit: chip.dataset.timelimit || '',
+      estStart: chip.dataset.estStart || '',
+    };
+    attachPendingTooltip(chip, clusterName, jobInfo);
     chip._utilBound = true;
   });
 }

@@ -29,6 +29,7 @@ try {
 
 const STATE_ORDER = { RUNNING: 0, COMPLETING: 1, PENDING: 2, FAILED: 3, CANCELLED: 4 };
 const _expandedBackups = new Set();
+const _expandedGroups = new Set();
 
 function toggleBackups(parentJobId) {
   if (_expandedBackups.has(parentJobId)) {
@@ -42,6 +43,20 @@ function toggleBackups(parentJobId) {
   });
   const btn = document.querySelector(`[data-backups-toggle="${parentJobId}"]`);
   if (btn) btn.classList.toggle('expanded', show);
+}
+
+function toggleRunGroup(groupId) {
+  const wasExpanded = _expandedGroups.has(groupId);
+  if (wasExpanded) _expandedGroups.delete(groupId);
+  else _expandedGroups.add(groupId);
+  const show = !wasExpanded;
+  document.querySelectorAll(`tr[data-run-group="${groupId}"]`).forEach(r => {
+    if (!show) { r.style.display = 'none'; return; }
+    const bp = r.dataset.backupParent;
+    r.style.display = (bp && !_expandedBackups.has(bp)) ? 'none' : '';
+  });
+  const chev = document.querySelector(`[data-group-chevron="${groupId}"]`);
+  if (chev) chev.classList.toggle('expanded', show);
 }
 
 const _progressCache = (() => {
@@ -90,7 +105,7 @@ function progressRing(pct) {
   </svg>`;
 }
 
-function stateChip(s, progress, reason, exitCode, crashDetected, estStart) {
+function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMeta) {
   const cls = stateClass(s);
   const st = (s || '').toUpperCase();
   if (crashDetected && (st === 'RUNNING' || st === 'COMPLETING')) {
@@ -102,18 +117,21 @@ function stateChip(s, progress, reason, exitCode, crashDetected, estStart) {
   }
   const hasUtil = st === 'PENDING' && _clusterUtil;
   const utilCls = hasUtil ? ' has-util' : '';
-  if (st === 'PENDING' && estStart) {
-    const d = new Date(estStart.replace('T', ' '));
-    if (!isNaN(d)) {
-      const now = new Date();
-      const diffH = Math.round((d - now) / 3600000);
-      const when = diffH >= 24 ? `~${Math.round(diffH / 24)}d` : diffH > 0 ? `~${diffH}h` : 'soon';
-      return `<span class="state-chip ${cls}${utilCls} pending-util-chip" title="Est. start: ${d.toLocaleString()}">PENDING <span class="est-inline">(${when})</span></span>`;
-    }
-  }
   if (st === 'PENDING') {
-    const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
-    return `<span class="state-chip ${cls}${utilCls} pending-util-chip"${tip}>PENDING</span>`;
+    const m = jobMeta || {};
+    const esc = v => (v || '').replace(/"/g, '&quot;');
+    const dataAttrs = ` data-reason="${esc(reason)}" data-nodes="${esc(m.nodes)}" data-gres="${esc(m.gres)}" data-partition="${esc(m.partition)}" data-timelimit="${esc(m.timelimit)}" data-est-start="${esc(estStart)}"`;
+    if (estStart) {
+      const d = new Date(estStart.replace('T', ' '));
+      if (!isNaN(d)) {
+        const now = new Date();
+        const diffH = Math.round((d - now) / 3600000);
+        const when = diffH >= 24 ? `~${Math.round(diffH / 24)}d` : diffH > 0 ? `~${diffH}h` : 'soon';
+        return `<span class="state-chip ${cls}${utilCls} pending-util-chip"${dataAttrs} title="Est. start: ${d.toLocaleString()}">PENDING <span class="est-inline">(${when})</span></span>`;
+      }
+    }
+    const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${esc(reason)}"` : '';
+    return `<span class="state-chip ${cls}${utilCls} pending-util-chip"${dataAttrs}${tip}>PENDING</span>`;
   }
   const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
   let extra = '';
@@ -134,6 +152,60 @@ function isFailedLikeState(s) {
 
 function isCompletedState(s) {
   return (s || '').toUpperCase().startsWith('COMPLETED');
+}
+
+function _countJobStates(jobs) {
+  const cnt = { run: 0, pend: 0, fail: 0, canc: 0, done: 0 };
+  for (const j of jobs) {
+    const st = (j.state || '').toUpperCase();
+    if (st === 'RUNNING' || st === 'COMPLETING') cnt.run++;
+    else if (st === 'PENDING') cnt.pend++;
+    else if (st.startsWith('COMPLETED')) cnt.done++;
+    else if (st.startsWith('CANCEL')) cnt.canc++;
+    else cnt.fail++;
+  }
+  return cnt;
+}
+
+function statusDonut(jobs) {
+  const cnt = _countJobStates(jobs);
+  const total = jobs.length;
+  if (!total) return '';
+  const sz = 18, r = 6, sw = 3.5;
+  const C = 2 * Math.PI * r;
+  const cx = sz / 2, cy = sz / 2;
+  const segs = [
+    [cnt.run,  'var(--green)'],
+    [cnt.pend, 'var(--yellow)'],
+    [cnt.fail, 'var(--red)'],
+    [cnt.canc, 'var(--muted)'],
+    [cnt.done, 'var(--done)'],
+  ];
+  let off = 0;
+  const arcs = segs.filter(([n]) => n > 0).map(([n, color]) => {
+    const d = (n / total) * C;
+    const el = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-dasharray="${d.toFixed(1)} ${(C - d).toFixed(1)}" stroke-dashoffset="${(-off).toFixed(1)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    off += d;
+    return el;
+  }).join('');
+  const tip = [];
+  if (cnt.run)  tip.push(`${cnt.run} running`);
+  if (cnt.pend) tip.push(`${cnt.pend} pending`);
+  if (cnt.fail) tip.push(`${cnt.fail} failed`);
+  if (cnt.canc) tip.push(`${cnt.canc} cancelled`);
+  if (cnt.done) tip.push(`${cnt.done} completed`);
+  return `<svg class="status-donut" width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}"><title>${tip.join(', ')}</title><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${sw}"/>${arcs}</svg>`;
+}
+
+function statusSummaryHtml(jobs) {
+  const cnt = _countJobStates(jobs);
+  const parts = [];
+  if (cnt.run)  parts.push(`<span class="ss-run">${cnt.run} running</span>`);
+  if (cnt.pend) parts.push(`<span class="ss-pend">${cnt.pend} pending</span>`);
+  if (cnt.fail) parts.push(`<span class="ss-fail">${cnt.fail} failed</span>`);
+  if (cnt.canc) parts.push(`<span class="ss-canc">${cnt.canc} cancelled</span>`);
+  if (cnt.done) parts.push(`<span class="ss-done">${cnt.done} done</span>`);
+  return `<span class="status-summary">${parts.join('<span class="ss-sep">\u00b7</span>')}</span>`;
 }
 
 const DEP_TYPE_DESC = {
@@ -610,6 +682,184 @@ function quotaBadgesHtml(clusterName) {
   return badges.join('');
 }
 
+/* ── Pending-reason translator ── */
+
+function _translateReason(reason, jobNodes, jobGpuStr, freeNodes, freeGpus) {
+  const r = (reason || '').trim();
+  if (!r || r === 'None') return null;
+
+  const needNodes = parseInt(jobNodes, 10) || 0;
+
+  if (r === 'Priority') {
+    return {
+      short: 'Waiting for priority',
+      detail: 'Other pending jobs have higher fair-share priority. Your job moves up as they start or finish.',
+      blocker: 'priority',
+    };
+  }
+  if (r === 'Resources') {
+    if (needNodes > 0 && freeNodes !== null && needNodes > freeNodes) {
+      return {
+        short: `Needs ${needNodes} nodes, only ${freeNodes} free`,
+        detail: `Job requires ${needNodes} node${needNodes > 1 ? 's' : ''} but only ${freeNodes} are available. Waiting for ${needNodes - freeNodes} more to free up.`,
+        blocker: 'resources',
+      };
+    }
+    return {
+      short: 'Waiting for resources',
+      detail: 'Required nodes or GPUs are not yet available. Waiting for running jobs to complete.',
+      blocker: 'resources',
+    };
+  }
+  if (r === 'DependencyNeverSatisfied') {
+    return {
+      short: 'Dependency failed',
+      detail: 'A parent job failed or was cancelled. This job will not run unless manually released.',
+      blocker: 'blocked',
+    };
+  }
+  if (r.includes('Dependency')) {
+    return {
+      short: 'Waiting for dependency',
+      detail: 'This job depends on another job finishing first. It will start automatically when the parent completes.',
+      blocker: 'dependency',
+    };
+  }
+  if (r.includes('QOS') || r.includes('Assoc') || r.includes('MaxGres') || r.includes('GrpGRES') || r.includes('GrpCpu')) {
+    return {
+      short: 'QOS / quota limit',
+      detail: 'You\u2019ve hit a scheduler limit (max GPUs per user, group resource cap, or QOS constraint). Waiting for your other jobs to finish.',
+      blocker: 'qos',
+    };
+  }
+  if (r.includes('NodeNotAvail') || r === 'ReqNodeNotAvail') {
+    return {
+      short: 'Node unavailable',
+      detail: 'Requested node is down, reserved for maintenance, or otherwise unavailable.',
+      blocker: 'resources',
+    };
+  }
+  if (r === 'BeginTime') {
+    return {
+      short: 'Scheduled start time',
+      detail: 'Job is configured to start at a specific future time.',
+      blocker: 'time',
+    };
+  }
+  if (r.includes('requeued') || r.includes('held') || r.includes('Held')) {
+    return {
+      short: 'Held / requeued',
+      detail: 'Job failed to launch and was requeued in held state. May need manual release.',
+      blocker: 'blocked',
+    };
+  }
+  return {
+    short: r.length > 30 ? r.slice(0, 28) + '\u2026' : r,
+    detail: `Slurm reason: ${r}`,
+    blocker: 'unknown',
+  };
+}
+
+/* ── Wait-time estimation for pending jobs ── */
+
+function _estimateWait(occupancyPct, pendingNodes, totalNodes, t, reason) {
+  const queueRatio = totalNodes > 0 ? pendingNodes / totalNodes : 0;
+  const hasPriority = t.alloc > 0;
+  const r = (reason || '').trim();
+
+  if (r === 'DependencyNeverSatisfied') {
+    return { label: 'won\u2019t run', cls: 'long',
+      reason: 'Parent job failed. This job is stuck unless manually released.' };
+  }
+  if (r.includes('Dependency') && r !== 'None') {
+    return { label: 'blocked', cls: 'moderate',
+      reason: 'Waiting for a parent job to finish. Start time depends on the parent.' };
+  }
+  if (r.includes('QOS') || r.includes('Assoc') || r.includes('MaxGres') || r.includes('GrpGRES') || r.includes('GrpCpu')) {
+    return { label: 'quota-limited', cls: 'slow',
+      reason: 'Blocked by a scheduler quota. Will start when your other jobs finish and free up your allowance.' };
+  }
+  if (r === 'BeginTime') {
+    return { label: 'scheduled', cls: 'moderate',
+      reason: 'Job has a deferred start time. Will begin at the scheduled time if resources are available.' };
+  }
+  if (r.includes('requeued') || r.includes('held') || r.includes('Held')) {
+    return { label: 'held', cls: 'long',
+      reason: 'Job is held after a failed launch. Needs manual intervention to release.' };
+  }
+
+  if (r === 'Priority') {
+    if (hasPriority && t.pct < 50 && occupancyPct < 70)
+      return { label: '~10 \u2013 30 min', cls: 'fast',
+        reason: 'Free capacity exists, but other jobs have higher fair-share priority. Your high team priority should help.' };
+    if (hasPriority && t.pct < 50)
+      return { label: '~30 min \u2013 2h', cls: 'moderate',
+        reason: 'Scheduler is processing higher-priority jobs first. Your team is under quota, so priority is strong.' };
+    if (hasPriority && t.pct < 90)
+      return { label: '~1 \u2013 4h', cls: 'slow',
+        reason: 'Fair-share priority is moderate (team near quota). Other teams\u2019 jobs may schedule first.' };
+    if (hasPriority)
+      return { label: '~2 \u2013 8h', cls: 'slow',
+        reason: 'Team is over quota \u2014 low fair-share priority. Jobs from under-quota teams go first.' };
+    return { label: '~1 \u2013 4h', cls: 'slow',
+      reason: 'Scheduler has higher-priority jobs ahead in the queue.' };
+  }
+
+  if (pendingNodes === 0 && occupancyPct < 90) {
+    return { label: 'starts immediately', cls: 'fast',
+      reason: 'Cluster has free capacity and no queue.' };
+  }
+  if (occupancyPct < 70) {
+    if (hasPriority && t.pct < 50)
+      return { label: 'minutes', cls: 'fast',
+        reason: 'Cluster has significant free capacity and your team has high priority.' };
+    return { label: '< 30 min', cls: 'fast',
+      reason: 'Cluster has significant free capacity.' };
+  }
+
+  if (hasPriority && t.pct < 50) {
+    if (occupancyPct < 90)
+      return { label: '< 30 min', cls: 'fast',
+        reason: 'Team well under quota \u2014 scheduler gives you top priority.' };
+    if (queueRatio < 0.5)
+      return { label: '~30 min \u2013 2h', cls: 'moderate',
+        reason: 'Cluster saturated but team has strong priority (well under quota).' };
+    return { label: '~1 \u2013 3h', cls: 'moderate',
+      reason: 'Deep queue, but team priority should pull you ahead.' };
+  }
+
+  if (hasPriority && t.pct < 90) {
+    if (occupancyPct < 90)
+      return { label: '~30 min \u2013 1h', cls: 'moderate',
+        reason: 'Some capacity available, team near quota \u2014 normal priority.' };
+    if (queueRatio < 0.5)
+      return { label: '~1 \u2013 4h', cls: 'slow',
+        reason: 'Cluster saturated, team near quota \u2014 moderate priority.' };
+    return { label: '~2 \u2013 6h', cls: 'slow',
+      reason: 'Saturated cluster with deep queue and diminishing fair-share.' };
+  }
+
+  if (hasPriority) {
+    if (queueRatio < 0.3)
+      return { label: '~2 \u2013 6h', cls: 'slow',
+        reason: 'Team over quota \u2014 scheduler deprioritizes. Wait for capacity to free up.' };
+    if (queueRatio < 0.7)
+      return { label: '~4 \u2013 12h', cls: 'long',
+        reason: 'Over quota with deep queue. Consider a less loaded cluster.' };
+    return { label: '12h+', cls: 'long',
+      reason: 'Severely oversubscribed and over quota. Try a different cluster or off-peak hours.' };
+  }
+
+  if (occupancyPct < 80)
+    return { label: '< 1h', cls: 'moderate',
+      reason: 'Cluster has available capacity.' };
+  if (queueRatio < 0.5)
+    return { label: '~1 \u2013 4h', cls: 'slow',
+      reason: 'Cluster busy with moderate queue pressure.' };
+  return { label: '4h+', cls: 'long',
+    reason: 'High demand. Consider a less loaded cluster.' };
+}
+
 /* ── Tooltip for pending jobs ── */
 const _tooltip = (() => {
   const el = document.createElement('div');
@@ -620,13 +870,8 @@ const _tooltip = (() => {
 
   function _pctColor(pct) { return pct >= 90 ? 'red' : pct >= 60 ? 'amber' : 'green'; }
   function _barLevel(pct) { return pct >= 90 ? 'high' : pct >= 60 ? 'medium' : 'low'; }
-  function _statusLabel(pct) {
-    if (pct >= 90) return '<span class="tt-head-status busy">saturated</span>';
-    if (pct >= 60) return '<span class="tt-head-status loaded">busy</span>';
-    return '<span class="tt-head-status normal">available</span>';
-  }
 
-  function show(anchorEl, clusterName) {
+  function show(anchorEl, clusterName, jobInfo) {
     const u = getClusterUtil(clusterName);
     if (!u) return;
     clearTimeout(_hideTimer);
@@ -634,65 +879,126 @@ const _tooltip = (() => {
     const t = _teamStats(u);
     const gpuPer = t.gpuPer;
 
-    // Cluster fullness — total_nodes = nodes currently occupied cluster-wide
-    const allBusy = u.total_nodes > 0 && u.pending_nodes > 0;
-    const clusterFull = u.total_nodes > 0 && (u.pending_nodes >= u.total_nodes * 0.3);
+    const totalNodes = u.total_nodes || 0;
+    const runningNodes = u.running_nodes || 0;
+    const pendingNodes = u.pending_nodes || 0;
+    const occupancyPct = totalNodes > 0 ? Math.round(runningNodes / totalNodes * 100) : 0;
+    const freeNodes = Math.max(0, totalNodes - runningNodes);
+    const freeGpus = freeNodes * gpuPer;
+    const pendingGpus = pendingNodes * gpuPer;
 
-    // Header status: combine team quota position + cluster pressure
-    let headerStatus = '';
-    if (t.alloc > 0) {
-      if (clusterFull && t.pct < 100) {
-        headerStatus = '<span class="tt-head-status busy">cluster full</span>';
-      } else if (t.pct >= 100) {
-        headerStatus = '<span class="tt-head-status busy">over quota</span>';
-      } else if (t.pct >= 70) {
-        headerStatus = '<span class="tt-head-status loaded">near quota</span>';
-      } else {
-        headerStatus = '<span class="tt-head-status normal">has priority</span>';
+    const ji = jobInfo || {};
+    const jobReason = ji.reason || '';
+    const jobGpuStr = parseGpus(ji.nodes, ji.gres);
+    const reasonInfo = _translateReason(jobReason, ji.nodes, ji.gres, freeNodes, freeGpus);
+
+    const est = _estimateWait(occupancyPct, pendingNodes, totalNodes, t, jobReason);
+
+    // ── Header: cluster name + wait estimate badge ──
+    let html = `<div class="tt-head">
+      <span class="tt-head-name">${clusterName}</span>
+      <span class="tt-wait-badge ${est.cls}">${est.label}</span>
+    </div>`;
+
+    // ── Why this job is pending (the key section) ──
+    if (reasonInfo) {
+      html += `<div class="tt-section-lbl">Why this job is pending</div>`;
+      html += `<div class="tt-reason-box ${reasonInfo.blocker}">`;
+      html += `<div class="tt-reason-short">${reasonInfo.short}</div>`;
+      html += `<div class="tt-reason-detail">${reasonInfo.detail}</div>`;
+      html += `</div>`;
+    }
+
+    // Job resource requirements
+    const resParts = [];
+    if (jobGpuStr) resParts.push(jobGpuStr);
+    else if (ji.nodes) resParts.push(`${ji.nodes} node${ji.nodes !== '1' ? 's' : ''}`);
+    if (ji.partition) resParts.push(`${ji.partition}`);
+    if (ji.timelimit && ji.timelimit !== '\u2014' && ji.timelimit !== 'N/A')
+      resParts.push(`${ji.timelimit} limit`);
+    if (resParts.length) {
+      html += `<div class="tt-job-resources">Needs: ${resParts.join(' \u00b7 ')}</div>`;
+    }
+
+    if (ji.estStart) {
+      const d = new Date(ji.estStart.replace('T', ' '));
+      if (!isNaN(d)) {
+        html += `<div class="tt-job-resources">Slurm estimate: ${d.toLocaleString()}</div>`;
       }
     }
 
-    let html = `<div class="tt-head"><span class="tt-head-name">${clusterName}</span>${headerStatus}</div>`;
-
-    // Team allocation — primary info
-    if (t.alloc > 0) {
-      html += `<div class="tt-util-bar"><div class="tt-util-bar-fill ${_barLevel(t.pct)}" style="width:${Math.min(t.pct, 100)}%"></div></div>`;
-      html += `<div class="tt-row"><span class="tt-label">Team GPUs</span><span class="tt-val ${_pctColor(t.pct)}">${t.runGpus} / ${t.alloc} allocated</span></div>`;
-      if (t.pendGpus > 0) {
-        html += `<div class="tt-row"><span class="tt-label">Team pending</span><span class="tt-val amber">${t.pendGpus} GPUs</span></div>`;
-      }
-    }
-
-    // Cluster-wide context: show nodes occupied + queue depth
+    // ── Cluster load gauge ──
     html += `<div class="tt-sep"></div>`;
-    html += `<div class="tt-row"><span class="tt-label">Nodes occupied</span><span class="tt-val">${u.total_nodes}</span></div>`;
-    if (u.pending_nodes > 0) {
-      html += `<div class="tt-row"><span class="tt-label">Nodes queued</span><span class="tt-val amber">${u.pending_nodes}</span></div>`;
+    html += `<div class="tt-section-lbl">Cluster load</div>`;
+    const occLevel = _barLevel(occupancyPct);
+    html += `<div class="tt-gauge-row">
+      <div class="tt-gauge-track"><div class="tt-gauge-fill ${occLevel}" style="width:${Math.min(occupancyPct, 100)}%"></div></div>
+      <span class="tt-gauge-pct ${_pctColor(occupancyPct)}">${occupancyPct}%</span>
+    </div>`;
+    html += `<div class="tt-detail">${runningNodes} of ${totalNodes} nodes in use`;
+    if (freeNodes > 0) html += ` \u00b7 <span class="green">${freeNodes} free</span>`;
+    else html += ` \u00b7 <span class="red">none free</span>`;
+    html += `</div>`;
+
+    if (pendingNodes > 0) {
+      const oversubRatio = freeNodes > 0
+        ? (pendingNodes / freeNodes).toFixed(1)
+        : null;
+      html += `<div class="tt-detail">${pendingGpus} GPUs queued cluster-wide`;
+      if (oversubRatio !== null) html += ` \u00b7 ${oversubRatio}\u00d7 oversubscribed`;
+      else html += ` \u00b7 no free capacity`;
+      html += `</div>`;
+    } else {
+      html += `<div class="tt-detail green">No queue \u2014 jobs start immediately</div>`;
     }
 
-    // Storage quota health
+    // ── Team priority ──
+    if (t.alloc > 0) {
+      html += `<div class="tt-sep"></div>`;
+      html += `<div class="tt-section-lbl">Your team\u2019s priority</div>`;
+      html += `<div class="tt-gauge-row">
+        <div class="tt-gauge-track"><div class="tt-gauge-fill ${_barLevel(t.pct)}" style="width:${Math.min(t.pct, 100)}%"></div></div>
+        <span class="tt-gauge-pct ${_pctColor(t.pct)}">${t.pct}%</span>
+      </div>`;
+
+      let priorityHtml;
+      if (t.pct >= 100)
+        priorityHtml = `<span class="tt-priority-tag low">Low priority</span> over quota`;
+      else if (t.pct >= 70)
+        priorityHtml = `<span class="tt-priority-tag med">Normal</span> near quota`;
+      else
+        priorityHtml = `<span class="tt-priority-tag high">High priority</span> under quota`;
+      html += `<div class="tt-row"><span class="tt-label">${t.runGpus} / ${t.alloc} GPUs</span><span class="tt-val">${priorityHtml}</span></div>`;
+
+      if (t.pendGpus > 0) {
+        html += `<div class="tt-detail">${t.pendGpus} GPUs pending from your team</div>`;
+      }
+    }
+
+    // ── Actionable insight ──
+    html += `<div class="tt-sep"></div>`;
+    html += `<div class="tt-insight">${est.reason}</div>`;
+
+    // ── Storage quota (compact) ──
     const sq = _storageQuota[clusterName];
     if (sq && sq.project_quotas && Object.keys(sq.project_quotas).length) {
       html += `<div class="tt-sep"></div>`;
+      const pills = [];
       for (const [pname, pq] of Object.entries(sq.project_quotas)) {
         const short = pname.replace('llmservice_nemo_', '');
         const sp = pq.space_used_pct || 0;
         const ip = pq.files_used_pct || 0;
         const worst = Math.max(sp, ip);
         const cls = _pctColor(worst);
-        const barCls = _barLevel(worst);
-        html += `<div class="tt-quota-row">`;
-        html += `<span class="tt-quota-name">${short}</span>`;
-        html += `<span class="tt-quota-bar"><span class="tt-util-bar-fill ${barCls}" style="width:${Math.min(worst, 100)}%"></span></span>`;
-        html += `<span class="tt-quota-pct ${cls}">${Math.round(worst)}%</span>`;
-        html += `</div>`;
+        pills.push(`<span class="tt-storage-pill ${cls}" title="${short}: ${pq.space_used_human} / ${pq.space_quota_human}">${short} ${Math.round(worst)}%</span>`);
       }
+      html += `<div class="tt-storage-row">${pills.join('')}</div>`;
     }
 
     el.innerHTML = html;
 
     const rect = anchorEl.getBoundingClientRect();
-    const ttW = el.offsetWidth || 260;
+    const ttW = el.offsetWidth || 280;
     let left = rect.left + rect.width / 2 - ttW / 2;
     let top = rect.bottom + 6;
     if (left < 8) left = 8;
@@ -715,9 +1021,9 @@ const _tooltip = (() => {
   return { show, hide, el };
 })();
 
-function attachPendingTooltip(chipEl, clusterName) {
+function attachPendingTooltip(chipEl, clusterName, jobInfo) {
   if (!chipEl) return;
-  chipEl.addEventListener('mouseenter', () => _tooltip.show(chipEl, clusterName));
+  chipEl.addEventListener('mouseenter', () => _tooltip.show(chipEl, clusterName, jobInfo));
   chipEl.addEventListener('mouseleave', () => _tooltip.hide());
 }
 

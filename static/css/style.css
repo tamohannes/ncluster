@@ -12,6 +12,8 @@
   --accent-bd:#c4b8ff;
   --green:    #16a34a; --green-bg: #dcfce7; --green-bd: #bbf7d0;
   --amber:    #b45309; --amber-bg: #fef3c7; --amber-bd: #fde68a;
+  --yellow:   #eab308;
+  --done:     #4ade80;
   --red:      #dc2626; --red-bg:   #fee2e2; --red-bd:   #fecaca;
   --cyan:     #0e7490; --cyan-bg:  #cffafe; --cyan-bd:  #a5f3fc;
   --gray-bg:  #f3f4f6; --gray-bd:  #e5e7eb;
@@ -99,6 +101,8 @@
   --accent-bd: #5a4fd0;
   --green:     #22c55e; --green-bg: #0f2918; --green-bd: #166534;
   --amber:     #f59e0b; --amber-bg: #2a1f06; --amber-bd: #854d0e;
+  --yellow:    #facc15;
+  --done:      #4ade80;
   --red:       #ef4444; --red-bg:   #2a0f0f; --red-bd:   #991b1b;
   --cyan:      #22d3ee; --cyan-bg:  #0a2025; --cyan-bd:  #155e75;
   --gray-bg:   #1e1e2e; --gray-bd:  #333348;
@@ -575,10 +579,37 @@ tbody tr.backup-child-row:hover td {
   padding-top: 7px;
   padding-bottom: 7px;
 }
+.group-head-row { cursor: pointer; }
+.group-head-row:hover td { filter: brightness(0.97); }
+[data-theme="dark"] .group-head-row:hover td { filter: brightness(1.1); }
 .group-count { color: var(--muted); font-weight: 400; }
 .group-head-content {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
 }
+/* collapse/expand chevron */
+.group-chevron {
+  display: inline-block; font-size: 8px; margin-right: 6px;
+  transition: transform 0.15s ease;
+  color: var(--muted); vertical-align: middle;
+}
+.group-chevron.expanded { transform: rotate(90deg); }
+/* status donut ring */
+.status-donut {
+  display: inline-block; vertical-align: middle;
+  margin-right: 6px; flex-shrink: 0;
+}
+/* compact state summary */
+.status-summary {
+  font-size: 9px; font-weight: 400; text-transform: none;
+  letter-spacing: 0; margin-left: 6px; vertical-align: middle;
+  white-space: nowrap;
+}
+.ss-run  { color: var(--green); }
+.ss-pend { color: var(--yellow); }
+.ss-fail { color: var(--red); }
+.ss-canc { color: var(--muted); }
+.ss-done { color: var(--done); }
+.ss-sep  { color: var(--muted); margin: 0 3px; }
 .cancel-group-btn {
   font-size: 9px !important; padding: 1px 7px !important;
   opacity: 0; transition: opacity 0.15s;
@@ -1516,28 +1547,106 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   background: var(--surface); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: 0 6px 24px rgba(0,0,0,0.10);
-  padding: 10px 12px;
+  padding: 12px 14px;
   font-family: var(--mono); font-size: 11px;
   pointer-events: none; opacity: 0;
   transition: opacity 0.12s;
-  min-width: 200px; max-width: 300px;
+  min-width: 240px; max-width: 320px;
   line-height: 1.5;
 }
 .cluster-tooltip.visible { opacity: 1; }
 .tt-head {
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .tt-head-name {
-  font-size: 11px; font-weight: 700; color: var(--text);
+  font-size: 12px; font-weight: 700; color: var(--text);
 }
-.tt-head-status {
-  font-size: 9px; font-weight: 600; padding: 1px 6px;
-  border-radius: 4px;
+/* wait-time estimate badge in tooltip header */
+.tt-wait-badge {
+  font-size: 10px; font-weight: 600; padding: 2px 8px;
+  border-radius: 4px; white-space: nowrap;
 }
-.tt-head-status.busy   { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd); }
-.tt-head-status.loaded  { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
-.tt-head-status.normal { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
+.tt-wait-badge.fast     { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
+.tt-wait-badge.moderate { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.tt-wait-badge.slow     { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.tt-wait-badge.long     { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-bd); }
+/* section labels */
+.tt-section-lbl {
+  font-size: 9px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--muted); margin-bottom: 4px;
+}
+/* gauge bar row: track + percentage */
+.tt-gauge-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+}
+.tt-gauge-track {
+  flex: 1; height: 6px; border-radius: 3px;
+  background: var(--border); overflow: hidden;
+}
+.tt-gauge-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.tt-gauge-fill.low    { background: var(--green); }
+.tt-gauge-fill.medium { background: var(--amber); }
+.tt-gauge-fill.high   { background: var(--red); }
+.tt-gauge-pct {
+  font-size: 11px; font-weight: 700; min-width: 32px; text-align: right;
+}
+.tt-gauge-pct.green { color: var(--green); }
+.tt-gauge-pct.amber { color: var(--amber); }
+.tt-gauge-pct.red   { color: var(--red); }
+/* detail lines below gauges */
+.tt-detail {
+  font-size: 10px; color: var(--muted); padding: 1px 0;
+}
+.tt-detail .green { color: var(--green); font-weight: 600; }
+.tt-detail .red   { color: var(--red);   font-weight: 600; }
+.tt-detail.green  { color: var(--green); }
+/* team priority tag */
+.tt-priority-tag {
+  font-size: 9px; font-weight: 600; padding: 1px 5px;
+  border-radius: 3px; margin-right: 4px;
+}
+.tt-priority-tag.high { background: var(--green-bg); color: var(--green); }
+.tt-priority-tag.med  { background: var(--amber-bg); color: var(--amber); }
+.tt-priority-tag.low  { background: var(--red-bg);   color: var(--red); }
+/* actionable insight line */
+.tt-insight {
+  font-size: 10px; color: var(--muted); font-style: italic;
+  line-height: 1.45;
+}
+/* compact storage pills */
+.tt-storage-row {
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.tt-storage-pill {
+  font-size: 9px; font-weight: 600; padding: 1px 5px;
+  border-radius: 3px; background: var(--border); color: var(--text);
+}
+.tt-storage-pill.green { background: var(--green-bg); color: var(--green); }
+.tt-storage-pill.amber { background: var(--amber-bg); color: var(--amber); }
+.tt-storage-pill.red   { background: var(--red-bg);   color: var(--red); }
+/* pending-reason box */
+.tt-reason-box {
+  padding: 6px 8px; border-radius: 4px; margin-bottom: 6px;
+  border-left: 3px solid var(--muted);
+  background: color-mix(in srgb, var(--surface) 80%, var(--muted) 20%);
+}
+.tt-reason-box.priority  { border-left-color: var(--amber); background: color-mix(in srgb, var(--surface) 85%, var(--amber) 15%); }
+.tt-reason-box.resources { border-left-color: var(--red);   background: color-mix(in srgb, var(--surface) 85%, var(--red) 15%); }
+.tt-reason-box.dependency { border-left-color: var(--accent); background: color-mix(in srgb, var(--surface) 85%, var(--accent) 15%); }
+.tt-reason-box.qos      { border-left-color: var(--amber); background: color-mix(in srgb, var(--surface) 85%, var(--amber) 15%); }
+.tt-reason-box.blocked  { border-left-color: var(--red);   background: color-mix(in srgb, var(--surface) 85%, var(--red) 15%); }
+.tt-reason-short {
+  font-size: 10px; font-weight: 700; color: var(--text); margin-bottom: 2px;
+}
+.tt-reason-detail {
+  font-size: 9.5px; color: var(--muted); line-height: 1.4;
+}
+/* job resource requirements line */
+.tt-job-resources {
+  font-size: 9.5px; color: var(--muted); padding: 1px 0;
+}
+/* legacy styles kept for util-bar in card headers */
 .tt-util-bar {
   height: 5px; border-radius: 3px; background: var(--border);
   margin-bottom: 8px; overflow: hidden;
@@ -1556,17 +1665,6 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .tt-val.amber { color: var(--amber); }
 .tt-val.red   { color: var(--red); }
 .tt-sep { height: 1px; background: var(--border); margin: 6px 0; }
-.tt-quota-row {
-  display: flex; align-items: center; gap: 4px;
-  padding: 1px 0; font-size: 10px;
-}
-.tt-quota-name { color: var(--muted); flex: 1; }
-.tt-quota-bar {
-  width: 40px; height: 4px; border-radius: 2px;
-  background: var(--border); overflow: hidden; flex-shrink: 0;
-}
-.tt-quota-bar-fill { height: 100%; border-radius: 2px; }
-.tt-quota-pct { min-width: 28px; text-align: right; font-weight: 600; font-size: 9px; }
 .tt-footer {
   margin-top: 6px; font-size: 9px; color: var(--muted);
   text-align: right;

@@ -23,7 +23,7 @@ from .mounts import (
 
 from .crash_detect import detect_crash  # noqa: F401 — re-exported for consumers
 
-_PROGRESS_RE = re.compile(r'(\d{1,3})%\|')
+_PROGRESS_RE = re.compile(r'(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
 
 
 def extract_progress(content):
@@ -337,10 +337,13 @@ fi
 JOB={job_id}
 emit() {{ echo "FILE:$1:$2"; }}
 LOGDIR=""
+STDOUT=""
+STDERR=""
 
 SCTL=$(scontrol show job "$JOB" 2>/dev/null)
 if [ -n "$SCTL" ]; then
   STDOUT=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2- | sed "s/%j/$JOB/g")
+  STDERR=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdErr=' | cut -d= -f2- | sed "s/%j/$JOB/g")
   [ -n "$STDOUT" ] && LOGDIR=$(dirname "$STDOUT")
 fi
 
@@ -355,6 +358,9 @@ if [ -n "$LOGDIR" ] && [ -d "$LOGDIR" ]; then
     [ -f "$F" ] && emit "$NAME" "$F"
   done
 fi
+
+[ -n "$STDOUT" ] && [ -f "$STDOUT" ] && emit "$(basename "$STDOUT")" "$STDOUT"
+[ -n "$STDERR" ] && [ "$STDERR" != "$STDOUT" ] && [ -f "$STDERR" ] && emit "$(basename "$STDERR")" "$STDERR"
 """
     try:
         out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
@@ -363,6 +369,7 @@ fi
 
     seen = set()
     files = []
+    jobid_files = []
     ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
     allowed_suffixes = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 
@@ -378,10 +385,13 @@ fi
         if not path.lower().endswith(allowed_suffixes):
             continue
         seen.add(path)
-        files.append({"label": label_log(raw_label), "path": path})
+        entry = {"label": label_log(raw_label), "path": path}
+        files.append(entry)
+        if str(job_id) in os.path.basename(path):
+            jobid_files.append(entry)
 
     files.sort(key=lambda f: ORDER.get(f["label"], 10))
-    dirs = _derive_result_dirs(files, cluster_name)
+    dirs = _derive_result_dirs(jobid_files, cluster_name)
     return {"files": files, "dirs": dirs}
 
 

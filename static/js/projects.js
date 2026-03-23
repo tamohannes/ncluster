@@ -138,7 +138,7 @@ function _renderProjStats(clusterActivity) {
 
   document.getElementById('proj-stats-bar').innerHTML = `
     <span class="proj-stat"><span class="proj-stat-val" style="color:var(--green)">${running}</span><span class="proj-stat-lbl">running</span></span>
-    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--amber)">${pending}</span><span class="proj-stat-lbl">pending</span></span>
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--yellow)">${pending}</span><span class="proj-stat-lbl">pending</span></span>
     <span class="proj-stat"><span class="proj-stat-val" style="color:var(--red)">${failed}</span><span class="proj-stat-lbl">failed</span></span>
     <span class="proj-stat"><span class="proj-stat-val">${completed}</span><span class="proj-stat-lbl">completed</span></span>
     <span class="proj-stat"><span class="proj-stat-val">${cancelled}</span><span class="proj-stat-lbl">cancelled</span></span>
