@@ -217,6 +217,81 @@ def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
 
 
 @mcp.tool()
+def cancel_all_cluster_jobs(cluster: str) -> dict:
+    """Cancel ALL of your running and pending jobs on a cluster.
+
+    Runs `scancel -u $USER` on the cluster. This is very destructive —
+    it kills every job you own on that cluster, not just jobs from one
+    project. Only use when the user explicitly asks to cancel everything
+    on a cluster.
+
+    Does not work for the 'local' cluster.
+
+    Returns {"status": "ok"} on success.
+    """
+    return _api_post(f"/api/cancel_all/{urllib.parse.quote(cluster)}")
+
+
+@mcp.tool()
+def cancel_project_jobs(project: str, cluster: Optional[str] = None) -> dict:
+    """Cancel all running and pending jobs belonging to a project.
+
+    Fetches live jobs across all clusters (or a specific cluster),
+    filters to those matching the project, and cancels them in batch.
+    Pinned terminal jobs (already finished) are skipped.
+
+    This is destructive — only use when the user explicitly asks to
+    cancel all jobs for a project.
+
+    Args:
+        project:  Project name (e.g. "artsiv", "hle").
+        cluster:  Optional — restrict to a single cluster.
+
+    Returns a summary with cancelled count per cluster and any errors.
+    """
+    data = _api_get("/api/jobs")
+    if isinstance(data, dict) and data.get("status") == "error":
+        return {"status": "error", "error": data.get("error", "Failed to fetch jobs")}
+
+    to_cancel: dict[str, list[str]] = {}
+    for cname, cdata in data.items():
+        if cluster and cname != cluster:
+            continue
+        if not isinstance(cdata, dict) or cdata.get("status") == "error":
+            continue
+        for j in cdata.get("jobs", []):
+            if j.get("_pinned"):
+                continue
+            st = (j.get("state") or "").upper()
+            if st not in ("RUNNING", "COMPLETING", "PENDING"):
+                continue
+            if j.get("project") == project:
+                to_cancel.setdefault(cname, []).append(str(j["jobid"]))
+
+    if not to_cancel:
+        return {"status": "ok", "cancelled": 0, "detail": f"No active jobs found for project '{project}'."}
+
+    results = {}
+    total = 0
+    errors = []
+    for cname, ids in to_cancel.items():
+        resp = _api_post_json(
+            f"/api/cancel_jobs/{urllib.parse.quote(cname)}",
+            {"job_ids": ids},
+        )
+        if resp.get("status") == "ok":
+            results[cname] = len(ids)
+            total += len(ids)
+        else:
+            errors.append(f"{cname}: {resp.get('error', 'unknown')}")
+
+    out: dict = {"status": "ok", "cancelled": total, "per_cluster": results}
+    if errors:
+        out["errors"] = errors
+    return out
+
+
+@mcp.tool()
 def cleanup_history(days: int = 30, dry_run: bool = False) -> dict:
     """Delete history records older than N days and remove their local log files.
 
