@@ -155,10 +155,11 @@ function isCompletedState(s) {
 }
 
 function _countJobStates(jobs) {
-  const cnt = { run: 0, pend: 0, fail: 0, canc: 0, done: 0 };
+  const cnt = { run: 0, comp: 0, pend: 0, fail: 0, canc: 0, done: 0 };
   for (const j of jobs) {
     const st = (j.state || '').toUpperCase();
-    if (st === 'RUNNING' || st === 'COMPLETING') cnt.run++;
+    if (st === 'RUNNING') cnt.run++;
+    else if (st === 'COMPLETING') cnt.comp++;
     else if (st === 'PENDING') cnt.pend++;
     else if (st.startsWith('COMPLETED')) cnt.done++;
     else if (st.startsWith('CANCEL')) cnt.canc++;
@@ -176,6 +177,7 @@ function statusDonut(jobs) {
   const cx = sz / 2, cy = sz / 2;
   const segs = [
     [cnt.run,  'var(--green)'],
+    [cnt.comp, 'var(--cyan)'],
     [cnt.pend, 'var(--yellow)'],
     [cnt.fail, 'var(--red)'],
     [cnt.canc, 'var(--muted)'],
@@ -190,6 +192,7 @@ function statusDonut(jobs) {
   }).join('');
   const tip = [];
   if (cnt.run)  tip.push(`${cnt.run} running`);
+  if (cnt.comp) tip.push(`${cnt.comp} completing`);
   if (cnt.pend) tip.push(`${cnt.pend} pending`);
   if (cnt.fail) tip.push(`${cnt.fail} failed`);
   if (cnt.canc) tip.push(`${cnt.canc} cancelled`);
@@ -201,6 +204,7 @@ function statusSummaryHtml(jobs) {
   const cnt = _countJobStates(jobs);
   const parts = [];
   if (cnt.run)  parts.push(`<span class="ss-run">${cnt.run} running</span>`);
+  if (cnt.comp) parts.push(`<span class="ss-comp">${cnt.comp} completing</span>`);
   if (cnt.pend) parts.push(`<span class="ss-pend">${cnt.pend} pending</span>`);
   if (cnt.fail) parts.push(`<span class="ss-fail">${cnt.fail} failed</span>`);
   if (cnt.canc) parts.push(`<span class="ss-canc">${cnt.canc} cancelled</span>`);

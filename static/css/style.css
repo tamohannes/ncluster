@@ -605,6 +605,7 @@ tbody tr.backup-child-row:hover td {
   white-space: nowrap;
 }
 .ss-run  { color: var(--green); }
+.ss-comp { color: var(--cyan); }
 .ss-pend { color: var(--yellow); }
 .ss-fail { color: var(--red); }
 .ss-canc { color: var(--muted); }
