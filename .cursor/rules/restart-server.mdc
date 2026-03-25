@@ -10,7 +10,7 @@ After making any code changes to the ncluster app (Python backend, JS frontend, 
 ## How to restart
 
 ```bash
-systemctl --user restart job-monitor.service
+systemctl --user restart ncluster.service
 ```
 
 ## When to restart
@@ -23,5 +23,5 @@ systemctl --user restart job-monitor.service
 After restarting, briefly check the service is healthy:
 
 ```bash
-systemctl --user is-active job-monitor.service
+systemctl --user is-active ncluster.service
 ```

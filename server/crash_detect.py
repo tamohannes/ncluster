@@ -68,6 +68,37 @@ def detect_crash(content):
     return None
 
 
+# ── Soft-failure indicators ───────────────────────────────────────────────────
+# When a retry/continuation job finds all work already completed, the main
+# generation step skips successfully but downstream steps (e.g. eval) crash
+# because no output files were produced.  These patterns indicate the *main
+# work* was intentionally skipped — the crash is collateral, not a real failure.
+
+SOFT_FAIL_INDICATORS = [
+    re.compile(r'No data to process', re.I),
+    re.compile(r'exists,?\s+skipping', re.I),
+    re.compile(r'nothing\s+to\s+(process|evaluate|generate)', re.I),
+    re.compile(r'all\b.*\balready\s+(completed|processed|evaluated|done)', re.I),
+    re.compile(r'0\s+samples?\s+to\s+process', re.I),
+]
+
+
+def detect_soft_failure(content):
+    """Return a short reason if the failure is a no-op (work already done), else None.
+
+    Soft failures occur when retry/continuation jobs find all work already
+    completed and exit non-zero because downstream steps (e.g. evaluation)
+    have no output files to process.
+    """
+    if not content:
+        return None
+    for pat in SOFT_FAIL_INDICATORS:
+        m = pat.search(content)
+        if m:
+            return m.group(0)[:80]
+    return None
+
+
 def is_benign_line(line_lower):
     """Return True if *line_lower* (already lowercased) matches a benign pattern."""
     return any(sub in line_lower for sub in BENIGN_LINE_SUBSTRINGS)

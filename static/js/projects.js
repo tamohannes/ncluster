@@ -225,14 +225,14 @@ function _renderProjLive() {
         const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
         const hasGpu = !!gpuStr;
         const nameCls = hasGpu ? '' : ' name-cpu';
-        const pinKind = isPinned ? (isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
+        const pinKind = isPinned ? (isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
 
-        const _pct = resolveProgress(cluster, j.jobid, j.progress, j.state);
+        const _prog = resolveProgress(cluster, j.jobid, j.progress, j.state, j.progress_source);
         const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
         rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}" style="${_rowBg}">
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _liveJnHL.prefix, _liveJnHL.suffix) : '—'}</span></td>
-          <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start)} ${depBadge}</td>
+          <td>${stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, undefined, _prog.source)} ${depBadge}</td>
           <td>${logBtn} ${statsBtn}</td>
           <td class="dim">${startTime}</td>
           <td class="dim">${endTime}</td>
@@ -363,7 +363,7 @@ function _renderProjPage() {
       const depBadge = depBadgeHtml(j, byId);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-      const pinKind = isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
+      const pinKind = isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
       const bgClass = groupJobs.length > 1 ? ` group-bg-${(start + gidx) % 4}` : '';
       const started = fmtTime(j.started_local || j.started);
       const ended = fmtTime(j.ended_local || j.ended_at);

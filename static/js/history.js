@@ -129,7 +129,7 @@ function _renderHistPage() {
       const depBadge = depBadgeHtml(j, byId);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-      const pinKind = isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
+      const pinKind = isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
       const bgClass = groupJobs.length > 1 ? ` group-bg-${(start + gidx) % 4}` : '';
       const started = fmtTime(j.started_local || j.started);
       const ended = fmtTime(j.ended_local || j.ended_at);

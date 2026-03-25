@@ -53,7 +53,9 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 25+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, logbooks, cluster availability, storage quotas
+- 28+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, logbooks, cluster availability, storage quotas, partition analysis, submission recommendations
+- `recommend_submission()` — AI agent can ask "where should I submit this job?" and get ranked cluster+partition suggestions
+- `get_partitions()` — detailed partition data (priority tiers, preemption, queue depth, idle nodes)
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
 - `cancel_project_jobs()` / `cancel_all_cluster_jobs()` — bulk cancellation
 - No SSH, no DB access — wraps the Flask API cleanly
@@ -131,9 +133,9 @@ The optional `data_host` routes file-explorer I/O to a data-copier node, reducin
 
 ### Environment Variables
 
-- `JOB_MONITOR_SSH_USER` (default: `$USER`)
-- `JOB_MONITOR_SSH_KEY` (default: `~/.ssh/id_ed25519`)
-- `JOB_MONITOR_MOUNT_MAP` (JSON map of cluster -> mount roots)
+- `NCLUSTER_SSH_USER` (default: `$USER`)
+- `NCLUSTER_SSH_KEY` (default: `~/.ssh/id_ed25519`)
+- `NCLUSTER_MOUNT_MAP` (JSON map of cluster -> mount roots)
 
 ## Job Name Prefix Protocol
 
@@ -197,6 +199,15 @@ Dependency chain auto-detection from run name suffixes:
 | POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
 | POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
 | POST | `/api/cleanup` | Delete old history records |
+
+### Partitions & Recommendations
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/partitions` | Partition data for all clusters |
+| GET | `/api/partitions/<cluster>` | Partition data for one cluster |
+| GET | `/api/partition_summary` | Compact cross-cluster partition overview |
+| POST | `/api/recommend` | Recommend best cluster+partition for a job (JSON body) |
 
 ### Mounts & Settings
 

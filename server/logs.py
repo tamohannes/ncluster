@@ -21,7 +21,7 @@ from .mounts import (
     mounted_root, remote_path_from_mounted,
 )
 
-from .crash_detect import detect_crash  # noqa: F401 — re-exported for consumers
+from .crash_detect import detect_crash, detect_soft_failure  # noqa: F401 — re-exported for consumers
 
 _PROGRESS_RE = re.compile(r'(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
 
@@ -342,13 +342,19 @@ STDERR=""
 
 SCTL=$(scontrol show job "$JOB" 2>/dev/null)
 if [ -n "$SCTL" ]; then
+  OWNER=$(echo "$SCTL" | tr ' ' '\\n' | grep '^UserId=' | head -1 | cut -d= -f2- | cut -d'(' -f1)
+  if [ -n "$OWNER" ] && [ "$OWNER" != "$USER" ]; then
+    SCTL=""
+  fi
+fi
+if [ -n "$SCTL" ]; then
   STDOUT=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2- | sed "s/%j/$JOB/g")
   STDERR=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdErr=' | cut -d= -f2- | sed "s/%j/$JOB/g")
   [ -n "$STDOUT" ] && LOGDIR=$(dirname "$STDOUT")
 fi
 
 if [ -z "$LOGDIR" ]; then
-  STDOUT=$(sacct -j "$JOB" --format=StdOut --noheader -P 2>/dev/null | head -1 | tr -d ' ')
+  STDOUT=$(sacct -u $USER -j "$JOB" --format=StdOut --noheader -P 2>/dev/null | head -1 | tr -d ' ')
   [ -n "$STDOUT" ] && LOGDIR=$(dirname "$(echo "$STDOUT" | sed "s/%j/$JOB/g")")
 fi
 {db_logdir_clause}

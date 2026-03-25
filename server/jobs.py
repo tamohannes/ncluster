@@ -14,7 +14,7 @@ from .config import (
     _cache_lock, _cache, _seen_jobs, _last_polled,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, _stats_cache,
-    _progress_cache, _crash_cache, _est_start_cache,
+    _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
     _prefetch_last, _warm_lock,
     LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC,
     EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
@@ -27,7 +27,7 @@ from .db import (
 )
 from .logs import (
     get_job_log_files, fetch_log_tail, extract_progress, detect_crash,
-    label_and_sort_files,
+    detect_soft_failure, label_and_sort_files,
 )
 
 _DEP_RE = re.compile(r'(after\w*):(\d+)')
@@ -127,13 +127,14 @@ def sacct_final(cluster_name, job_id):
     try:
         fmt = "JobID,JobName,State,ExitCode,Elapsed,Start,End"
         if cluster_name == "local":
+            user = os.environ.get("USER", DEFAULT_USER)
             result = subprocess.run(
-                ["sacct", "-j", job_id, f"--format={fmt}", "--noheader", "-P"],
+                ["sacct", "-u", user, "-j", job_id, f"--format={fmt}", "--noheader", "-P"],
                 capture_output=True, text=True, timeout=5
             )
             out = result.stdout.strip()
         else:
-            out, _ = ssh_run(cluster_name, f"sacct -j {job_id} --format={fmt} --noheader -P 2>/dev/null | head -1")
+            out, _ = ssh_run(cluster_name, f"sacct -u $USER -j {job_id} --format={fmt} --noheader -P 2>/dev/null | head -1")
         if not out:
             return {}
         parts = out.split("|")
@@ -149,10 +150,21 @@ def _try_get_stdout_path(cluster_name, job_id):
     try:
         out, _ = ssh_run_with_timeout(
             cluster_name,
-            f"scontrol show job {job_id} 2>/dev/null | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2-",
+            f"scontrol show job {job_id} 2>/dev/null | tr ' ' '\\n' | grep -E '^(StdOut|UserId)=' | cut -d= -f2-",
             timeout_sec=5,
         )
-        path = out.strip()
+        lines = out.strip().splitlines()
+        path = ""
+        is_mine = False
+        for line in lines:
+            if line.startswith("/"):
+                path = line
+            elif "(" in line:
+                is_mine = line.split("(")[0].strip() == os.environ.get("USER", DEFAULT_USER)
+            else:
+                is_mine = line.strip() == os.environ.get("USER", DEFAULT_USER)
+        if not is_mine:
+            return ""
         return path if path and path != "(null)" else ""
     except Exception:
         return ""
@@ -162,7 +174,7 @@ def get_job_stats(cluster, job_id):
     if cluster == "local":
         return {"status": "error", "error": "Stats popup is supported for Slurm clusters only."}
     try:
-        sq, _ = ssh_run_with_timeout(cluster, f"squeue -j {job_id} -h -o '%T|%D|%C|%b|%N|%M'", timeout_sec=10)
+        sq, _ = ssh_run_with_timeout(cluster, f"squeue -u $USER -j {job_id} -h -o '%T|%D|%C|%b|%N|%M'", timeout_sec=10)
         if not sq:
             sctl, _ = ssh_run_with_timeout(cluster, f"scontrol show job {job_id} 2>/dev/null", timeout_sec=10)
             if not sctl:
@@ -173,6 +185,9 @@ def get_job_stats(cluster, job_id):
                 if "=" in t:
                     k, v = t.split("=", 1)
                     kv[k] = v
+            owner = kv.get("UserId", "").split("(")[0]
+            if owner and owner != os.environ.get("USER", DEFAULT_USER):
+                return {"status": "error", "error": "Job belongs to another user."}
             state, nodes, cpus = kv.get("JobState", ""), kv.get("NumNodes", ""), kv.get("NumCPUs", "")
             gres, node_list, elapsed = kv.get("TresPerNode", kv.get("Gres", "")), kv.get("NodeList", ""), kv.get("RunTime", "")
         else:
@@ -334,8 +349,20 @@ def _capture_run_metadata(cluster, root_job_id, run_id):
     """SSH to cluster and capture batch script, scontrol output, and conda state."""
     enable_standalone_ssh()
     script = f"""#!/bin/sh
+SCTL=$(scontrol show job {root_job_id} 2>/dev/null)
+OWNER=$(echo "$SCTL" | tr ' ' '\\n' | grep '^UserId=' | head -1 | cut -d= -f2- | cut -d'(' -f1)
+if [ -n "$OWNER" ] && [ "$OWNER" != "$USER" ]; then
+  echo "===SCONTROL_START==="
+  echo "===SCONTROL_END==="
+  echo "===BATCH_START==="
+  echo "===BATCH_END==="
+  echo "===CONDA_START==="
+  echo "(wrong user)"
+  echo "===CONDA_END==="
+  exit 0
+fi
 echo "===SCONTROL_START==="
-scontrol show job {root_job_id} 2>/dev/null
+echo "$SCTL"
 echo "===SCONTROL_END==="
 echo "===BATCH_START==="
 scontrol write batch_script {root_job_id} - 2>/dev/null
@@ -576,6 +603,9 @@ def poll_cluster(name):
     if not prev_ids and name != "local":
         _reconcile_db_with_squeue(name, current_ids)
 
+    if not _softfail_migrated:
+        _schedule_softfail_migration()
+
 
 def _capture_stdout_paths(cluster_name, job_ids):
     """Bulk-capture StdOut paths via scontrol for running jobs, store in DB.
@@ -587,7 +617,10 @@ def _capture_stdout_paths(cluster_name, job_ids):
         return
     ids_str = " ".join(str(j) for j in job_ids)
     script = f"""for JOB in {ids_str}; do
-  STDOUT=$(scontrol show job "$JOB" 2>/dev/null | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2-)
+  INFO=$(scontrol show job "$JOB" 2>/dev/null | tr ' ' '\\n')
+  OWNER=$(echo "$INFO" | grep '^UserId=' | cut -d= -f2- | cut -d'(' -f1)
+  [ "$OWNER" != "$USER" ] && continue
+  STDOUT=$(echo "$INFO" | grep '^StdOut=' | cut -d= -f2-)
   [ -n "$STDOUT" ] && [ "$STDOUT" != "(null)" ] && echo "LOGPATH:$JOB:$STDOUT"
 done"""
     try:
@@ -638,6 +671,21 @@ def _detect_crash_on_complete(cluster, job_id, log_path=""):
         return None
 
 
+def _read_finalize_log(cluster, job_id, log_path=""):
+    """Read the log tail for finalization analysis (crash + soft-failure)."""
+    jid = str(job_id)
+    try:
+        if log_path:
+            return fetch_log_tail(cluster, log_path, lines=150)
+        log_result = get_job_log_files(cluster, jid)
+        files = log_result.get("files", [])
+        if not files:
+            return None
+        return fetch_log_tail(cluster, files[0]["path"], lines=150)
+    except Exception:
+        return None
+
+
 def _finalize_gone_job(cluster, job_id, prev_job):
     prev_state = prev_job.get("state", "").upper()
     prev_reason = prev_job.get("reason", "")
@@ -668,13 +716,25 @@ def _finalize_gone_job(cluster, job_id, prev_job):
     if not log_path and cluster != "local":
         log_path = _try_get_stdout_path(cluster, job_id)
 
-    # Sacct may report COMPLETED even when the process crashed internally
-    # (e.g. Python traceback with exit code 0). Check logs for crash patterns.
-    if final_state == "COMPLETED" and cluster != "local":
-        crash = _detect_crash_on_complete(cluster, job_id, log_path)
-        if crash:
-            final_state = "FAILED"
-            reason = f"log crash: {crash}"
+    # Analyze logs to catch two cases:
+    # 1. sacct says COMPLETED but logs contain a real crash → upgrade to FAILED
+    # 2. sacct says FAILED but logs show work was already done → downgrade to COMPLETED
+    if cluster != "local" and final_state in ("COMPLETED", "FAILED"):
+        content = _read_finalize_log(cluster, job_id, log_path)
+        if content:
+            crash = detect_crash(content)
+            soft = detect_soft_failure(content)
+
+            if final_state == "COMPLETED" and crash:
+                if soft:
+                    reason = f"soft-fail: {soft}"
+                else:
+                    final_state = "FAILED"
+                    reason = f"log crash: {crash}"
+                    _cache_set(_crash_cache, (cluster, str(job_id)), crash)
+            elif final_state == "FAILED" and soft:
+                final_state = "COMPLETED"
+                reason = f"soft-fail: {soft}"
 
     record = final if final else {
         "jobid": job_id, "name": prev_job.get("name", ""), "state": final_state,
@@ -714,18 +774,171 @@ def _reconcile_db_with_squeue(cluster, live_ids):
         if jid not in live_ids:
             final = sacct_final(cluster, jid)
             final_state = (final.get("state", "") or "COMPLETED").upper().split()[0]
-            crash = None
-            if final_state == "COMPLETED":
-                crash = _detect_crash_on_complete(cluster, jid)
-                if crash:
-                    final_state = "FAILED"
+            reason_override = None
+
+            if cluster != "local" and final_state in ("COMPLETED", "FAILED"):
+                content = _read_finalize_log(cluster, jid)
+                if content:
+                    crash = detect_crash(content)
+                    soft = detect_soft_failure(content)
+
+                    if final_state == "COMPLETED" and crash:
+                        if soft:
+                            reason_override = f"soft-fail: {soft}"
+                        else:
+                            final_state = "FAILED"
+                            reason_override = f"log crash: {crash}"
+                    elif final_state == "FAILED" and soft:
+                        final_state = "COMPLETED"
+                        reason_override = f"soft-fail: {soft}"
+
             record = final if final else {"jobid": jid, "state": final_state, "ended_at": datetime.now().isoformat()}
-            if crash:
-                record["state"] = "FAILED"
-                record["reason"] = f"log crash: {crash}"
+            record["state"] = final_state
+            if reason_override:
+                record["reason"] = reason_override
             record.setdefault("jobid", jid)
             record.setdefault("ended_at", datetime.now().isoformat())
             upsert_job(cluster, record, terminal=True)
+
+
+# ─── Soft-fail migration for existing DB records ─────────────────────────────
+
+_softfail_migrated = False
+
+def _find_log_dir_for_job(cluster, job_id):
+    """Find the log directory by checking parent dependencies, run siblings,
+    and jobs with the same name — any job that shares the log directory."""
+    con = get_db()
+    row = con.execute(
+        "SELECT run_id, dependency, job_name FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, job_id),
+    ).fetchone()
+    if not row:
+        con.close()
+        return ""
+
+    # 1. Check parent dependency jobs
+    dep = row["dependency"] or ""
+    for m in re.finditer(r'after\w+:(\d+)', dep):
+        parent = con.execute(
+            "SELECT log_path FROM job_history WHERE cluster=? AND job_id=? "
+            "AND log_path IS NOT NULL AND log_path != ''",
+            (cluster, m.group(1)),
+        ).fetchone()
+        if parent and parent["log_path"]:
+            con.close()
+            return os.path.dirname(parent["log_path"])
+
+    # 2. Check sibling jobs in the same run
+    if row["run_id"]:
+        sibling = con.execute(
+            "SELECT log_path FROM job_history "
+            "WHERE cluster=? AND run_id=? AND log_path IS NOT NULL AND log_path != '' LIMIT 1",
+            (cluster, row["run_id"]),
+        ).fetchone()
+        if sibling and sibling["log_path"]:
+            con.close()
+            return os.path.dirname(sibling["log_path"])
+
+    # 3. Check jobs with same name (different chunks of the same eval)
+    if row["job_name"]:
+        same_name = con.execute(
+            "SELECT log_path FROM job_history "
+            "WHERE cluster=? AND job_name=? AND log_path IS NOT NULL AND log_path != '' LIMIT 1",
+            (cluster, row["job_name"]),
+        ).fetchone()
+        if same_name and same_name["log_path"]:
+            con.close()
+            return os.path.dirname(same_name["log_path"])
+
+    con.close()
+    return ""
+
+
+def reevaluate_failed_for_softfail():
+    """Background one-shot: re-check board-pinned FAILED jobs for soft failure.
+
+    Runs once after startup so that jobs finalized before the soft-fail
+    feature was deployed get retroactively reclassified.
+    """
+    global _softfail_migrated
+    if _softfail_migrated:
+        return
+    _softfail_migrated = True
+
+    enable_standalone_ssh()
+    con = get_db()
+    rows = con.execute(
+        "SELECT cluster, job_id, log_path FROM job_history "
+        "WHERE board_visible=1 AND state='FAILED' AND cluster != 'local'"
+    ).fetchall()
+    con.close()
+
+    if not rows:
+        return
+
+    # Group by cluster to batch SSH calls
+    by_cluster = {}
+    for row in rows:
+        by_cluster.setdefault(row["cluster"], []).append(row)
+
+    for cluster, cluster_rows in by_cluster.items():
+        # Collect jobs that need log dir lookup from siblings
+        need_search = []
+        for row in cluster_rows:
+            jid, log_path = row["job_id"], row["log_path"] or ""
+            content = _read_finalize_log(cluster, jid, log_path) if log_path else None
+            if content:
+                soft = detect_soft_failure(content)
+                if soft:
+                    _update_to_softfail(cluster, jid, soft)
+            else:
+                log_dir = _find_log_dir_for_job(cluster, jid)
+                if log_dir:
+                    need_search.append((jid, log_dir))
+
+        if not need_search:
+            continue
+
+        # Batch SSH: read main srun log for each job from the sibling log dir
+        for jid, log_dir in need_search:
+            try:
+                cmd = f"ls '{log_dir}/' 2>/dev/null | grep '{jid}' | grep 'main.*srun' | head -1"
+                out, _ = ssh_run_with_timeout(cluster, cmd, timeout_sec=10)
+                fname = out.strip()
+                if not fname:
+                    cmd2 = f"ls '{log_dir}/' 2>/dev/null | grep '{jid}' | head -1"
+                    out2, _ = ssh_run_with_timeout(cluster, cmd2, timeout_sec=10)
+                    fname = out2.strip()
+                if not fname:
+                    continue
+                full_path = f"{log_dir}/{fname}"
+                content = fetch_log_tail(cluster, full_path, lines=150)
+                if content:
+                    soft = detect_soft_failure(content)
+                    if soft:
+                        _update_to_softfail(cluster, jid, soft)
+            except Exception:
+                continue
+
+
+def _update_to_softfail(cluster, job_id, soft_reason):
+    con = get_db()
+    con.execute(
+        "UPDATE job_history SET state='COMPLETED', reason=? "
+        "WHERE cluster=? AND job_id=?",
+        (f"soft-fail: {soft_reason}", cluster, job_id),
+    )
+    con.commit()
+    con.close()
+
+
+def _schedule_softfail_migration():
+    """Called once from poll_cluster; spawns the migration in a background thread."""
+    global _softfail_migrated
+    if _softfail_migrated:
+        return
+    threading.Thread(target=reevaluate_failed_for_softfail, daemon=True).start()
 
 
 # ─── Prefetch ────────────────────────────────────────────────────────────────
@@ -751,6 +964,22 @@ def schedule_prefetch(cluster, job_id):
     t.start()
 
 
+def _extract_progress_with_source(cluster, job_id, files):
+    """Try files in order, return (pct, label) from the first file with progress."""
+    for f in files:
+        content = fetch_log_tail(cluster, f["path"], lines=220)
+        _cache_set(_log_content_cache, (cluster, job_id, f["path"]), content)
+        pct = extract_progress(content)
+        crash = detect_crash(content)
+        if crash is not None:
+            _cache_set(_crash_cache, (cluster, job_id), crash)
+        if pct is not None:
+            _cache_set(_progress_cache, (cluster, job_id), pct)
+            _cache_set(_progress_source_cache, (cluster, job_id), f.get("label", ""))
+            return pct, f.get("label", "")
+    return None, ""
+
+
 def _prefetch_job_data(cluster, job_id):
     enable_standalone_ssh()
     try:
@@ -759,15 +988,7 @@ def _prefetch_job_data(cluster, job_id):
             _cache_set(_log_index_cache, (cluster, job_id), log_result)
             files = log_result.get("files", [])
             if files:
-                first = files[0]["path"]
-                content = fetch_log_tail(cluster, first, lines=220)
-                _cache_set(_log_content_cache, (cluster, job_id, first), content)
-                pct = extract_progress(content)
-                if pct is not None:
-                    _cache_set(_progress_cache, (cluster, job_id), pct)
-                crash = detect_crash(content)
-                if crash is not None:
-                    _cache_set(_crash_cache, (cluster, job_id), crash)
+                _extract_progress_with_source(cluster, job_id, files)
         except Exception:
             pass
         try:
@@ -811,9 +1032,9 @@ def prefetch_cluster_bulk(cluster, job_ids):
     ids = [str(j) for j in job_ids if j]
     ids_csv = ",".join(ids)
 
-    # Bulk stats via SSH (lightweight squeue call)
+    # Bulk stats via SSH (user-filtered squeue call)
     script = f"""#!/bin/sh
-squeue -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
+squeue -u $USER -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
 """
     try:
         out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=15)
@@ -839,12 +1060,4 @@ squeue -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
         log_result = get_job_log_files(cluster, jid)
         if log_result and log_result.get("files"):
             _cache_set(_log_index_cache, (cluster, jid), log_result)
-            first = log_result["files"][0]["path"]
-            content = fetch_log_tail(cluster, first, lines=220)
-            _cache_set(_log_content_cache, (cluster, jid, first), content)
-            pct = extract_progress(content)
-            if pct is not None:
-                _cache_set(_progress_cache, (cluster, jid), pct)
-            crash = detect_crash(content)
-            if crash is not None:
-                _cache_set(_crash_cache, (cluster, jid), crash)
+            _extract_progress_with_source(cluster, jid, log_result["files"])

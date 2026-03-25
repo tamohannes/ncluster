@@ -13,7 +13,7 @@ from .config import (
     CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
     _CONFIG, _cache_lock, _cache,
     _cache_get, _cache_set,
-    _log_content_cache, _dir_list_cache, _progress_cache, _crash_cache, _est_start_cache,
+    _log_content_cache, _dir_list_cache, _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
     reload_config, settings_response,
     get_project_color, get_project_emoji, extract_project,
@@ -126,6 +126,9 @@ def api_jobs():
                 pct = _cache_get(_progress_cache, (name, jid), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+                    src = _cache_get(_progress_source_cache, (name, jid), PROGRESS_TTL_SEC)
+                    if src:
+                        j["progress_source"] = src
                 crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC)
                 if crash:
                     j["crash_detected"] = crash
@@ -305,6 +308,9 @@ def api_jobs_cluster(cluster):
                 pct = _cache_get(_progress_cache, (cluster, jid), PROGRESS_TTL_SEC)
                 if pct is not None:
                     j["progress"] = pct
+                    src = _cache_get(_progress_source_cache, (cluster, jid), PROGRESS_TTL_SEC)
+                    if src:
+                        j["progress_source"] = src
                 crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC)
                 if crash:
                     j["crash_detected"] = crash
@@ -364,6 +370,7 @@ def api_progress():
     payload = request.get_json(silent=True) or {}
     jobs = payload.get("jobs", [])
     progress = {}
+    progress_sources = {}
     est_starts = {}
     for item in jobs:
         c = item.get("cluster")
@@ -373,10 +380,13 @@ def api_progress():
         pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC)
         if pct is not None:
             progress[f"{c}:{jid}"] = pct
+            src = _cache_get(_progress_source_cache, (c, jid), PROGRESS_TTL_SEC)
+            if src:
+                progress_sources[f"{c}:{jid}"] = src
         est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC)
         if est:
             est_starts[f"{c}:{jid}"] = est
-    return jsonify({"progress": progress, "est_starts": est_starts})
+    return jsonify({"progress": progress, "progress_sources": progress_sources, "est_starts": est_starts})
 
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
@@ -670,6 +680,9 @@ def api_log(cluster, job_id):
         pct = extract_progress(content)
         if pct is not None:
             _cache_set(_progress_cache, (cluster, str(job_id)), pct)
+            from .logs import label_log
+            _cache_set(_progress_source_cache, (cluster, str(job_id)),
+                       label_log(os.path.basename(log_path)))
         from .logs import detect_crash
         crash = detect_crash(content)
         if crash is not None:
@@ -881,6 +894,59 @@ def api_cluster_utilization():
     if not data:
         return jsonify({"status": "error", "error": "External dashboard unreachable"}), 502
     return jsonify({"status": "ok", **data})
+
+
+# ─── Partition & recommendation routes ───────────────────────────────────────
+
+from .partitions import get_partitions as _get_partitions, get_all_partitions, get_partition_summary
+
+
+@api.route("/api/partitions")
+def api_partitions_all():
+    force = request.args.get("force", "0") == "1"
+    data = get_all_partitions(force=force)
+    return jsonify({"status": "ok", "clusters": data})
+
+
+@api.route("/api/partitions/<cluster>")
+def api_partitions_cluster(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if cluster == "local":
+        return jsonify({"status": "error", "error": "No partitions for local"}), 400
+    force = request.args.get("force", "0") == "1"
+    data = _get_partitions(cluster, force=force)
+    if data is None:
+        return jsonify({"status": "error", "error": f"Could not fetch partitions from {cluster}"}), 502
+    return jsonify({"status": "ok", "cluster": cluster, "partitions": data})
+
+
+@api.route("/api/partition_summary")
+def api_partition_summary():
+    data = get_partition_summary()
+    return jsonify({"status": "ok", "clusters": data})
+
+
+@api.route("/api/recommend", methods=["POST"])
+def api_recommend():
+    from .recommendations import recommend
+    payload = request.get_json(silent=True) or {}
+    nodes = payload.get("nodes", 1)
+    time_limit = payload.get("time_limit", "4:00:00")
+    account = payload.get("account", "")
+    can_preempt = payload.get("can_preempt", False)
+    gpu_type = payload.get("gpu_type", "")
+    clusters = payload.get("clusters", None)
+
+    try:
+        results = recommend(
+            nodes=nodes, time_limit=time_limit, account=account,
+            can_preempt=can_preempt, gpu_type=gpu_type, clusters=clusters,
+        )
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify({"status": "ok", "recommendations": results})
 
 
 from .logbooks import (

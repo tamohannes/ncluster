@@ -7,8 +7,10 @@ import time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 APP_ROOT = PROJECT_ROOT
-DEFAULT_USER = os.environ.get("JOB_MONITOR_SSH_USER") or os.environ.get("USER") or "user"
-DEFAULT_SSH_KEY = os.path.expanduser(os.environ.get("JOB_MONITOR_SSH_KEY", "~/.ssh/id_ed25519"))
+DEFAULT_USER = os.environ.get("NCLUSTER_SSH_USER") or os.environ.get("USER") or "user"
+DEFAULT_SSH_KEY = os.path.expanduser(
+    os.environ.get("NCLUSTER_SSH_KEY", "~/.ssh/id_ed25519")
+)
 DB_PATH = os.path.join(PROJECT_ROOT, "data", "history.db")
 SSH_TIMEOUT = 8
 CACHE_FRESH_SEC = 30
@@ -47,10 +49,11 @@ for _name, _cfg in _CONFIG.get("clusters", {}).items():
         "key": os.path.expanduser(_cfg.get("key", DEFAULT_SSH_KEY)),
         "port": _cfg.get("port", 22),
         "gpu_type": _cfg.get("gpu_type", ""),
+        "gpus_per_node": _cfg.get("gpus_per_node", 0),
     }
 CLUSTERS["local"] = {
     "host": None, "data_host": "", "user": None, "key": None,
-    "port": None, "gpu_type": "local",
+    "port": None, "gpu_type": "local", "gpus_per_node": 0,
 }
 
 
@@ -58,14 +61,13 @@ def _load_mount_map():
     """Build MOUNT_MAP: cluster -> list of local mount roots.
 
     With mount_paths config, each cluster has indexed subdirs:
-      ~/.job-monitor/mounts/<cluster>/0/
-      ~/.job-monitor/mounts/<cluster>/1/
+      ~/.ncluster/mounts/<cluster>/0/
+      ~/.ncluster/mounts/<cluster>/1/
       ...
-    Falls back to the old single-dir layout if no indexed subdirs exist.
     """
     home = os.path.expanduser("~")
-    base = os.path.join(home, ".job-monitor", "mounts")
-    raw = os.environ.get("JOB_MONITOR_MOUNT_MAP", "").strip()
+    base = os.path.join(home, ".ncluster", "mounts")
+    raw = os.environ.get("NCLUSTER_MOUNT_MAP", "").strip()
     if raw:
         try:
             parsed = json.loads(raw)
@@ -139,6 +141,7 @@ _log_content_cache = {}
 _stats_cache = {}
 _dir_list_cache = {}
 _progress_cache = {}
+_progress_source_cache = {}
 _crash_cache = {}
 _est_start_cache = {}
 _prefetch_last = {}
@@ -301,6 +304,7 @@ def reload_config(new_cfg):
             "key": os.path.expanduser(ccfg.get("key", DEFAULT_SSH_KEY)),
             "port": ccfg.get("port", 22),
             "gpu_type": ccfg.get("gpu_type", ""),
+            "gpus_per_node": ccfg.get("gpus_per_node", 0),
         }
     new_clusters["local"] = {
         "host": None, "data_host": "", "user": None, "key": None,

@@ -33,6 +33,8 @@
         <div class="stat-row"><span class="dot" style="background:var(--cyan)"></span><span class="stat-val" id="s-clusters">—</span><span class="stat-lbl">clusters up</span></div>
         <div class="stat-row"><span class="dot" style="background:var(--green)"></span><span class="stat-val" id="s-mounted">—</span><span class="stat-lbl">mounted</span></div>
       </div>
+      <button class="advisor-btn" onclick="openAdvisor()" title="Submit Advisor — find the best cluster &amp; partition">Submit Advisor</button>
+      <button class="avail-btn" onclick="openClusterAvail()" title="Cluster availability — partition wait times &amp; idle GPUs">Cluster Availability</button>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Projects</div>
@@ -337,6 +339,50 @@
           <button class="btn" style="margin-top:8px;width:100%" onclick="saveProcessFilters()">save</button>
         </div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Submit Advisor modal -->
+<div class="advisor-overlay" id="advisor-overlay" onclick="if(event.target===this)closeAdvisor()">
+  <div class="advisor-modal">
+    <div class="advisor-head">
+      <div>
+        <div class="advisor-title">Submit Advisor</div>
+        <div class="advisor-sub">Find the best cluster &amp; partition for your job</div>
+      </div>
+      <button class="modal-close" onclick="closeAdvisor()">×</button>
+    </div>
+    <div class="advisor-form">
+      <label class="adv-field"><span>Nodes</span><input type="number" id="adv-nodes" value="1" min="1" max="1024"></label>
+      <label class="adv-field"><span>Time limit</span><input type="text" id="adv-time" value="4:00:00" placeholder="HH:MM:SS"></label>
+      <label class="adv-field"><span>Cluster (optional)</span>
+        <select id="adv-cluster">
+          <option value="">All clusters</option>
+          {% for name in clusters %}{% if name != 'local' %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
+        </select>
+      </label>
+      <label class="adv-field adv-toggle"><input type="checkbox" id="adv-preempt"><span>Include preemptable (backfill)</span></label>
+      <button class="btn advisor-go-btn" onclick="runAdvisor()">Recommend</button>
+    </div>
+    <div class="advisor-results" id="adv-results">
+      <div class="no-jobs">Click "Recommend" to get suggestions</div>
+    </div>
+  </div>
+</div>
+
+<!-- Cluster Availability modal -->
+<div class="avail-overlay" id="avail-overlay" onclick="if(event.target===this)closeClusterAvail()">
+  <div class="avail-modal">
+    <div class="avail-head">
+      <div>
+        <div class="avail-title">Cluster Availability <span style="font-size:9px;font-weight:500;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-bd);padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px">beta</span></div>
+        <div class="avail-sub">Partition wait times &amp; idle GPUs across all clusters &mdash; estimates may be inaccurate</div>
+      </div>
+      <button class="modal-close" onclick="closeClusterAvail()">×</button>
+    </div>
+    <div class="avail-body" id="avail-body">
+      <div class="no-jobs">Loading partition data...</div>
     </div>
   </div>
 </div>

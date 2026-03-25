@@ -249,7 +249,7 @@ function renderCard(name, data) {
         : `<span class="dim">${j.nodes || '—'}n</span>`;
       const isPinned = j._pinned;
       const st = (j.state || '').toUpperCase();
-      const pinKind = isPinned ? (isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
+      const pinKind = isPinned ? (isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
       const depth = depthInGroup(j, byId, idSet, depthMemo);
 
       const isBackup = backupSet.has(j.jobid);
@@ -296,12 +296,12 @@ function renderCard(name, data) {
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
 
       const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)};` : '';
-      const _pct = resolveProgress(name, j.jobid, j.progress, j.state);
+      const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
       return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start, _jobMeta)} ${bkBadge}${depBadge}</td>
+        <td>${stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, _jobMeta, _prog.source)} ${bkBadge}${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
@@ -356,7 +356,7 @@ function renderCard(name, data) {
         <span class="card-name">${name}</span>
         <span class="badge">${info.gpu_type}</span>
         ${hasRunning ? '<span class="badge badge-accent">● active</span>' : ''}
-        ${utilBar}${quotaBadgesHtml(name)}
+        ${utilBar}${partitionChipHtml(name)}${quotaBadgesHtml(name)}
       </div>
       <div class="card-meta">
         <span class="status-indicator ${statusClass}"></span>
@@ -509,16 +509,18 @@ async function _fetchProgressUpdate(batch) {
     });
     const result = await res.json();
     const progressMap = result.progress || result;
+    const progressSources = result.progress_sources || {};
     const estStarts = result.est_starts || {};
     let changed = false;
     for (const [key, pct] of Object.entries(progressMap)) {
       const [cluster, jobid] = key.split(':');
       _progressCache[key] = pct;
+      if (progressSources[key]) _progressSourceCache[key] = progressSources[key];
       if (allData[cluster]) {
         for (const j of (allData[cluster].jobs || [])) {
-          if (String(j.jobid) === jobid && j.progress !== pct) {
-            j.progress = pct;
-            changed = true;
+          if (String(j.jobid) === jobid) {
+            if (j.progress !== pct) { j.progress = pct; changed = true; }
+            if (progressSources[key]) j.progress_source = progressSources[key];
           }
         }
       }
@@ -572,6 +574,9 @@ async function fetchAll() {
 
   fetchClusterUtilization().then(() => {
     if (_clusterUtil && Object.keys(allData).length) _renderAll();
+  });
+  fetchPartitions().then(() => {
+    if (_partitionData && Object.keys(allData).length) _renderAll();
   });
   if (!Object.keys(_storageQuota).length) {
     fetchStorageQuotas().then(() => {

@@ -40,26 +40,26 @@ class TestCacheGetSet:
 class TestLoadMountMap:
     @pytest.mark.unit
     def test_default_when_env_empty(self, monkeypatch):
-        monkeypatch.delenv("JOB_MONITOR_MOUNT_MAP", raising=False)
+        monkeypatch.delenv("NCLUSTER_MOUNT_MAP", raising=False)
         result = _load_mount_map()
         assert isinstance(result, dict)
 
     @pytest.mark.unit
     def test_valid_json_env(self, monkeypatch, mock_cluster):
-        monkeypatch.setenv("JOB_MONITOR_MOUNT_MAP",
+        monkeypatch.setenv("NCLUSTER_MOUNT_MAP",
                            json.dumps({mock_cluster: ["~/.jm/mounts/test"]}))
         result = _load_mount_map()
         assert mock_cluster in result
 
     @pytest.mark.unit
     def test_malformed_json_falls_back(self, monkeypatch):
-        monkeypatch.setenv("JOB_MONITOR_MOUNT_MAP", "not json{{{")
+        monkeypatch.setenv("NCLUSTER_MOUNT_MAP", "not json{{{")
         result = _load_mount_map()
         assert isinstance(result, dict)
 
     @pytest.mark.unit
     def test_string_root_wrapped_in_list(self, monkeypatch, mock_cluster):
-        monkeypatch.setenv("JOB_MONITOR_MOUNT_MAP",
+        monkeypatch.setenv("NCLUSTER_MOUNT_MAP",
                            json.dumps({mock_cluster: "/single/path"}))
         result = _load_mount_map()
         if mock_cluster in result:

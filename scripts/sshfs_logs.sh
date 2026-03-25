@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Mount/unmount per-user cluster directories via sshfs.
 # Each cluster has mount_paths[] in config.json — each path gets its own
-# sshfs mount at ~/.job-monitor/mounts/<cluster>/<index>/ (ncluster).
+# sshfs mount at ~/.ncluster/mounts/<cluster>/<index>/.
+#
 #
 # Usage:
 #   ./scripts/sshfs_logs.sh mount
@@ -23,14 +24,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 ACTION="${1:-status}"
-BASE="${HOME}/.job-monitor/mounts"
-USER_NAME="${JOB_MONITOR_SSH_USER:-${USER:-}}"
+BASE="${HOME}/.ncluster/mounts"
+USER_NAME="${NCLUSTER_SSH_USER:-${USER:-}}"
 if [[ -z "$USER_NAME" ]]; then
   USER_NAME="$(whoami)"
 fi
 TARGET_CLUSTER="${2:-all}"
 FAILED=0
-KEY_PATH="${JOB_MONITOR_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
+KEY_PATH="${NCLUSTER_SSH_KEY:-${HOME}/.ssh/id_ed25519}"
 
 _cluster_field() {
   python3 -c "
@@ -59,7 +60,7 @@ with open('${CONFIG_FILE}') as f:
     cfg = json.load(f)
 c = cfg.get('clusters', {}).get('$1', {})
 paths = c.get('mount_paths', [])
-user = os.environ.get('JOB_MONITOR_SSH_USER') or os.environ.get('USER') or 'user'
+user = os.environ.get('NCLUSTER_SSH_USER') or os.environ.get('USER') or 'user'
 for p in paths:
     print(p.replace('\$USER', user))
 "

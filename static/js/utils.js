@@ -64,26 +64,39 @@ const _progressCache = (() => {
     return JSON.parse(sessionStorage.getItem('ncluster.progress') || '{}');
   } catch (_) { return {}; }
 })();
+const _progressSourceCache = (() => {
+  try {
+    return JSON.parse(sessionStorage.getItem('ncluster.progressSrc') || '{}');
+  } catch (_) { return {}; }
+})();
 
 function _saveProgressCache() {
   try { sessionStorage.setItem('ncluster.progress', JSON.stringify(_progressCache)); } catch (_) {}
+  try { sessionStorage.setItem('ncluster.progressSrc', JSON.stringify(_progressSourceCache)); } catch (_) {}
 }
 
-function resolveProgress(cluster, jobid, apiProgress, state) {
+function resolveProgress(cluster, jobid, apiProgress, state, apiSource) {
   const key = `${cluster}:${jobid}`;
   const st = (state || '').toUpperCase();
   if (st !== 'RUNNING' && st !== 'COMPLETING') {
     delete _progressCache[key];
-    return apiProgress;
+    delete _progressSourceCache[key];
+    return { pct: apiProgress, source: apiSource || '' };
   }
   if (apiProgress != null) {
     _progressCache[key] = apiProgress;
-    return apiProgress;
+    if (apiSource) _progressSourceCache[key] = apiSource;
+    return { pct: apiProgress, source: apiSource || _progressSourceCache[key] || '' };
   }
-  return _progressCache[key] ?? null;
+  return { pct: _progressCache[key] ?? null, source: _progressSourceCache[key] || '' };
 }
 
-function stateClass(s) {
+function isSoftFail(state, reason) {
+  return (state || '').toUpperCase() === 'COMPLETED' && (reason || '').startsWith('soft-fail:');
+}
+
+function stateClass(s, reason) {
+  if (isSoftFail(s, reason)) return 's-SOFT_FAIL';
   s = (s || '').toUpperCase().split(' ')[0];
   if (s === 'RUNNING')    return 's-RUNNING';
   if (s === 'PENDING')    return 's-PENDING';
@@ -94,26 +107,34 @@ function stateClass(s) {
   return 's-OTHER';
 }
 
-function progressRing(pct) {
+function _isServerSource(source) {
+  return (source || '').toLowerCase().includes('server');
+}
+
+function progressRing(pct, isServer) {
   const r = 5, c = 2 * Math.PI * r;
   const dash = (pct / 100) * c;
-  return `<svg class="progress-ring" width="14" height="14" viewBox="0 0 14 14" role="img">
-    <title>${pct}%</title>
+  const svgCls = isServer ? 'progress-ring ring-server' : 'progress-ring';
+  return `<svg class="${svgCls}" width="14" height="14" viewBox="0 0 14 14" role="img">
+    <title>${pct}%${isServer ? ' (loading)' : ''}</title>
     <circle class="ring-bg" cx="7" cy="7" r="${r}" fill="none" stroke-width="1.8"/>
     <circle class="ring-fg" cx="7" cy="7" r="${r}" fill="none" stroke-width="1.8"
       stroke-dasharray="${dash.toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 7 7)"/>
   </svg>`;
 }
 
-function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMeta) {
-  const cls = stateClass(s);
+function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMeta, progressSource) {
+  const cls = stateClass(s, reason);
   const st = (s || '').toUpperCase();
   if (crashDetected && (st === 'RUNNING' || st === 'COMPLETING')) {
     const short = crashDetected.length > 40 ? crashDetected.slice(0, 38) + '…' : crashDetected;
     return `<span class="state-chip crash-warning" title="${crashDetected}">RUNNING</span><span class="crash-badge">crashed</span><span class="fail-reason">${short}</span>`;
   }
   if (progress != null && st === 'RUNNING') {
-    return `<span class="state-chip ${cls}">${s}${progressRing(progress)}<span class="progress-pct">${progress}%</span></span>`;
+    const isSrv = _isServerSource(progressSource);
+    const label = isSrv ? 'loading' : `${progress}%`;
+    const pctCls = isSrv ? 'progress-pct progress-pct-server' : 'progress-pct';
+    return `<span class="state-chip ${cls}">${s}${progressRing(progress, isSrv)}<span class="${pctCls}">${label}</span></span>`;
   }
   const hasUtil = st === 'PENDING' && _clusterUtil;
   const utilCls = hasUtil ? ' has-util' : '';
@@ -132,6 +153,11 @@ function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMe
     }
     const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${esc(reason)}"` : '';
     return `<span class="state-chip ${cls}${utilCls} pending-util-chip"${dataAttrs}${tip}>PENDING</span>`;
+  }
+  if (isSoftFail(s, reason)) {
+    const detail = reason.replace(/^soft-fail:\s*/i, '');
+    const short = detail.length > 30 ? detail.slice(0, 28) + '…' : detail;
+    return `<span class="state-chip ${cls}" title="${reason}">SOFT FAIL</span><span class="softfail-reason">${short}</span>`;
   }
   const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
   let extra = '';
@@ -617,6 +643,8 @@ function highlightJobName(name, prefix, suffix) {
 /* ── Cluster Utilization & Quota ────────────────────────── */
 
 let _storageQuota = {};
+let _partitionData = null;
+let _partitionFetching = false;
 
 async function fetchClusterUtilization() {
   if (_clusterUtilFetching) return;
@@ -629,6 +657,225 @@ async function fetchClusterUtilization() {
     }
   } catch (_) {}
   _clusterUtilFetching = false;
+}
+
+async function fetchPartitions() {
+  if (_partitionFetching) return;
+  _partitionFetching = true;
+  try {
+    const res = await fetch('/api/partition_summary');
+    const data = await res.json();
+    if (data.status === 'ok') {
+      _partitionData = data.clusters;
+    }
+  } catch (_) {}
+  _partitionFetching = false;
+}
+
+function _fmtTime(timeStr) {
+  if (!timeStr || timeStr === 'UNLIMITED') return '∞';
+  const s = timeStr.trim();
+  if (s.includes('-')) {
+    const d = parseInt(s.split('-')[0], 10);
+    return d + 'd';
+  }
+  const parts = s.split(':');
+  if (parts.length >= 2) {
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (h > 0) return m > 0 ? h + 'h' + m + 'm' : h + 'h';
+    return m + 'm';
+  }
+  return s;
+}
+
+function _bestWaitCls(partitions) {
+  const order = { fast: 0, moderate: 1, slow: 2, long: 3 };
+  let best = 'long';
+  for (const p of partitions) {
+    const cls = p.est_wait_cls || 'long';
+    if ((order[cls] ?? 3) < (order[best] ?? 3)) best = cls;
+  }
+  return best;
+}
+
+async function openClusterAvail() {
+  const overlay = document.getElementById('avail-overlay');
+  if (!overlay) return;
+  overlay.classList.add('open');
+  if (!_partitionData) await fetchPartitions();
+  _renderAvailTable();
+}
+
+function closeClusterAvail() {
+  const overlay = document.getElementById('avail-overlay');
+  if (overlay) overlay.classList.remove('open');
+}
+
+function _renderAvailTable() {
+  const el = document.getElementById('avail-body');
+  if (!el || !_partitionData) {
+    if (el) el.innerHTML = '<div class="no-jobs">No partition data available</div>';
+    return;
+  }
+
+  const entries = Object.entries(_partitionData)
+    .map(([name, ps]) => ({
+      name,
+      gpu: ps.gpu_type || '',
+      parts: (ps.partitions || []).filter(p => p.total_nodes > 0),
+      bestWait: _bestWaitCls(ps.partitions || []),
+    }))
+    .filter(e => e.parts.length > 0)
+    .sort((a, b) => {
+      const order = { fast: 0, moderate: 1, slow: 2, long: 3 };
+      return (order[a.bestWait] ?? 3) - (order[b.bestWait] ?? 3);
+    });
+
+  if (!entries.length) {
+    el.innerHTML = '<div class="no-jobs">No partition data available</div>';
+    return;
+  }
+
+  let rows = '';
+  for (const e of entries) {
+    const gpuBadge = e.gpu ? `<span class="avail-gpu-badge">${e.gpu}</span>` : '';
+    rows += `<tr class="avail-cluster-row"><td colspan="6">${e.name}${gpuBadge}</td></tr>`;
+    for (const p of e.parts) {
+      const gpuPer = p.gpus_per_node || 0;
+      const idleGpus = p.idle_nodes * gpuPer;
+      const totalGpus = p.total_nodes * gpuPer;
+      const idleStr = gpuPer > 0 ? idleGpus.toLocaleString() : `${p.idle_nodes}n`;
+      const totalStr = gpuPer > 0 ? totalGpus.toLocaleString() : `${p.total_nodes}n`;
+      const waitCls = `avail-wait-${p.est_wait_cls || 'long'}`;
+      rows += `<tr>
+        <td>${p.name}</td>
+        <td>${_fmtTime(p.max_time)}</td>
+        <td>${p.preemptable ? 'yes' : ''}</td>
+        <td>${idleStr}</td>
+        <td>${totalStr}</td>
+        <td class="${waitCls}">${p.est_wait || '—'}</td>
+      </tr>`;
+    }
+  }
+
+  el.innerHTML = `<table class="avail-table">
+    <thead><tr>
+      <th>Partition</th>
+      <th>Max Time</th>
+      <th>Preempt</th>
+      <th>Idle GPUs</th>
+      <th>Total GPUs</th>
+      <th>Est. Wait</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function getPartitionSummary(clusterName) {
+  if (!_partitionData) return null;
+  return _partitionData[clusterName] || null;
+}
+
+function partitionChipHtml(clusterName) {
+  const ps = getPartitionSummary(clusterName);
+  if (!ps) return '';
+  const idle = ps.idle_nodes || 0;
+  const pending = ps.pending_jobs || 0;
+  const nParts = ps.gpu_partitions || 0;
+  const cls = idle > 0 ? 'part-has-idle' : (pending > 0 ? 'part-busy' : '');
+  return `<span class="partition-chip ${cls}" title="${nParts} GPU partitions, ${idle} idle nodes, ${pending} pending jobs" onclick="event.stopPropagation();openAdvisor('${clusterName}')">
+    <span class="part-count">${nParts}p</span>
+    ${idle > 0 ? `<span class="part-idle">${idle} idle</span>` : ''}
+    ${pending > 0 ? `<span class="part-pending">${pending}q</span>` : ''}
+  </span>`;
+}
+
+async function openAdvisor(preselectedCluster) {
+  const overlay = document.getElementById('advisor-overlay');
+  if (!overlay) return;
+  overlay.classList.add('open');
+  const clusterInput = document.getElementById('adv-cluster');
+  if (clusterInput && preselectedCluster) {
+    clusterInput.value = preselectedCluster;
+  }
+  const resultsEl = document.getElementById('adv-results');
+  if (resultsEl) resultsEl.innerHTML = '<div class="no-jobs">Click "Recommend" to get suggestions</div>';
+}
+
+function closeAdvisor() {
+  const overlay = document.getElementById('advisor-overlay');
+  if (overlay) overlay.classList.remove('open');
+}
+
+async function runAdvisor() {
+  const resultsEl = document.getElementById('adv-results');
+  if (!resultsEl) return;
+  resultsEl.innerHTML = '<div class="no-jobs">Analyzing partitions across clusters...</div>';
+
+  const nodes = parseInt(document.getElementById('adv-nodes')?.value || '1') || 1;
+  const timeLimit = document.getElementById('adv-time')?.value || '4:00:00';
+  const canPreempt = document.getElementById('adv-preempt')?.checked || false;
+  const cluster = document.getElementById('adv-cluster')?.value || '';
+
+  const body = { nodes, time_limit: timeLimit, can_preempt: canPreempt };
+  if (cluster) body.clusters = [cluster];
+
+  try {
+    const res = await fetch('/api/recommend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      _renderAdvisorResults(data.recommendations || []);
+    } else {
+      resultsEl.innerHTML = `<div class="err-msg">${data.error || 'Unknown error'}</div>`;
+    }
+  } catch (e) {
+    resultsEl.innerHTML = `<div class="err-msg">Failed to fetch recommendations</div>`;
+  }
+}
+
+function _renderAdvisorResults(recs) {
+  const el = document.getElementById('adv-results');
+  if (!el) return;
+  if (!recs.length) {
+    el.innerHTML = '<div class="no-jobs">No eligible partitions found for these requirements</div>';
+    return;
+  }
+
+  const rows = recs.slice(0, 20).map((r, i) => {
+    const d = r.details || {};
+    const isBest = i === 0;
+    const preemptBadge = d.preemptable ? '<span class="adv-preempt-tag">preemptable</span>' : '';
+    const defaultBadge = d.is_default ? '<span class="adv-default-tag">default</span>' : '';
+    const occLevel = d.occupancy_pct >= 90 ? 'high' : d.occupancy_pct >= 60 ? 'medium' : 'low';
+    return `<tr class="${isBest ? 'adv-best' : ''}">
+      <td class="adv-rank">${isBest ? '★' : r.rank}</td>
+      <td><span class="adv-cluster">${r.cluster}</span></td>
+      <td><span class="adv-part">${r.partition}</span> ${defaultBadge}${preemptBadge}</td>
+      <td><span class="tt-wait-badge ${r.est_wait_cls}">${r.est_wait}</span></td>
+      <td class="dim">${d.idle_nodes}</td>
+      <td class="dim">${d.pending_jobs}</td>
+      <td>
+        <span class="adv-occ-bar"><span class="adv-occ-fill ${occLevel}" style="width:${Math.min(d.occupancy_pct, 100)}%"></span></span>
+        <span class="dim">${d.occupancy_pct}%</span>
+      </td>
+      <td class="dim">T${d.priority_tier}</td>
+      <td class="dim">${d.max_time || ''}</td>
+      <td class="adv-tip">${r.tip || ''}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="adv-table">
+    <thead><tr>
+      <th></th><th>Cluster</th><th>Partition</th><th>Est. Wait</th>
+      <th>Idle</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 async function fetchStorageQuotas() {
@@ -976,6 +1223,45 @@ const _tooltip = (() => {
 
       if (t.pendGpus > 0) {
         html += `<div class="tt-detail">${t.pendGpus} GPUs pending from your team</div>`;
+      }
+    }
+
+    // ── Partition info ──
+    if (ji.partition && _partitionData) {
+      const cps = _partitionData[clusterName];
+      if (cps && cps.partitions) {
+        const curPart = cps.partitions.find(p => p.name === ji.partition);
+        if (curPart) {
+          html += `<div class="tt-sep"></div>`;
+          html += `<div class="tt-section-lbl">Partition: ${ji.partition}</div>`;
+          html += `<div class="tt-detail">Priority tier ${curPart.priority_tier} · ${curPart.idle_nodes} idle nodes · ${curPart.pending_jobs} pending</div>`;
+          const betterParts = cps.partitions.filter(p =>
+            p.name !== ji.partition &&
+            p.priority_tier > curPart.priority_tier &&
+            !p.preemptable &&
+            p.idle_nodes > 0
+          );
+          if (betterParts.length) {
+            const best = betterParts[0];
+            html += `<div class="tt-insight green">Try <b>${best.name}</b> (tier ${best.priority_tier}, ${best.idle_nodes} idle)</div>`;
+          }
+        }
+      }
+    }
+
+    // ── Cross-cluster suggestion ──
+    if (_partitionData) {
+      const otherClusters = Object.entries(_partitionData)
+        .filter(([c]) => c !== clusterName)
+        .map(([c, ps]) => ({ cluster: c, idle: ps.idle_nodes || 0, pending: ps.pending_jobs || 0, total: ps.total_nodes || 0 }))
+        .filter(c => c.idle > 5)
+        .sort((a, b) => (b.idle / Math.max(b.total, 1)) - (a.idle / Math.max(a.total, 1)));
+      if (otherClusters.length && pendingNodes > 0) {
+        const best = otherClusters[0];
+        const bestIdlePct = Math.round(best.idle / Math.max(best.total, 1) * 100);
+        if (bestIdlePct > 5) {
+          html += `<div class="tt-insight green">Consider <b>${best.cluster}</b>: ${best.idle} idle nodes (${bestIdlePct}% free)</div>`;
+        }
       }
     }
 

@@ -407,6 +407,128 @@ def get_cluster_availability() -> dict:
     return _api_get("/api/cluster_utilization")
 
 
+# ── partition & recommendation tools ─────────────────────────────────────────
+
+@mcp.tool()
+def get_partitions(cluster: Optional[str] = None) -> dict:
+    """Get Slurm partition details from clusters via sinfo/scontrol.
+
+    Returns per-partition data: state, time limits, priority tier,
+    preemption mode, node counts (allocated/idle/other/total),
+    GPUs per node, running and pending job counts, and access restrictions.
+
+    Use this to understand partition structures and make informed
+    decisions about which partition to submit jobs to. Each cluster
+    has different partitions with different priority tiers, time
+    limits, and preemption policies.
+
+    Key fields per partition:
+      name           — partition name (e.g. "batch", "batch_short")
+      state          — "UP" or "DOWN"
+      is_default     — whether this is the default partition
+      max_time       — time limit string (e.g. "4:00:00")
+      priority_tier  — scheduler priority (higher = scheduled sooner)
+      preempt_mode   — "OFF" or "REQUEUE" (preemptable)
+      total_nodes    — total nodes in partition
+      idle_nodes     — available idle nodes
+      other_nodes    — down/drained nodes (not schedulable)
+      gpus_per_node  — GPUs per node (from GRES, e.g. 8 for H100, 4 for B200)
+      pending_jobs   — jobs waiting in queue
+      running_jobs   — jobs currently running
+      allow_accounts — "ALL" or comma-separated account names
+      user_accessible — whether the current user can submit to this partition
+
+    Note: idle_nodes does NOT mean a job will start instantly. Fair-share
+    priority and QOS limits (MaxJobsPerUser, GrpNodeLimit) may still
+    cause delays even when idle nodes exist.
+
+    Args:
+        cluster: Optional cluster name. If omitted, returns all clusters.
+    """
+    if cluster:
+        return _api_get(f"/api/partitions/{urllib.parse.quote(cluster)}")
+    return _api_get("/api/partitions")
+
+
+@mcp.tool()
+def recommend_submission(
+    nodes: int = 1,
+    time_limit: str = "4:00:00",
+    account: str = "",
+    can_preempt: bool = False,
+    gpu_type: str = "",
+    clusters: Optional[list[str]] = None,
+) -> dict:
+    """Recommend the best cluster and partition for a job submission.
+
+    BETA: Wait time estimates and rankings are heuristic-based and may
+    be inaccurate. They do not account for per-user QOS limits, fair-share
+    priority, or reservation policies. Treat as rough guidance.
+
+    Analyses real-time partition data (queue depth, idle nodes, priority
+    tiers, occupancy, drained nodes) across all clusters and returns a
+    ranked list of (cluster, partition) pairs with estimated wait times.
+
+    Wait estimates use the same heuristic as get_partition_summary() and
+    the Cluster Availability popup in the UI.
+
+    Use this when the user asks "where should I submit this job?" or
+    "which cluster has the shortest queue?"
+
+    Args:
+        nodes:       Number of GPU nodes needed (default 1).
+        time_limit:  Job time limit, e.g. "4:00:00" or "2:00:00".
+        account:     Slurm account for access filtering (optional).
+        can_preempt: If True, include preemptable partitions (backfill).
+        gpu_type:    Filter by GPU type, e.g. "h100" (optional).
+        clusters:    List of cluster names to consider (optional).
+
+    Returns:
+        Ranked recommendations with score, estimated wait, and details
+        including gpus_per_node and other_nodes (drained).
+        Lower score = better. Top recommendation is the best pick.
+    """
+    payload = {
+        "nodes": nodes,
+        "time_limit": time_limit,
+        "account": account,
+        "can_preempt": can_preempt,
+        "gpu_type": gpu_type,
+    }
+    if clusters:
+        payload["clusters"] = clusters
+    return _api_post_json("/api/recommend", payload)
+
+
+@mcp.tool()
+def get_partition_summary() -> dict:
+    """Get a compact cross-cluster partition overview with wait estimates.
+
+    BETA: Wait time estimates are heuristic-based and may be inaccurate.
+    They do not account for per-user QOS limits, fair-share priority,
+    or reservation policies. Treat them as rough guidance, not guarantees.
+
+    Returns per-cluster: GPU type, total/idle nodes, pending job count,
+    and a list of user-accessible GPU partitions with:
+      name, max_time, priority_tier, total_nodes, idle_nodes,
+      gpus_per_node, pending_jobs, preemptable, est_wait, est_wait_cls.
+
+    est_wait is a human-readable wait estimate (e.g. "now", "~5-15 min",
+    "~1-2h", "4h+"). est_wait_cls is "fast", "moderate", "slow", or "long".
+    These account for drained/down nodes and queue depth, but not per-user
+    QOS limits.
+
+    Only user-accessible GPU partitions are included. Admin-only, CPU-only,
+    and system partitions (defq, fake) are filtered out.
+
+    This is the same data source as the Cluster Availability popup in the UI.
+    Use this for a quick scan before diving into detailed partition data
+    with get_partitions(), or use recommend_submission() for job-specific
+    recommendations.
+    """
+    return _api_get("/api/partition_summary")
+
+
 # ── mount & board tools ──────────────────────────────────────────────────────
 
 @mcp.tool()

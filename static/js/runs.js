@@ -106,7 +106,9 @@ function _renderRunBody(run, cluster) {
             const _runHL = computeNameHighlight(_runNames);
             return jobs.map(j => {
               const st = (j.state || '').toUpperCase();
-              const cls = stateClass(st);
+              const reason = j.reason || '';
+              const cls = stateClass(st, reason);
+              const label = isSoftFail(st, reason) ? 'SOFT FAIL' : (j.state || '—');
               const start = fmtTime(j.started_local || j.started || j.submitted);
               const end = fmtTime(j.ended_local || j.ended_at);
               const rawName = j.job_name || j.name || '';
@@ -114,7 +116,7 @@ function _renderRunBody(run, cluster) {
               return `<tr>
                 <td style="color:var(--muted)">${j.job_id || j.jobid || '—'}</td>
                 <td style="font-weight:500" title="${rawName}">${dispName}</td>
-                <td><span class="state-chip ${cls}">${j.state || '—'}</span></td>
+                <td><span class="state-chip ${cls}">${label}</span></td>
                 <td style="color:var(--muted)">${start}</td>
                 <td style="color:var(--muted)">${end}</td>
                 <td style="color:var(--muted)">${j.elapsed || '—'}</td>
