@@ -165,9 +165,9 @@ class TestGetHistory:
     def test_with_project_filter(self):
         with patch.object(mcp_server, "_api_get") as mock:
             mock.return_value = []
-            get_history(project="artsiv", limit=20)
+            get_history(project="alpha", limit=20)
             url = mock.call_args[0][0]
-            assert "project=artsiv" in url
+            assert "project=alpha" in url
 
 
 # ── list_projects ────────────────────────────────────────────────────────────
@@ -175,10 +175,10 @@ class TestGetHistory:
 @pytest.mark.mcp
 class TestListProjects:
     def test_returns_list(self):
-        with _mock_api_get([{"project": "artsiv", "job_count": 5, "color": "#e8f4fd"}]):
+        with _mock_api_get([{"project": "alpha", "job_count": 5, "color": "#e8f4fd"}]):
             result = list_projects()
         assert isinstance(result, list)
-        assert result[0]["project"] == "artsiv"
+        assert result[0]["project"] == "alpha"
 
     def test_wraps_error_in_list(self):
         with _mock_api_get({"status": "error", "error": "fail"}):
@@ -193,12 +193,12 @@ class TestGetProjectJobs:
     def test_combines_live_and_history(self):
         def _mock_get(path):
             if "/api/history" in path:
-                return [{"cluster": "c1", "job_id": "1", "job_name": "artsiv_eval", "state": "COMPLETED", "project": "artsiv"}]
+                return [{"cluster": "c1", "job_id": "1", "job_name": "alpha_eval", "state": "COMPLETED", "project": "alpha"}]
             return {"c1": {"status": "ok", "jobs": [
-                {"jobid": "2", "name": "artsiv_train", "state": "RUNNING", "project": "artsiv"}
+                {"jobid": "2", "name": "alpha_train", "state": "RUNNING", "project": "alpha"}
             ]}}
         with patch.object(mcp_server, "_api_get", side_effect=_mock_get):
-            result = get_project_jobs("artsiv")
+            result = get_project_jobs("alpha")
         assert isinstance(result, list)
         assert len(result) == 2
 
@@ -207,11 +207,11 @@ class TestGetProjectJobs:
             if "/api/history" in path:
                 return []
             return {"c1": {"status": "ok", "jobs": [
-                {"jobid": "1", "name": "artsiv_eval", "state": "RUNNING", "project": "artsiv"},
+                {"jobid": "1", "name": "alpha_eval", "state": "RUNNING", "project": "alpha"},
                 {"jobid": "2", "name": "other_eval", "state": "RUNNING", "project": "other"},
             ]}}
         with patch.object(mcp_server, "_api_get", side_effect=_mock_get):
-            result = get_project_jobs("artsiv")
+            result = get_project_jobs("alpha")
         live = [r for r in result if r.get("state") == "RUNNING"]
         assert all(r.get("cluster") for r in live)
         assert len(live) == 1
@@ -332,7 +332,7 @@ class TestSlimJobCrashFields:
 @pytest.mark.mcp
 class TestGetMounts:
     def test_returns_dict(self):
-        resp = {"status": "ok", "mounts": {"dfw": {"mounted": True, "root": "/mnt/dfw"}}}
+        resp = {"status": "ok", "mounts": {"c1": {"mounted": True, "root": "/mnt/c1"}}}
         with _mock_api_get(resp):
             result = get_mounts()
         assert result["status"] == "ok"
@@ -350,24 +350,24 @@ class TestGetMounts:
 class TestMountCluster:
     def test_mount(self):
         with _mock_api_post({"status": "ok", "message": "Mounted"}):
-            result = mount_cluster("dfw", "mount")
+            result = mount_cluster("c1", "mount")
         assert result["status"] == "ok"
 
     def test_unmount(self):
         with _mock_api_post({"status": "ok", "message": "Unmounted"}):
-            result = mount_cluster("dfw", "unmount")
+            result = mount_cluster("c1", "unmount")
         assert result["status"] == "ok"
 
     def test_invalid_action(self):
-        result = mount_cluster("dfw", "restart")
+        result = mount_cluster("c1", "restart")
         assert result["status"] == "error"
         assert "mount" in result["error"]
 
     def test_calls_correct_url(self):
         with patch.object(mcp_server, "_api_post") as mock:
             mock.return_value = {"status": "ok"}
-            mount_cluster("dfw", "mount")
-            assert "/api/mount/mount/dfw" in mock.call_args[0][0]
+            mount_cluster("c1", "mount")
+            assert "/api/mount/mount/c1" in mock.call_args[0][0]
 
 
 # ── clear_failed ─────────────────────────────────────────────────────────────
@@ -376,14 +376,14 @@ class TestMountCluster:
 class TestClearFailed:
     def test_success(self):
         with _mock_api_post({"status": "ok"}):
-            result = clear_failed("dfw")
+            result = clear_failed("c1")
         assert result["status"] == "ok"
 
     def test_calls_correct_url(self):
         with patch.object(mcp_server, "_api_post") as mock:
             mock.return_value = {"status": "ok"}
-            clear_failed("dfw")
-            assert "/api/clear_failed/dfw" in mock.call_args[0][0]
+            clear_failed("c1")
+            assert "/api/clear_failed/c1" in mock.call_args[0][0]
 
 
 # ── clear_completed ──────────────────────────────────────────────────────────
@@ -392,14 +392,14 @@ class TestClearFailed:
 class TestClearCompleted:
     def test_success(self):
         with _mock_api_post({"status": "ok"}):
-            result = clear_completed("dfw")
+            result = clear_completed("c1")
         assert result["status"] == "ok"
 
     def test_calls_correct_url(self):
         with patch.object(mcp_server, "_api_post") as mock:
             mock.return_value = {"status": "ok"}
-            clear_completed("dfw")
-            assert "/api/clear_completed/dfw" in mock.call_args[0][0]
+            clear_completed("c1")
+            assert "/api/clear_completed/c1" in mock.call_args[0][0]
 
 
 # ── run_script ───────────────────────────────────────────────────────────────
@@ -407,9 +407,9 @@ class TestClearCompleted:
 @pytest.mark.mcp
 class TestRunScript:
     def test_success(self):
-        resp = {"status": "ok", "stdout": "hello world\n", "stderr": "", "interpreter": "python3", "cluster": "dfw"}
+        resp = {"status": "ok", "stdout": "hello world\n", "stderr": "", "interpreter": "python3", "cluster": "c1"}
         with patch.object(mcp_server, "_api_post_json", return_value=resp):
-            result = run_script("dfw", "print('hello world')")
+            result = run_script("c1", "print('hello world')")
         assert result["status"] == "ok"
         assert result["stdout"] == "hello world\n"
 
@@ -422,35 +422,35 @@ class TestRunScript:
     def test_default_interpreter_python3(self):
         with patch.object(mcp_server, "_api_post_json") as mock:
             mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
-            run_script("ord", "print(1)")
+            run_script("c1", "print(1)")
             payload = mock.call_args[0][1]
             assert payload["interpreter"] == "python3"
 
     def test_bash_interpreter(self):
         with patch.object(mcp_server, "_api_post_json") as mock:
             mock.return_value = {"status": "ok", "stdout": "hi\n", "stderr": ""}
-            run_script("ord", "echo hi", interpreter="bash")
+            run_script("c1", "echo hi", interpreter="bash")
             payload = mock.call_args[0][1]
             assert payload["interpreter"] == "bash"
 
     def test_timeout_passed(self):
         with patch.object(mcp_server, "_api_post_json") as mock:
             mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
-            run_script("ord", "import time; time.sleep(1)", timeout=60)
+            run_script("c1", "import time; time.sleep(1)", timeout=60)
             payload = mock.call_args[0][1]
             assert payload["timeout"] == 60
 
     def test_calls_correct_endpoint(self):
         with patch.object(mcp_server, "_api_post_json") as mock:
             mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
-            run_script("dfw", "print(1)")
+            run_script("c1", "print(1)")
             url = mock.call_args[0][0]
-            assert "/api/run_script/dfw" in url
+            assert "/api/run_script/c1" in url
 
     def test_script_passed_in_payload(self):
         script = "import json\nprint(json.dumps({'a': 1}))"
         with patch.object(mcp_server, "_api_post_json") as mock:
             mock.return_value = {"status": "ok", "stdout": '{"a": 1}\n', "stderr": ""}
-            run_script("ord", script)
+            run_script("c1", script)
             payload = mock.call_args[0][1]
             assert payload["script"] == script

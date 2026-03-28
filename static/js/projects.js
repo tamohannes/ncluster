@@ -60,9 +60,10 @@ async function openProject(projectName) {
   document.getElementById('project-hist-body').innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
 
   await _fetchProjectData();
-  _restoreLogbookState();
-  loadLogbookPanel(projectName);
-  _loadRunNames(projectName);
+  // logbook disabled — moved to DeepLake
+  // _restoreLogbookState();
+  // loadLogbookPanel(projectName);
+  // _loadRunNames(projectName);
 
   if (_projRefreshTimer) clearInterval(_projRefreshTimer);
   _projRefreshTimer = setInterval(() => {

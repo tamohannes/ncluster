@@ -1,7 +1,9 @@
-"""Integration tests for logbook API endpoints."""
+"""Integration tests for logbook API endpoints (disabled — logbooks moved to DeepLake)."""
 
 import json
 import pytest
+
+pytestmark = pytest.mark.skip(reason="Logbook routes disabled — moved to DeepLake")
 
 
 @pytest.fixture(autouse=True)

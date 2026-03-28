@@ -922,7 +922,8 @@ function quotaBadgesHtml(clusterName) {
   if (!q || !q.project_quotas) return '';
   const badges = [];
   for (const [name, pq] of Object.entries(q.project_quotas)) {
-    const short = name.replace('llmservice_nemo_', '');
+    const parts = name.split('_');
+    const short = parts.length > 2 ? parts.slice(-1)[0] : name;
     const spacePct = pq.space_used_pct || 0;
     const inodePct = pq.files_used_pct || 0;
     const worst = Math.max(spacePct, inodePct);
@@ -1275,7 +1276,8 @@ const _tooltip = (() => {
       html += `<div class="tt-sep"></div>`;
       const pills = [];
       for (const [pname, pq] of Object.entries(sq.project_quotas)) {
-        const short = pname.replace('llmservice_nemo_', '');
+        const pparts = pname.split('_');
+        const short = pparts.length > 2 ? pparts.slice(-1)[0] : pname;
         const sp = pq.space_used_pct || 0;
         const ip = pq.files_used_pct || 0;
         const worst = Math.max(sp, ip);

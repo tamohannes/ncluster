@@ -187,7 +187,7 @@ def extract_project(job_name):
         prefix = cfg.get("prefix", "")
         if prefix and job_name.startswith(prefix):
             return name
-    # Auto-detect: "artsiv_eval-math" → project "artsiv", prefix "artsiv_"
+    # Auto-detect: "myproject_eval-math" → project "myproject", prefix "myproject_"
     import re
     m = re.match(r'^([a-zA-Z][a-zA-Z0-9-]*)_', job_name)
     if m:

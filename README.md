@@ -10,7 +10,7 @@ Monitor, explore, and manage GPU jobs across HPC clusters from a single browser 
                   ┌─────────────────────────────────┐
                   │           Browser UI             │
                   │  Live Board · Explorer · History  │
-                  │  Projects · Logbooks · Settings   │
+                  │  Projects · Settings              │
                   └──────────────┬──────────────────┘
                                  │ HTTP
   ┌──────────┐    ┌──────────────▼──────────────────┐
@@ -49,11 +49,9 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - SQLite-backed job history with dependency-aware grouping
 - Auto-detected projects from job name prefixes
 - Per-project detail pages with live jobs, stats, and search
-- Per-project logbooks with `@run-name` autocomplete and markdown rendering
-
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 28+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, logbooks, cluster availability, storage quotas, partition analysis, submission recommendations
+- 24+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, cluster availability, storage quotas, partition analysis, submission recommendations
 - `recommend_submission()` — AI agent can ask "where should I submit this job?" and get ranked cluster+partition suggestions
 - `get_partitions()` — detailed partition data (priority tiers, preemption, queue depth, idle nodes)
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
@@ -100,6 +98,17 @@ Add to `~/.cursor/mcp.json`:
 
 Reload Cursor to activate. Requires the Flask app to be running.
 
+### Cursor Agent Skill
+
+Install the ncluster skill so Cursor's agent knows how to use the MCP tools across all your projects:
+
+```bash
+mkdir -p ~/.cursor/skills/ncluster
+cp skills/SKILL.md ~/.cursor/skills/ncluster/SKILL.md
+```
+
+This registers ncluster as a user-level skill. The agent will automatically discover it and use the MCP tools instead of raw SSH commands when you ask about jobs, logs, cluster availability, or submission recommendations.
+
 ## Configuration
 
 ### config.json
@@ -121,7 +130,7 @@ Primary configuration file. Editable from the UI Settings panel or directly.
   "nemo_run_bases": ["/lustre/.../users/$USER/nemo-run"],
   "mount_lustre_prefixes": ["lustre/fsw/..."],
   "local_process_filters": {
-    "include": ["nemo-skills", "python -m nemo_skills"],
+    "include": ["my-framework", "python -m my_framework"],
     "exclude": ["cursor", "jupyter"]
   },
   "ssh_timeout": 8,
@@ -147,7 +156,7 @@ Jobs are grouped by project using a name prefix convention:
 
 | Component | Rules | Example |
 |-----------|-------|---------|
-| `<project>` | Lowercase letters, digits, hyphens. Starts with a letter. | `artsiv`, `hle`, `nemo-rl` |
+| `<project>` | Lowercase letters, digits, hyphens. Starts with a letter. | `my-project`, `eval-suite`, `training` |
 | `_` | Required underscore separator | |
 | `<run-name>` | The experiment/eval name | `eval-math`, `train-v3` |
 
@@ -217,19 +226,6 @@ Dependency chain auto-detection from run name suffixes:
 | POST | `/api/mount/<action>/<cluster>` | Mount/unmount one cluster |
 | GET | `/api/settings` | Current configuration |
 | POST | `/api/settings` | Update configuration (hot-reload) |
-
-### Logbooks
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/logbooks/<project>` | List all logbooks for a project |
-| POST | `/api/logbook/<project>` | Create a new logbook |
-| GET | `/api/logbook/<project>/<name>` | Read logbook content and entries |
-| POST | `/api/logbook/<project>/<name>` | Add entry |
-| DELETE | `/api/logbook/<project>/<name>` | Delete a logbook |
-| PUT | `/api/logbook/<project>/<name>/<index>` | Update entry at index |
-| DELETE | `/api/logbook/<project>/<name>/<index>` | Delete entry at index |
-| POST | `/api/logbook/<project>/<name>/rename` | Rename logbook |
 
 ## Systemd (User Service)
 

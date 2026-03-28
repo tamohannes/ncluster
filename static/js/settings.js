@@ -342,8 +342,8 @@ function addPppRow() {
       <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
     </div>
     <div class="ce-fields">
-      <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="" placeholder="llmservice_..." style="font-size:10px"></div>
-      <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="" placeholder="10101"></div>
+      <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="" placeholder="team_project_..." style="font-size:10px"></div>
+      <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="" placeholder="12345"></div>
     </div>
   `;
   el.appendChild(div);

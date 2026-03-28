@@ -1,13 +1,17 @@
-"""MCP logbook tool contract tests."""
+"""MCP logbook tool contract tests (disabled — logbooks moved to DeepLake)."""
 
 import pytest
 from unittest.mock import patch
 
 import mcp_server
-from mcp_server import (
-    list_logbooks, read_logbook, add_logbook_entry,
-    update_logbook_entry, create_logbook, delete_logbook,
-)
+
+try:
+    from mcp_server import (
+        list_logbooks, read_logbook, add_logbook_entry,
+        update_logbook_entry, create_logbook, delete_logbook,
+    )
+except ImportError:
+    pytest.skip("Logbook MCP tools disabled — moved to DeepLake", allow_module_level=True)
 
 
 def _mock_get(response):
@@ -30,7 +34,7 @@ def _mock_delete(response):
 class TestListLogbooks:
     def test_returns_list(self):
         with _mock_get([{"name": "experiments", "entry_count": 3}]):
-            result = list_logbooks("artsiv")
+            result = list_logbooks("alpha")
         assert isinstance(result, list)
         assert result[0]["name"] == "experiments"
 

@@ -44,6 +44,20 @@ def _api_post(path: str) -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+def _api_post_json(path: str, data: dict) -> dict:
+    url = f"{API_BASE}{path}"
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, method="POST", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as exc:
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
 _JOB_FIELDS = [
     "jobid", "name", "state", "reason", "elapsed", "timelimit",
     "nodes", "gres", "partition", "submitted",
@@ -244,7 +258,7 @@ def cancel_project_jobs(project: str, cluster: Optional[str] = None) -> dict:
     cancel all jobs for a project.
 
     Args:
-        project:  Project name (e.g. "artsiv", "hle").
+        project:  Project name (e.g. "my-project", "eval-suite").
         cluster:  Optional — restrict to a single cluster.
 
     Returns a summary with cancelled count per cluster and any errors.
@@ -336,7 +350,7 @@ def run_script(
     cluster's filesystem without needing raw SSH access.
 
     Args:
-        cluster:     Target cluster name (e.g. "ord", "dfw").
+        cluster:     Target cluster name (as configured in config.json).
         script:      Full source code of the script to run.
         interpreter: "python3" (default), "bash", or "sh".
         timeout:     Max seconds to wait (1-300, default 120).
@@ -346,7 +360,7 @@ def run_script(
 
     Example — analyse an eval-results JSONL:
         run_script(
-            cluster="ord",
+            cluster="my-cluster",
             script='''
 import json
 path = "/lustre/.../output-rs0.jsonl"
@@ -370,11 +384,11 @@ def get_storage_quota(cluster: str) -> dict:
 
     Returns:
       user_quota — your disk usage vs quota (space + inodes)
-      project_quotas — PPP quotas for llmservice_nemo_reasoning and
-                       llmservice_nemo_robustness (space + inodes with % used)
+      project_quotas — PPP quotas for configured team projects
+                       (space + inodes with % used)
 
-    Works on clusters with Lustre (dfw, eos, iad, ord).
-    Returns an error for clusters using NFS (lax) or without lfs.
+    Works on clusters with Lustre filesystems.
+    Returns an error for clusters using NFS or without lfs.
 
     Use this alongside get_cluster_availability() to make submission
     recommendations that consider both compute AND storage constraints.
@@ -396,7 +410,7 @@ def get_cluster_availability() -> dict:
       total_nodes      — total nodes in use on the cluster
       running_nodes    — nodes currently running jobs (all users)
       pending_nodes    — nodes queued pending (all users)
-      gpus_per_node    — GPUs per node (usually 8, 4 for hsg)
+      gpus_per_node    — GPUs per node (typically 8, varies by cluster)
       users            — list of {user, running, pending, total, team}
       team_alloc_gpus  — team -> allocated GPU count
       status           — "ok" or "error"
@@ -573,134 +587,94 @@ def clear_completed(cluster: str) -> dict:
     return _api_post(f"/api/clear_completed/{urllib.parse.quote(cluster)}")
 
 
-# ── logbook tools ────────────────────────────────────────────────────────────
-
-
-def _api_post_json(path: str, data: dict) -> dict:
-    url = f"{API_BASE}{path}"
-    payload = json.dumps(data).encode()
-    req = urllib.request.Request(url, method="POST", data=payload,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
-
-
-def _api_put_json(path: str, data: dict) -> dict:
-    url = f"{API_BASE}{path}"
-    payload = json.dumps(data).encode()
-    req = urllib.request.Request(url, method="PUT", data=payload,
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
-
-
-def _api_delete(path: str) -> dict:
-    url = f"{API_BASE}{path}"
-    req = urllib.request.Request(url, method="DELETE")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
-
-
-@mcp.tool()
-def list_logbooks(project: str) -> list[dict]:
-    """List all logbooks for a project.
-
-    Returns name, entry count, and last modified timestamp for each.
-    """
-    data = _api_get(f"/api/logbooks/{urllib.parse.quote(project)}")
-    if isinstance(data, list):
-        return data
-    return [data]
-
-
-@mcp.tool()
-def read_logbook(project: str, name: str) -> dict:
-    """Read a logbook's full content and entries.
-
-    Returns the raw markdown content and a list of individual entries
-    (split by --- separators). Use @run-name to reference jobs.
-    """
-    return _api_get(f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}")
-
-
-@mcp.tool()
-def add_logbook_entry(project: str, name: str, content: str) -> dict:
-    """Add a new entry to a project logbook.
-
-    The entry is prepended (newest first). Creates the logbook if it
-    doesn't exist. Use @run-name to reference specific jobs.
-
-    Example content:
-      "## 14 Mar 2026\\n\\nRan @artsiv_eval-math with 8 GPUs, accuracy: **82.3%**."
-    """
-    return _api_post_json(
-        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}",
-        {"content": content},
-    )
-
-
-@mcp.tool()
-def update_logbook_entry(project: str, name: str, index: int, content: str) -> dict:
-    """Update an existing logbook entry by index (0 = newest).
-
-    Replaces the full entry content at the given position.
-    """
-    return _api_put_json(
-        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}",
-        {"content": content},
-    )
-
-
-@mcp.tool()
-def delete_logbook_entry(project: str, name: str, index: int) -> dict:
-    """Delete a logbook entry by index (0 = newest). This is destructive."""
-    return _api_delete(
-        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}"
-    )
-
-
-@mcp.tool()
-def rename_logbook(project: str, old_name: str, new_name: str) -> dict:
-    """Rename a logbook."""
-    return _api_post_json(
-        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(old_name)}/rename",
-        {"new_name": new_name},
-    )
-
-
-@mcp.tool()
-def create_logbook(project: str, name: str) -> dict:
-    """Create a new empty logbook for a project.
-
-    Common logbook names: experiments, bugs, ideas, eval-notes.
-    """
-    return _api_post_json(
-        f"/api/logbook/{urllib.parse.quote(project)}",
-        {"name": name},
-    )
-
-
-@mcp.tool()
-def delete_logbook(project: str, name: str) -> dict:
-    """Delete a logbook. This is destructive and cannot be undone."""
-    return _api_delete(
-        f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}"
-    )
+# ── logbook tools (disabled — moved to DeepLake) ─────────────────────────────
+# _api_post_json moved to helpers section (still used by non-logbook tools).
+#
+# @mcp.tool()
+# def list_logbooks(project: str) -> list[dict]:
+#     """List all logbooks for a project.
+#
+#     Returns name, entry count, and last modified timestamp for each.
+#     """
+#     data = _api_get(f"/api/logbooks/{urllib.parse.quote(project)}")
+#     if isinstance(data, list):
+#         return data
+#     return [data]
+#
+#
+# @mcp.tool()
+# def read_logbook(project: str, name: str) -> dict:
+#     """Read a logbook's full content and entries.
+#
+#     Returns the raw markdown content and a list of individual entries
+#     (split by --- separators). Use @run-name to reference jobs.
+#     """
+#     return _api_get(f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}")
+#
+#
+# @mcp.tool()
+# def add_logbook_entry(project: str, name: str, content: str) -> dict:
+#     """Add a new entry to a project logbook.
+#
+#     The entry is prepended (newest first). Creates the logbook if it
+#     doesn't exist. Use @run-name to reference specific jobs.
+#
+#     Example content:
+#       "## 14 Mar 2026\\n\\nRan @myproject_eval-math with 8 GPUs, accuracy: **82.3%**."
+#     """
+#     return _api_post_json(
+#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}",
+#         {"content": content},
+#     )
+#
+#
+# @mcp.tool()
+# def update_logbook_entry(project: str, name: str, index: int, content: str) -> dict:
+#     """Update an existing logbook entry by index (0 = newest).
+#
+#     Replaces the full entry content at the given position.
+#     """
+#     return _api_put_json(
+#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}",
+#         {"content": content},
+#     )
+#
+#
+# @mcp.tool()
+# def delete_logbook_entry(project: str, name: str, index: int) -> dict:
+#     """Delete a logbook entry by index (0 = newest). This is destructive."""
+#     return _api_delete(
+#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}"
+#     )
+#
+#
+# @mcp.tool()
+# def rename_logbook(project: str, old_name: str, new_name: str) -> dict:
+#     """Rename a logbook."""
+#     return _api_post_json(
+#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(old_name)}/rename",
+#         {"new_name": new_name},
+#     )
+#
+#
+# @mcp.tool()
+# def create_logbook(project: str, name: str) -> dict:
+#     """Create a new empty logbook for a project.
+#
+#     Common logbook names: experiments, bugs, ideas, eval-notes.
+#     """
+#     return _api_post_json(
+#         f"/api/logbook/{urllib.parse.quote(project)}",
+#         {"name": name},
+#     )
+#
+#
+# @mcp.tool()
+# def delete_logbook(project: str, name: str) -> dict:
+#     """Delete a logbook. This is destructive and cannot be undone."""
+#     return _api_delete(
+#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}"
+#     )
 
 
 # ── resources ────────────────────────────────────────────────────────────────

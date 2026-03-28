@@ -11,8 +11,8 @@
   ],
   "local_process_filters": {
     "include": [
-      "nemo-skills", "nemo_skills",
-      "python -m nemo_skills"
+      "my-framework", "my_framework",
+      "python -m my_framework"
     ],
     "exclude": [
       "cursor", "jupyter", "ipykernel",
@@ -33,7 +33,7 @@
       "port": 22,
       "gpu_type": "A100",
       "mount_paths": [
-        "/lustre/fsw/portfolios/llmservice/users/$USER"
+        "/lustre/fsw/portfolios/my-team/users/$USER"
       ]
     }
   }

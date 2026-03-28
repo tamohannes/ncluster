@@ -102,7 +102,8 @@
         <button class="btn" onclick="showTab('live')">← Dashboard</button>
         <span class="project-detail-title" id="project-detail-title"></span>
         <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
-        <button class="btn" id="logbook-toggle-btn" onclick="toggleLogbookPanel()">📓 notes</button>
+        <!-- logbook disabled — moved to DeepLake -->
+        <!-- <button class="btn" id="logbook-toggle-btn" onclick="toggleLogbookPanel()">📓 notes</button> -->
       </div>
       <div class="proj-layout">
         <div class="proj-main">
@@ -130,6 +131,7 @@
           </div>
           <div class="hist-pagination" id="proj-pagination"></div>
         </div>
+        <!-- logbook panel disabled — moved to DeepLake
         <div class="logbook-panel" id="logbook-panel" style="display:none">
           <div class="logbook-resizer" id="logbook-resizer"></div>
           <div class="logbook-head">
@@ -144,6 +146,7 @@
           </div>
           <div class="logbook-entries" id="logbook-entries"></div>
         </div>
+        -->
       </div>
     </div>
 
@@ -266,7 +269,7 @@
           </div>
           <div class="settings-sub-label">Team</div>
           <div class="settings-sub">
-            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="science" style="width:140px"></label>
+            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="my-team" style="width:140px"></label>
             <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Your team in the Science dashboard — used for GPU allocation tracking</div>
           </div>
           <div class="settings-sub-label" style="margin-top:10px">PPPs (Project Quotas)</div>
@@ -334,7 +337,7 @@
         </div>
         <div class="settings-section" id="sec-filters">
           <div class="settings-sub-label">Local Process Filters</div>
-          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="nemo-skills, nemo_skills, ..."></label>
+          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="my-framework, my_framework, ..."></label>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Exclude (comma-separated)</span><input type="text" id="set-proc-exclude" style="width:100%" placeholder="cursor, jupyter, ..."></label>
           <button class="btn" style="margin-top:8px;width:100%" onclick="saveProcessFilters()">save</button>
         </div>
@@ -400,7 +403,7 @@
 <script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/runs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/projects.js') }}"></script>
-<script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
+<!-- <script src="{{ url_for('static', filename='js/logbooks.js') }}"></script> --> <!-- logbook disabled — moved to DeepLake -->
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 </body>
 </html>

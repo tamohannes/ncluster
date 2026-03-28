@@ -79,8 +79,8 @@ class TestSettingsResponse:
 class TestExtractProject:
     @pytest.mark.unit
     def test_matching_prefix(self, monkeypatch):
-        monkeypatch.setitem(PROJECTS, "artsiv", {"prefix": "artsiv_"})
-        assert extract_project("artsiv_eval-math") == "artsiv"
+        monkeypatch.setitem(PROJECTS, "alpha", {"prefix": "alpha_"})
+        assert extract_project("alpha_eval-math") == "alpha"
 
     @pytest.mark.unit
     def test_no_match_without_underscore(self):
@@ -96,15 +96,15 @@ class TestExtractProject:
 
     @pytest.mark.unit
     def test_multiple_prefixes(self, monkeypatch):
-        monkeypatch.setitem(PROJECTS, "artsiv", {"prefix": "artsiv_"})
-        monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle-"})
-        assert extract_project("hle-eval-math") == "hle"
-        assert extract_project("artsiv_eval-code") == "artsiv"
+        monkeypatch.setitem(PROJECTS, "alpha", {"prefix": "alpha_"})
+        monkeypatch.setitem(PROJECTS, "beta", {"prefix": "beta-"})
+        assert extract_project("beta-eval-math") == "beta"
+        assert extract_project("alpha_eval-code") == "alpha"
 
     @pytest.mark.unit
     def test_prefix_with_hyphen(self, monkeypatch):
-        monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle-"})
-        assert extract_project("hle-gpt-oss-120b") == "hle"
+        monkeypatch.setitem(PROJECTS, "beta", {"prefix": "beta-"})
+        assert extract_project("beta-gpt-large-120b") == "beta"
 
     @pytest.mark.unit
     def test_auto_detect_from_underscore(self, monkeypatch):

@@ -2,10 +2,10 @@
 
 Runs `lfs quota` for:
   - User quota (personal usage vs limit)
-  - Project quotas for the team PPPs (llmservice_nemo_reasoning, llmservice_nemo_robustness)
+  - Project quotas for the configured team PPPs
 
-Clusters with Lustre: dfw, eos, iad (different FS paths).
-Clusters without lfs: lax (NFS), hsg (may timeout).
+Clusters with Lustre use different FS paths (see CLUSTER_FS_MAP).
+Clusters without lfs (e.g. NFS-backed) will return an error.
 """
 
 import logging
@@ -24,10 +24,8 @@ _lock = threading.Lock()
 _cache = {}
 
 CLUSTER_FS_MAP = {
-    "dfw": "/lustre/fsw",
-    "eos": "/lustre/fsw",
-    "iad": "/lustre/fs12",
-    "ord": "/lustre/fsw",
+    # Add your cluster-to-Lustre-path mappings here.
+    # Example: "my-cluster": "/lustre/fsw",
 }
 
 
