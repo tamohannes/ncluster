@@ -20,13 +20,6 @@ function applyTheme(pref) {
 }
 
 function updateThemeUI(pref) {
-  const iconEl = document.getElementById('theme-icon');
-  const labelEl = document.getElementById('theme-label');
-  if (!iconEl) return;
-  const icons = { system: '\u25D4', light: '\u2600', dark: '\u263E' };
-  const labels = { system: 'system', light: 'light', dark: 'dark' };
-  iconEl.textContent = icons[pref] || icons.system;
-  if (labelEl) labelEl.textContent = labels[pref] || labels.system;
   document.querySelectorAll('.theme-option').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.theme === pref);
   });
@@ -50,7 +43,145 @@ _themeMediaQuery.addEventListener('change', () => {
 
 applyTheme();
 
+// ── Keyboard shortcuts config ──
+const SHORTCUT_DEFAULTS = {
+  toggleSidebar: { label: 'Toggle sidebar',   key: 's',   meta: true,  ctrl: false, shift: false },
+  openSpotlight: { label: 'Spotlight search',  key: 'p',   meta: true,  ctrl: false, shift: false },
+  closeTab:      { label: 'Close tab',         key: 'w',   meta: true,  ctrl: false, shift: false },
+  nextTab:       { label: 'Next tab',          key: ']',   meta: true,  ctrl: false, shift: false },
+  prevTab:       { label: 'Previous tab',      key: '[',   meta: true,  ctrl: false, shift: false },
+};
+
+let _shortcuts = {};
+
+function loadShortcuts() {
+  try {
+    const raw = localStorage.getItem('ncluster.shortcuts');
+    if (raw) {
+      const saved = JSON.parse(raw);
+      _shortcuts = {};
+      for (const [id, def] of Object.entries(SHORTCUT_DEFAULTS)) {
+        _shortcuts[id] = saved[id] ? { ...def, ...saved[id] } : { ...def };
+      }
+      return;
+    }
+  } catch (_) {}
+  _shortcuts = {};
+  for (const [id, def] of Object.entries(SHORTCUT_DEFAULTS)) {
+    _shortcuts[id] = { ...def };
+  }
+}
+
+function saveShortcuts() {
+  try { localStorage.setItem('ncluster.shortcuts', JSON.stringify(_shortcuts)); } catch (_) {}
+}
+
+function getShortcut(id) {
+  return _shortcuts[id] || SHORTCUT_DEFAULTS[id];
+}
+
+function matchesShortcut(e, id) {
+  const s = getShortcut(id);
+  if (!s) return false;
+  if (e.key !== s.key && e.key.toLowerCase() !== s.key.toLowerCase()) return false;
+  const needMeta = !!s.meta;
+  const needCtrl = !!s.ctrl;
+  const needShift = !!s.shift;
+  if (needMeta && !(e.metaKey || e.ctrlKey)) return false;
+  if (!needMeta && (e.metaKey || e.ctrlKey) && !needCtrl) return false;
+  if (needCtrl && !e.ctrlKey) return false;
+  if (needShift !== e.shiftKey) return false;
+  return true;
+}
+
+function _formatShortcutKeys(s) {
+  const parts = [];
+  if (s.meta) parts.push(navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl');
+  if (s.ctrl && !s.meta) parts.push('Ctrl');
+  if (s.shift) parts.push('\u21E7');
+  let k = s.key;
+  if (k === 'Tab') k = '\u21E5';
+  else if (k.length === 1) k = k.toUpperCase();
+  parts.push(k);
+  return parts;
+}
+
+let _recordingShortcutId = null;
+
+function renderShortcutsEditor() {
+  const el = document.getElementById('shortcuts-editor');
+  if (!el) return;
+  const rows = Object.entries(_shortcuts).map(([id, s]) => {
+    const keys = _formatShortcutKeys(s).map(k => `<kbd>${k}</kbd>`).join('');
+    const isRecording = _recordingShortcutId === id;
+    const btnLabel = isRecording ? 'press keys…' : 'edit';
+    const btnCls = isRecording ? 'shortcut-edit-btn recording' : 'shortcut-edit-btn';
+    return `<div class="shortcut-row" data-shortcut-id="${id}">
+      <span class="shortcut-label">${s.label}</span>
+      <span class="shortcut-keys">${keys}</span>
+      <button class="${btnCls}" onclick="startRecordingShortcut('${id}')">${btnLabel}</button>
+    </div>`;
+  }).join('');
+  el.innerHTML = rows + '<button class="shortcut-reset-btn" onclick="resetShortcuts()">Reset all to defaults</button>';
+}
+
+function startRecordingShortcut(id) {
+  _recordingShortcutId = id;
+  renderShortcutsEditor();
+
+  function onKey(e) {
+    if (e.key === 'Escape') {
+      _recordingShortcutId = null;
+      document.removeEventListener('keydown', onKey, true);
+      renderShortcutsEditor();
+      return;
+    }
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    _shortcuts[id] = {
+      ..._shortcuts[id],
+      key: e.key,
+      meta: e.metaKey,
+      ctrl: e.ctrlKey,
+      shift: e.shiftKey,
+    };
+    saveShortcuts();
+    _recordingShortcutId = null;
+    document.removeEventListener('keydown', onKey, true);
+    renderShortcutsEditor();
+    toast(`Shortcut updated: ${_shortcuts[id].label}`);
+  }
+  document.addEventListener('keydown', onKey, true);
+}
+
+function resetShortcuts() {
+  for (const [id, def] of Object.entries(SHORTCUT_DEFAULTS)) {
+    _shortcuts[id] = { ...def };
+  }
+  saveShortcuts();
+  renderShortcutsEditor();
+  toast('Shortcuts reset to defaults');
+}
+
+loadShortcuts();
+
 // ── Stats popup ──
+const _gpuColorsLight = [
+  '#0d6e3f', '#16a34a', '#22c55e', '#4ade80', '#6ee7a0', '#86efac', '#a7f3c0', '#bbf7d0',
+  '#15803d', '#059669', '#10b981', '#34d399', '#5eead4', '#2dd4bf', '#14b8a6', '#0f766e',
+];
+const _gpuColorsDark = [
+  '#E95378', '#f472b6', '#fb7185', '#f87171', '#fca5a5', '#fdba74', '#fbbf24', '#f59e0b',
+  '#ff6b9d', '#ef4444', '#e879a0', '#f0abfc', '#d946ef', '#c084fc', '#a78bfa', '#818cf8',
+];
+
+function _getGpuColors() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return isDark ? _gpuColorsDark : _gpuColorsLight;
+}
+
 async function openStats(cluster, jobId, jobName) {
   document.getElementById('stats-overlay').classList.add('open');
   document.getElementById('stats-title').textContent = jobName || `job ${jobId}`;
@@ -60,35 +191,215 @@ async function openStats(cluster, jobId, jobName) {
     const res = await fetch(`/api/stats/${cluster}/${jobId}`);
     const d = await res.json();
     if (d.status !== 'ok') {
-      document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">` +
-        `${d.error || 'Could not load stats.'}</div>`;
+      document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load stats.'}</div>`;
       return;
     }
-    const gRows = (d.gpus || []).map(g => `<tr><td>${g.index}</td><td>${g.name}</td><td>${g.util}</td><td>${g.mem}</td></tr>`).join('');
-    const gpuTable = gRows
-      ? `<div class="gpu-table"><table><thead><tr><th>GPU</th><th>Model</th><th>Util</th><th>Memory</th></tr></thead><tbody>${gRows}</tbody></table></div>`
-      : `<div class="stats-kv" style="margin-top:12px">
-          <div class="stats-k">GPU Metrics</div>
-          <div class="stats-v">${d.gpu_summary || 'Not available (job may be pending/finished, or direct probe is restricted).'}</div>
-          ${d.gpu_probe_error ? `<div class="stats-v" style="color:var(--muted);font-size:10px;margin-top:4px">probe detail: ${d.gpu_probe_error}</div>` : ''}
-        </div>`;
+
+    const snapshots = d.snapshots || [];
+    const liveGpus = d.gpus || [];
+    const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
+    const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
+    const hasRssData = snapshots.some(s => s.rss_used != null);
+    const hasCpuData = snapshots.some(s => s.cpu_util && s.cpu_util !== '00:00:00');
+
+    let chartsHtml = '';
+    if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-util"></canvas></div>';
+    if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-mem"></canvas></div>';
+    if (hasCpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-cpu"></canvas></div>';
+    if (hasRssData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-rss"></canvas></div>';
+    if (chartsHtml) chartsHtml = `<div class="stats-charts">${chartsHtml}</div>`;
+
+    const kvs = [
+      ['State', d.state], ['Elapsed', d.elapsed],
+      ['Nodes', d.nodes], ['GPUs', d.gres],
+      ['CPU', d.cpus], ['RSS', `${d.ave_rss || '—'} / ${d.max_rss || '—'}`],
+    ].filter(([, v]) => v && v !== '—' && v !== 'N/A' && v !== '— / —')
+     .map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${k}</div><div class="stats-v">${v}</div></div>`)
+     .join('');
+
     document.getElementById('stats-body').innerHTML = `
-      <div class="stats-grid">
-        <div class="stats-kv"><div class="stats-k">State</div><div class="stats-v">${d.state || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Elapsed</div><div class="stats-v">${d.elapsed || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Nodes</div><div class="stats-v">${d.nodes || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Node List</div><div class="stats-v">${d.node_list || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Allocated CPU</div><div class="stats-v">${d.cpus || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Allocated GPU</div><div class="stats-v">${d.gres || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave GPU util (TRES)</div><div class="stats-v">${d.gpuutil_ave || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave GPU mem (TRES)</div><div class="stats-v">${d.gpumem_ave || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave CPU (sstat)</div><div class="stats-v">${d.ave_cpu || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave RSS / Max RSS</div><div class="stats-v">${d.ave_rss || '—'} / ${d.max_rss || '—'}</div></div>
-      </div>
-      ${gpuTable}
+      <div class="stats-grid">${kvs}</div>
+      ${chartsHtml}
     `;
+
+    _renderStatsCharts(snapshots, liveGpus);
   } catch (e) {
     document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
+  }
+}
+
+let _statsChartInstances = [];
+
+function _parseGpuUtil(g) {
+  if (!g || !g.util) return null;
+  try { return parseFloat(String(g.util).replace('%', '')); } catch (_) { return null; }
+}
+
+function _parseGpuMemUsed(g) {
+  if (!g || !g.mem) return null;
+  try { return parseFloat(g.mem.split('/')[0].replace('MiB', '').trim()); } catch (_) { return null; }
+}
+
+function _parseGpuMemTotal(g) {
+  if (!g || !g.mem || !g.mem.includes('/')) return null;
+  try { return parseFloat(g.mem.split('/')[1].replace('MiB', '').trim()); } catch (_) { return null; }
+}
+
+function _parseCpuTimeToSec(str) {
+  if (!str) return null;
+  const parts = str.split(':');
+  if (parts.length === 3) {
+    const h = parseInt(parts[0]) || 0;
+    const m = parseInt(parts[1]) || 0;
+    const s = parseInt(parts[2]) || 0;
+    return h * 3600 + m * 60 + s;
+  }
+  if (parts.length === 2) {
+    return (parseInt(parts[0]) || 0) * 60 + (parseInt(parts[1]) || 0);
+  }
+  return null;
+}
+
+function _renderStatsCharts(snapshots, liveGpus) {
+  _statsChartInstances.forEach(c => c.destroy());
+  _statsChartInstances = [];
+
+  const colors = _getGpuColors();
+  const cs = getComputedStyle(document.documentElement);
+  const textColor = cs.getPropertyValue('--text').trim();
+  const mutedColor = cs.getPropertyValue('--muted').trim();
+  const gridColor = cs.getPropertyValue('--border').trim();
+  const amber = cs.getPropertyValue('--amber').trim() || '#f59e0b';
+
+  const allSnaps = [...snapshots];
+  if (liveGpus && liveGpus.length > 0) {
+    allSnaps.push({ ts: new Date().toISOString(), per_gpu: liveGpus, rss_used: null, gpu_util: null, gpu_mem_used: null, gpu_mem_total: null });
+  }
+
+  const labels = allSnaps.map(s => {
+    try { return new Date(s.ts.replace('T', ' ')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    catch (_) { return s.ts; }
+  });
+
+  const chartOpts = (title, yLabel, yMax) => ({
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      title: { display: true, text: title, font: { family: 'monospace', size: 11, weight: 'bold' }, color: textColor },
+      legend: { display: true, position: 'bottom', labels: { font: { family: 'monospace', size: 9 }, boxWidth: 10, padding: 6, color: mutedColor, usePointStyle: true, pointStyle: 'line' } },
+      tooltip: { mode: 'index', intersect: false, titleFont: { family: 'monospace', size: 10 }, bodyFont: { family: 'monospace', size: 10 } },
+    },
+    scales: {
+      x: { ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
+      y: { min: 0, max: yMax || undefined, ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor }, grid: { color: gridColor }, title: { display: true, text: yLabel, font: { family: 'monospace', size: 9 }, color: mutedColor } },
+    },
+    interaction: { mode: 'index', intersect: false },
+  });
+
+  const hasPerGpu = allSnaps.some(s => s.per_gpu && s.per_gpu.length > 0);
+  const gpuCount = hasPerGpu ? Math.max(...allSnaps.map(s => (s.per_gpu || []).length)) : 0;
+
+  if (gpuCount > 0) {
+    const utilDatasets = [];
+    const memDatasets = [];
+    for (let gi = 0; gi < gpuCount; gi++) {
+      const color = colors[gi % colors.length];
+      const lbl = `GPU ${gi}`;
+      utilDatasets.push({
+        label: lbl, borderColor: color, backgroundColor: color + '18',
+        data: allSnaps.map(s => _parseGpuUtil((s.per_gpu || [])[gi])),
+        fill: false, tension: 0.3, pointRadius: allSnaps.length < 4 ? 3 : 1, borderWidth: 2,
+      });
+      memDatasets.push({
+        label: lbl, borderColor: color, backgroundColor: color + '18',
+        data: allSnaps.map(s => _parseGpuMemUsed((s.per_gpu || [])[gi])),
+        fill: false, tension: 0.3, pointRadius: allSnaps.length < 4 ? 3 : 1, borderWidth: 2,
+      });
+    }
+
+    const ctxUtil = document.getElementById('chart-gpu-util');
+    if (ctxUtil && utilDatasets.some(ds => ds.data.some(v => v != null))) {
+      _statsChartInstances.push(new Chart(ctxUtil, {
+        type: 'line', data: { labels, datasets: utilDatasets },
+        options: chartOpts('GPU Utilization', '%', 100),
+      }));
+    }
+
+    const ctxMem = document.getElementById('chart-gpu-mem');
+    if (ctxMem && memDatasets.some(ds => ds.data.some(v => v != null))) {
+      const totalVal = _parseGpuMemTotal((allSnaps[allSnaps.length - 1].per_gpu || [])[0]);
+      if (totalVal) {
+        memDatasets.push({
+          label: 'Total', borderColor: mutedColor, borderDash: [5, 3],
+          data: allSnaps.map(() => totalVal),
+          fill: false, tension: 0, pointRadius: 0, borderWidth: 1,
+        });
+      }
+      _statsChartInstances.push(new Chart(ctxMem, {
+        type: 'line', data: { labels, datasets: memDatasets },
+        options: chartOpts('GPU Memory', 'MiB'),
+      }));
+    }
+  } else if (allSnaps.some(s => s.gpu_util != null)) {
+    const ctxUtil = document.getElementById('chart-gpu-util');
+    if (ctxUtil) {
+      _statsChartInstances.push(new Chart(ctxUtil, {
+        type: 'line',
+        data: { labels, datasets: [{ label: 'Avg', data: allSnaps.map(s => s.gpu_util), borderColor: colors[0], backgroundColor: colors[0] + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+        options: chartOpts('GPU Utilization (avg)', '%', 100),
+      }));
+    }
+    const ctxMem = document.getElementById('chart-gpu-mem');
+    if (ctxMem && allSnaps.some(s => s.gpu_mem_used != null)) {
+      const ds = [{ label: 'Used', data: allSnaps.map(s => s.gpu_mem_used), borderColor: colors[1], backgroundColor: colors[1] + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }];
+      if (allSnaps.some(s => s.gpu_mem_total != null)) ds.push({ label: 'Total', data: allSnaps.map(s => s.gpu_mem_total), borderColor: mutedColor, borderDash: [5, 3], fill: false, tension: 0, pointRadius: 0, borderWidth: 1 });
+      _statsChartInstances.push(new Chart(ctxMem, { type: 'line', data: { labels, datasets: ds }, options: chartOpts('GPU Memory (avg)', 'MiB') }));
+    }
+  }
+
+  const cpuSnaps = snapshots.filter(s => s.cpu_util && s.cpu_util !== '00:00:00');
+  if (cpuSnaps.length >= 2) {
+    const cpuLabels = cpuSnaps.map(s => {
+      try { return new Date(s.ts.replace('T', ' ')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+      catch (_) { return s.ts; }
+    });
+    const cpuUtilPct = [];
+    for (let i = 0; i < cpuSnaps.length; i++) {
+      if (i === 0) { cpuUtilPct.push(null); continue; }
+      const cpuSec0 = _parseCpuTimeToSec(cpuSnaps[i - 1].cpu_util);
+      const cpuSec1 = _parseCpuTimeToSec(cpuSnaps[i].cpu_util);
+      const ts0 = new Date(cpuSnaps[i - 1].ts.replace('T', ' ')).getTime() / 1000;
+      const ts1 = new Date(cpuSnaps[i].ts.replace('T', ' ')).getTime() / 1000;
+      if (cpuSec0 != null && cpuSec1 != null && ts1 > ts0) {
+        const pct = Math.min(100, Math.max(0, ((cpuSec1 - cpuSec0) / (ts1 - ts0)) * 100));
+        cpuUtilPct.push(Math.round(pct * 10) / 10);
+      } else {
+        cpuUtilPct.push(null);
+      }
+    }
+    const cpuColor = colors[Math.min(2, colors.length - 1)];
+    const ctxCpu = document.getElementById('chart-cpu');
+    if (ctxCpu && cpuUtilPct.some(v => v != null)) {
+      _statsChartInstances.push(new Chart(ctxCpu, {
+        type: 'line',
+        data: { labels: cpuLabels, datasets: [{ label: 'CPU', data: cpuUtilPct, borderColor: cpuColor, backgroundColor: cpuColor + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+        options: chartOpts('CPU Utilization', '%', 100),
+      }));
+    }
+  }
+
+  const rssSnaps = snapshots.filter(s => s.rss_used != null);
+  if (rssSnaps.length > 0) {
+    const rssLabels = rssSnaps.map(s => {
+      try { return new Date(s.ts.replace('T', ' ')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+      catch (_) { return s.ts; }
+    });
+    const rssColor = colors[0];
+    const ctx = document.getElementById('chart-rss');
+    if (ctx) _statsChartInstances.push(new Chart(ctx, {
+      type: 'line',
+      data: { labels: rssLabels, datasets: [{ label: 'RSS', data: rssSnaps.map(s => s.rss_used), borderColor: rssColor, backgroundColor: rssColor + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+      options: chartOpts('RSS Memory', 'MB'),
+    }));
   }
 }
 
@@ -280,6 +591,7 @@ function openSettingsModal() {
   loadSettingsPanel();
   renderMountPanel(allData);
   updateThemeUI(getThemePreference());
+  renderShortcutsEditor();
 }
 
 function closeSettingsModal() {
@@ -299,6 +611,7 @@ async function loadSettingsPanel() {
     const cfg = await res.json();
     document.getElementById('set-ssh-timeout').value = cfg.ssh_timeout || 8;
     document.getElementById('set-cache-fresh').value = cfg.cache_fresh_sec || 30;
+    document.getElementById('set-stats-interval').value = cfg.stats_interval_sec || 1800;
 
     const inc = (cfg.local_process_filters || {}).include || [];
     const exc = (cfg.local_process_filters || {}).exclude || [];
@@ -523,11 +836,12 @@ async function saveProjects() {
 async function saveAdvancedSettings() {
   const sshTimeout = parseInt(document.getElementById('set-ssh-timeout').value) || 8;
   const cacheFresh = parseInt(document.getElementById('set-cache-fresh').value) || 30;
+  const statsInterval = parseInt(document.getElementById('set-stats-interval').value) || 1800;
   try {
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ssh_timeout: sshTimeout, cache_fresh_sec: cacheFresh }),
+      body: JSON.stringify({ ssh_timeout: sshTimeout, cache_fresh_sec: cacheFresh, stats_interval_sec: statsInterval }),
     });
     const d = await res.json();
     if (d.status === 'ok') toast('Advanced settings saved');
@@ -615,16 +929,10 @@ applyLocalSettings();
 fetchAll();
 loadProjectButtons();
 
-// Restore last active tab/project across refreshes
+// Restore tabs across refreshes
 (function restoreTab() {
-  try {
-    const saved = sessionStorage.getItem('ncluster.activeTab') || 'live';
-    if (saved === 'project') {
-      const proj = sessionStorage.getItem('ncluster.activeProject');
-      if (proj) { openProject(proj); return; }
-    }
-    showTab(saved);
-  } catch (_) {
+  if (!_restoreTabs()) {
+    _renderAppTabs();
     showTab('live');
   }
 })();

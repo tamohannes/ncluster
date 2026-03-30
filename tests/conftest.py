@@ -67,13 +67,13 @@ def _ensure_mock_cluster():
 
 @pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
-    """Redirect ALL DB access to a per-test temp file.
-    This is autouse so no test can accidentally write to production history.db."""
+    """Redirect ALL DB and config access to per-test temp files.
+    This is autouse so no test can accidentally write to production files."""
     p = str(tmp_path / "test_history.db")
     monkeypatch.setattr("server.config.DB_PATH", p)
     monkeypatch.setattr("server.db.DB_PATH", p)
+    monkeypatch.setattr("server.config.CONFIG_PATH", str(tmp_path / "test_config.json"))
     yield p
-    # tmp_path cleanup is automatic
 
 
 # ---------------------------------------------------------------------------

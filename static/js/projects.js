@@ -40,15 +40,25 @@ async function loadProjectButtons() {
       const emoji = p.emoji || '';
       const rawColor = p.color || '';
       const color = rawColor ? (_isDarkTheme() ? darkenColor(rawColor, 0.6) : rawColor) : 'var(--surface)';
-      return `<button class="nav-project-btn" style="border-color:${color}" onclick="openProject('${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
+      return `<button class="nav-project-btn" style="border-color:${color}" onclick="navClick(event,'project','${p.project}','${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
     }).join('');
   } catch (_) {}
 }
 
-async function openProject(projectName) {
+async function openProject(projectName, fromTab) {
   _projCurrentName = projectName;
   try { sessionStorage.setItem('ncluster.activeProject', projectName); } catch (_) {}
-  showTab('project');
+  if (!fromTab) {
+    const at = _appTabs.find(t => t.id === _activeTabId);
+    if (at) {
+      at.type = 'project';
+      at.label = projectName;
+      at.project = projectName;
+    }
+    _activateView('project');
+    _renderAppTabs();
+    _persistTabs();
+  }
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';
   document.getElementById('project-detail-title').textContent = `${emoji ? emoji + ' ' : ''}${projectName}`;

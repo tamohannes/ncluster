@@ -247,9 +247,7 @@ function renderLogWithHighlights(raw) {
   return lines.map((line) => {
     const l = line.toLowerCase();
     let cls = 'log-line';
-    if (isBenignLogLine(l)) {
-      cls += ' warn';
-    } else {
+    if (!isBenignLogLine(l)) {
       if (l.includes('traceback')) cls += ' trace';
       if (l.includes('error') || l.includes('exception') || l.includes('fatal')) cls += ' error';
       else if (l.includes('warning') || l.includes('warn')) cls += ' warn';

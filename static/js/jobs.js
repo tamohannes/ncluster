@@ -1,16 +1,151 @@
-function showTab(tab) {
+// ── App tabs ─────────────────────────────────────────────────────────────────
+const _tabIcons = {
+  live:    '⚡', history: '⏱',
+  logbook: '📓', project: '📁',
+  clusters: '🖥',
+};
+let _appTabs = [{ id: 1, type: 'live', label: 'Live', project: null }];
+let _activeTabId = 1;
+let _nextTabId = 2;
+
+function _activateView(tab) {
   currentTab = tab;
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
   document.getElementById('history-view').classList.toggle('active', tab === 'history');
   document.getElementById('project-view').classList.toggle('active', tab === 'project');
   document.getElementById('logbook-view').classList.toggle('active', tab === 'logbook');
+  document.getElementById('clusters-view').classList.toggle('active', tab === 'clusters');
   document.getElementById('explorer-page').classList.remove('open');
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   document.getElementById('tab-logbook').classList.toggle('active', tab === 'logbook');
+  document.getElementById('tab-clusters').classList.toggle('active', tab === 'clusters');
   if (tab === 'history') loadHistory();
   if (tab === 'logbook') initLogbookPage();
-  try { sessionStorage.setItem('ncluster.activeTab', tab); } catch (_) {}
+  if (tab === 'clusters') { if (!_partitionData) fetchPartitions().then(() => _renderAvailTable()); else _renderAvailTable(); }
+}
+
+function showTab(tab) {
+  _activateView(tab);
+  const at = _appTabs.find(t => t.id === _activeTabId);
+  if (at) {
+    at.type = tab;
+    at.label = { live: 'Live', history: 'History', logbook: 'Logbook', clusters: 'Clusters' }[tab] || tab;
+    at.project = null;
+    if (tab === 'logbook' && typeof _lbProject !== 'undefined' && _lbProject) {
+      at.lbProject = _lbProject;
+    }
+  }
+  _renderAppTabs();
+  _persistTabs();
+}
+
+function switchAppTab(id) {
+  const t = _appTabs.find(t => t.id === id);
+  if (!t) return;
+  _activeTabId = id;
+  if (t.type === 'project' && t.project) {
+    _activateView('project');
+    openProject(t.project, true);
+  } else if (t.type === 'logbook') {
+    if (t.lbProject) _lbProject = t.lbProject;
+    _activateView('logbook');
+    if (t.lbEntryId) setTimeout(() => openLogbookEntry(t.lbEntryId), 300);
+  } else {
+    _activateView(t.type);
+  }
+  _renderAppTabs();
+  _persistTabs();
+}
+
+function _updateActiveTabExtra(fields) {
+  const at = _appTabs.find(t => t.id === _activeTabId);
+  if (at) Object.assign(at, fields);
+  _persistTabs();
+}
+
+function addAppTab(type, label, project) {
+  const t = {
+    id: _nextTabId++,
+    type: type || 'live',
+    label: label || 'Live',
+    project: project || null,
+  };
+  _appTabs.push(t);
+  _activeTabId = t.id;
+  if (t.type === 'project' && t.project) {
+    _activateView('project');
+    openProject(t.project, true);
+  } else {
+    _activateView(t.type);
+  }
+  _renderAppTabs();
+  _persistTabs();
+}
+
+function closeAppTab(id) {
+  if (_appTabs.length <= 1) return;
+  const idx = _appTabs.findIndex(t => t.id === id);
+  if (idx === -1) return;
+  _appTabs.splice(idx, 1);
+  if (_activeTabId === id) {
+    const next = _appTabs[Math.min(idx, _appTabs.length - 1)];
+    _activeTabId = next.id;
+    switchAppTab(next.id);
+  }
+  _renderAppTabs();
+  _persistTabs();
+}
+
+function cycleAppTab(dir) {
+  if (_appTabs.length <= 1) return;
+  const idx = _appTabs.findIndex(t => t.id === _activeTabId);
+  const next = (idx + dir + _appTabs.length) % _appTabs.length;
+  switchAppTab(_appTabs[next].id);
+}
+
+function _renderAppTabs() {
+  const el = document.getElementById('topbar-tabs');
+  if (!el) return;
+  el.innerHTML = _appTabs.map(t => {
+    const icon = _tabIcons[t.type] || '📄';
+    const active = t.id === _activeTabId ? ' active' : '';
+    const closable = _appTabs.length > 1
+      ? `<button class="topbar-tab-close" onclick="event.stopPropagation();closeAppTab(${t.id})" title="Close tab">×</button>`
+      : '';
+    return `<div class="topbar-tab${active}" onclick="switchAppTab(${t.id})" title="${t.label}">
+      <span class="topbar-tab-icon">${icon}</span>
+      <span class="topbar-tab-label">${t.label}</span>
+      ${closable}
+    </div>`;
+  }).join('');
+}
+
+function _persistTabs() {
+  try {
+    localStorage.setItem('ncluster.appTabs', JSON.stringify(_appTabs));
+    localStorage.setItem('ncluster.activeTabId', String(_activeTabId));
+    localStorage.setItem('ncluster.nextTabId', String(_nextTabId));
+  } catch (_) {}
+}
+
+function _restoreTabs() {
+  try {
+    const raw = localStorage.getItem('ncluster.appTabs');
+    if (raw) {
+      const tabs = JSON.parse(raw);
+      if (Array.isArray(tabs) && tabs.length) {
+        _appTabs = tabs;
+        _activeTabId = parseInt(localStorage.getItem('ncluster.activeTabId') || '1', 10);
+        _nextTabId = parseInt(localStorage.getItem('ncluster.nextTabId') || '2', 10);
+        const at = _appTabs.find(t => t.id === _activeTabId) || _appTabs[0];
+        _activeTabId = at.id;
+        switchAppTab(at.id);
+        return true;
+      }
+    }
+  } catch (_) {}
+  return false;
 }
 
 function applySidebarState() {
@@ -20,24 +155,20 @@ function applySidebarState() {
   if (!nav || !btn) return;
   nav.classList.toggle('collapsed', navCollapsed);
   if (navCollapsed) {
-    // Force collapse even when a resizer-set inline width exists.
     nav.style.width = '0px';
   } else {
-    // Restore persisted width when opening.
     try {
       const saved = parseInt(localStorage.getItem('ncluster.navWidth') || '', 10);
       const minW = 230;
       const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
-      const w = Number.isNaN(saved) ? 320 : Math.min(maxW, Math.max(minW, saved));
+      const w = Number.isNaN(saved) ? 280 : Math.min(maxW, Math.max(minW, saved));
       nav.style.width = `${w}px`;
     } catch (_) {
-      nav.style.width = '320px';
+      nav.style.width = '280px';
     }
   }
   if (splitter) splitter.style.display = navCollapsed ? 'none' : '';
-  btn.textContent = navCollapsed ? '☰' : '✕';
-  btn.title = navCollapsed ? 'open controls' : 'hide controls';
-  updateNavTogglePosition();
+  btn.classList.toggle('sidebar-open', !navCollapsed);
 }
 
 function toggleSidebar() {
@@ -46,12 +177,23 @@ function toggleSidebar() {
   applySidebarState();
 }
 
-function updateNavTogglePosition() {
-  const btn = document.getElementById('nav-toggle');
-  if (!btn) return;
-  // Keep toggle fixed on the left for predictable interaction.
-  btn.style.left = '10px';
+function navClick(event, type, label, project) {
+  if (event && (event.metaKey || event.ctrlKey)) {
+    addAppTab(type, label, project || null);
+  } else {
+    if (type === 'project' && project) openProject(project);
+    else showTab(type);
+  }
 }
+
+document.addEventListener('keydown', e => {
+  if (typeof _recordingShortcutId !== 'undefined' && _recordingShortcutId) return;
+  if (matchesShortcut(e, 'toggleSidebar')) { e.preventDefault(); toggleSidebar(); return; }
+  if (matchesShortcut(e, 'openSpotlight')) { e.preventDefault(); if (typeof openSpotlight === 'function') openSpotlight(); return; }
+  if (matchesShortcut(e, 'closeTab')) { e.preventDefault(); closeAppTab(_activeTabId); return; }
+  if (matchesShortcut(e, 'prevTab')) { e.preventDefault(); cycleAppTab(-1); return; }
+  if (matchesShortcut(e, 'nextTab')) { e.preventDefault(); cycleAppTab(1); return; }
+});
 
 function setupSidebarResizer() {
   const splitter = document.getElementById('nav-splitter');
@@ -61,6 +203,7 @@ function setupSidebarResizer() {
   splitter.addEventListener('mousedown', (e) => {
     if (navCollapsed) return;
     _isResizingNav = true;
+    nav.style.transition = 'none';
     e.preventDefault();
   });
 
@@ -73,10 +216,10 @@ function setupSidebarResizer() {
     if (next > maxW) next = maxW;
     nav.style.width = `${next}px`;
     try { localStorage.setItem('ncluster.navWidth', String(next)); } catch (_) {}
-    updateNavTogglePosition();
   });
 
   window.addEventListener('mouseup', () => {
+    if (_isResizingNav) nav.style.transition = '';
     _isResizingNav = false;
   });
 
@@ -100,7 +243,6 @@ function setupSidebarResizer() {
         nav.style.width = `${w}px`;
       } catch (_) {}
     }
-    updateNavTogglePosition();
   });
 }
 
@@ -129,6 +271,14 @@ function updateSummary(data) {
   document.getElementById('s-gpus').textContent = totalGpus;
   document.getElementById('s-clusters').textContent = `${reach}/${Object.keys(CLUSTERS).length}`;
   document.getElementById('s-mounted').textContent = `${mounted}/${reach > 0 ? reach - (data.local ? 1 : 0) : 0}`;
+  const ts = document.getElementById('topbar-stat');
+  if (ts) {
+    const parts = [];
+    if (running) parts.push(`${running} running`);
+    if (pending) parts.push(`${pending} pending`);
+    if (failed) parts.push(`${failed} failed`);
+    ts.textContent = parts.join(' · ') || '—';
+  }
 }
 
 function renderMountPanel(data) {
@@ -342,7 +492,7 @@ function renderCard(name, data) {
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
     : '';
   const clearCompletedBtn = pinnedCompletedCount > 0
-    ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} completed</button>`
+    ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} done</button>`
     : '';
   const mountBtn = name !== 'local'
     ? (mount.mounted

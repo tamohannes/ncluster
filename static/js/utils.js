@@ -700,17 +700,10 @@ function _bestWaitCls(partitions) {
 }
 
 async function openClusterAvail() {
-  const overlay = document.getElementById('avail-overlay');
-  if (!overlay) return;
-  overlay.classList.add('open');
-  if (!_partitionData) await fetchPartitions();
-  _renderAvailTable();
+  showTab('clusters');
 }
 
-function closeClusterAvail() {
-  const overlay = document.getElementById('avail-overlay');
-  if (overlay) overlay.classList.remove('open');
-}
+function closeClusterAvail() {}
 
 function _renderAvailTable() {
   const el = document.getElementById('avail-body');
@@ -792,21 +785,14 @@ function partitionChipHtml(clusterName) {
 }
 
 async function openAdvisor(preselectedCluster) {
-  const overlay = document.getElementById('advisor-overlay');
-  if (!overlay) return;
-  overlay.classList.add('open');
+  showTab('clusters');
   const clusterInput = document.getElementById('adv-cluster');
   if (clusterInput && preselectedCluster) {
     clusterInput.value = preselectedCluster;
   }
-  const resultsEl = document.getElementById('adv-results');
-  if (resultsEl) resultsEl.innerHTML = '<div class="no-jobs">Click "Recommend" to get suggestions</div>';
 }
 
-function closeAdvisor() {
-  const overlay = document.getElementById('advisor-overlay');
-  if (overlay) overlay.classList.remove('open');
-}
+function closeAdvisor() {}
 
 async function runAdvisor() {
   const resultsEl = document.getElementById('adv-results');

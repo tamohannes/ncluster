@@ -12,14 +12,33 @@
 </head>
 <body>
 
-<button class="nav-toggle" id="nav-toggle" onclick="toggleSidebar()" title="toggle controls">☰</button>
+<div class="topbar" id="topbar">
+  <div class="topbar-left">
+    <button class="topbar-toggle" id="nav-toggle" onclick="toggleSidebar()" title="Toggle sidebar (⌘S)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="3"/>
+        <line x1="9" y1="3" x2="9" y2="21"/>
+      </svg>
+    </button>
+    <div class="topbar-sep"></div>
+    <div class="topbar-title"><span>n</span>cluster</div>
+  </div>
+  <div class="topbar-tabs" id="topbar-tabs"></div>
+  <div class="topbar-right">
+    <span class="topbar-stat" id="topbar-stat"></span>
+  </div>
+</div>
 <div class="app-shell" id="app-shell">
   <aside class="side-nav" id="side-nav">
-    <div class="nav-title">cluster<em>/</em>monitor</div>
     <div class="nav-tabs-wrap">
-      <button class="nav-tab active" id="tab-live" onclick="showTab('live')">Live</button>
-      <button class="nav-tab" id="tab-history" onclick="showTab('history')">History</button>
-      <button class="nav-tab" id="tab-logbook" onclick="showTab('logbook')">Logbook</button>
+      <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')">Live</button>
+      <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','History')">History</button>
+      <button class="nav-tab" id="tab-logbook" onclick="navClick(event,'logbook','Logbook')">Logbook</button>
+      <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Clusters')">Clusters</button>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Projects</div>
+      <div class="nav-project-grid" id="nav-project-grid"></div>
     </div>
     <div class="countdown-badge" style="display:none">refresh in <b id="cd">30</b>s</div>
     <div class="nav-section">
@@ -34,17 +53,7 @@
         <div class="stat-row"><span class="dot" style="background:var(--cyan)"></span><span class="stat-val" id="s-clusters">—</span><span class="stat-lbl">clusters up</span></div>
         <div class="stat-row"><span class="dot" style="background:var(--green)"></span><span class="stat-val" id="s-mounted">—</span><span class="stat-lbl">mounted</span></div>
       </div>
-      <button class="advisor-btn" onclick="openAdvisor()" title="Submit Advisor — find the best cluster &amp; partition">Submit Advisor</button>
-      <button class="avail-btn" onclick="openClusterAvail()" title="Cluster availability — partition wait times &amp; idle GPUs">Cluster Availability</button>
     </div>
-    <div class="nav-section">
-      <div class="nav-section-label">Projects</div>
-      <div class="nav-project-grid" id="nav-project-grid"></div>
-    </div>
-    <button class="theme-toggle" id="theme-toggle" onclick="cycleTheme()" title="Toggle theme">
-      <span class="theme-icon" id="theme-icon"></span>
-      <span class="theme-label" id="theme-label"></span>
-    </button>
     <div class="nav-user-btn" onclick="openSettingsModal()">
       <img class="nav-user-img" src="/api/user_avatar" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
       <span class="nav-user-avatar" style="display:none">{{ username[0] | upper }}</span>
@@ -100,10 +109,10 @@
     <!-- Project detail view -->
     <div class="project-view" id="project-view">
       <div class="project-detail-head">
-        <button class="btn" onclick="showTab('live')">← Dashboard</button>
+        <button class="btn" onclick="navClick(event,'live','Live')">← Dashboard</button>
         <span class="project-detail-title" id="project-detail-title"></span>
         <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
-        <button class="btn" onclick="openProjectLogbook()">📓 logbook</button>
+        <button class="btn" onclick="navClick(event,'logbook','Logbook');if(!event.metaKey&&!event.ctrlKey)openProjectLogbook()">📓 logbook</button>
       </div>
       <div class="proj-layout">
         <div class="proj-main">
@@ -157,6 +166,48 @@
           <div class="lb-main-empty">Select an entry or create a new one.</div>
         </div>
       </div>
+    </div>
+
+    <!-- Clusters view -->
+    <div class="clusters-view" id="clusters-view">
+      <main>
+        <div class="clusters-page">
+          <div class="clusters-section">
+            <div class="clusters-section-head">
+              <div>
+                <div class="clusters-section-title">Submit Advisor</div>
+                <div class="clusters-section-sub">Find the best cluster and partition for your job</div>
+              </div>
+            </div>
+            <div class="advisor-form">
+              <label class="adv-field"><span>Nodes</span><input type="number" id="adv-nodes" value="1" min="1" max="1024"></label>
+              <label class="adv-field"><span>Time limit</span><input type="text" id="adv-time" value="4:00:00" placeholder="HH:MM:SS"></label>
+              <label class="adv-field"><span>Cluster (optional)</span>
+                <select id="adv-cluster">
+                  <option value="">All clusters</option>
+                  {% for name in clusters %}{% if name != 'local' %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
+                </select>
+              </label>
+              <label class="adv-field adv-toggle"><input type="checkbox" id="adv-preempt"><span>Include preemptable (backfill)</span></label>
+              <button class="btn advisor-go-btn" onclick="runAdvisor()">Recommend</button>
+            </div>
+            <div class="advisor-results" id="adv-results">
+              <div class="no-jobs">Click "Recommend" to get suggestions</div>
+            </div>
+          </div>
+          <div class="clusters-section" style="margin-top:24px">
+            <div class="clusters-section-head">
+              <div>
+                <div class="clusters-section-title">Cluster Availability</div>
+                <div class="clusters-section-sub">Partition wait times and idle GPUs across all clusters</div>
+              </div>
+            </div>
+            <div id="avail-body">
+              <div class="no-jobs">Loading partition data...</div>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
 
     <!-- File Explorer view -->
@@ -259,36 +310,15 @@
     <div class="settings-layout">
       <div class="settings-nav">
         <div class="settings-nav-item active" data-section="sec-profile" onclick="showSettingsSection(this)">Profile</div>
-        <div class="settings-nav-item" data-section="sec-appearance" onclick="showSettingsSection(this)">Appearance</div>
-        <div class="settings-nav-item" data-section="sec-refresh" onclick="showSettingsSection(this)">Refresh</div>
-        <div class="settings-nav-item" data-section="sec-mounts" onclick="showSettingsSection(this)">Mounts</div>
+        <div class="settings-nav-item" data-section="sec-general" onclick="showSettingsSection(this)">General</div>
+        <div class="settings-nav-item" data-section="sec-shortcuts" onclick="showSettingsSection(this)">Shortcuts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
-        <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
         <div class="settings-nav-item" data-section="sec-projects" onclick="showSettingsSection(this)">Projects</div>
-        <div class="settings-nav-item" data-section="sec-filters" onclick="showSettingsSection(this)">Process Filters</div>
+        <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
       </div>
       <div class="settings-content">
-        <div class="settings-section active" id="sec-profile">
-          <div class="settings-sub" style="display:flex;align-items:center;gap:14px;padding:12px">
-            <img id="set-avatar" src="/api/user_avatar" alt="" style="width:52px;height:52px;border-radius:50%;border:2px solid var(--border);object-fit:cover;background:var(--bg)">
-            <div>
-              <div style="font-family:var(--mono);font-size:13px;font-weight:600">{{ username }}</div>
-              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">cluster / monitor</div>
-            </div>
-          </div>
-          <div class="settings-sub-label">Team</div>
-          <div class="settings-sub">
-            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="my-team" style="width:140px"></label>
-            <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Your team in the Science dashboard — used for GPU allocation tracking</div>
-          </div>
-          <div class="settings-sub-label" style="margin-top:10px">PPPs (Project Quotas)</div>
-          <div class="settings-sub">
-            <div id="ppp-editor"></div>
-            <button class="btn" style="margin-top:6px;width:100%" onclick="addPppRow()">+ add PPP</button>
-          </div>
-          <button class="btn" style="margin-top:10px;width:100%" onclick="saveProfile()">save profile</button>
-        </div>
-        <div class="settings-section" id="sec-appearance">
+        <!-- General: theme + refresh -->
+        <div class="settings-section" id="sec-general">
           <div class="settings-sub-label">Theme</div>
           <div class="theme-options" id="theme-options">
             <button class="theme-option" data-theme="system" onclick="setTheme('system')">
@@ -301,32 +331,73 @@
               <span class="theme-option-icon">&#9790;</span> Dark
             </button>
           </div>
-        </div>
-        <div class="settings-section" id="sec-refresh">
-          <div class="settings-sub-label">Refresh Behavior</div>
+          <div class="settings-sub-label" style="margin-top:16px">Refresh</div>
           <label class="settings-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>Interval (sec)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30" style="width:60px" onchange="saveLocalSettings()"></label>
         </div>
-        <div class="settings-section" id="sec-mounts">
-          <div class="settings-sub-label">Mount Controls</div>
+
+        <!-- Keyboard Shortcuts (populated by JS) -->
+        <div class="settings-section" id="sec-shortcuts">
+          <div class="settings-sub-label">Keyboard Shortcuts</div>
+          <div id="shortcuts-editor"></div>
+        </div>
+
+        <!-- Clusters + Mounts -->
+        <div class="settings-section" id="sec-clusters">
+          <div class="settings-sub-label">Cluster Configuration</div>
+          <div id="cluster-editor" style="max-height:40vh;overflow-y:auto"></div>
+          <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:14px">
+            <button class="btn" onclick="addClusterRow()">+ add cluster</button>
+            <button class="btn" onclick="saveClusters()">save clusters</button>
+          </div>
+          <div class="settings-sub-label" style="margin-top:16px">Mounts</div>
           <div class="header-right" style="margin-bottom:10px">
             <button class="btn" onclick="mountAll()">mount all</button>
             <button class="btn" onclick="unmountAll()">unmount all</button>
           </div>
           <div id="mount-panel" class="mount-panel"></div>
         </div>
-        <div class="settings-section" id="sec-clusters">
-          <div class="settings-sub-label">Cluster Configuration</div>
-          <div id="cluster-editor" style="max-height:55vh;overflow-y:auto"></div>
-          <div style="display:flex;gap:5px;margin-top:8px">
-            <button class="btn" style="flex:1" onclick="addClusterRow()">+ add cluster</button>
-            <button class="btn" style="flex:1" onclick="saveClusters()">save clusters</button>
+
+        <!-- Projects -->
+        <div class="settings-section" id="sec-projects">
+          <div class="settings-sub-label">Project Prefixes &amp; Colors</div>
+          <div id="project-editor" style="max-height:45vh;overflow-y:auto"></div>
+          <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:14px">
+            <button class="btn" onclick="addProjectRow()">+ add project</button>
+            <button class="btn" onclick="saveProjects()">save projects</button>
           </div>
         </div>
+
+        <!-- Profile -->
+        <div class="settings-section active" id="sec-profile">
+          <div class="settings-sub" style="display:flex;align-items:center;gap:14px;padding:12px">
+            <img id="set-avatar" src="/api/user_avatar" alt="" style="width:52px;height:52px;border-radius:50%;border:2px solid var(--border);object-fit:cover;background:var(--bg)">
+            <div>
+              <div style="font-family:var(--mono);font-size:13px;font-weight:600">{{ username }}</div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">ncluster</div>
+            </div>
+          </div>
+          <div class="settings-sub-label">Team</div>
+          <div class="settings-sub">
+            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="my-team" style="width:140px"></label>
+            <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Your team in the Science dashboard — used for GPU allocation tracking</div>
+          </div>
+          <div class="settings-sub-label" style="margin-top:10px">PPPs (Project Quotas)</div>
+          <div class="settings-sub">
+            <div id="ppp-editor"></div>
+            <button class="btn" style="margin-top:6px;width:100%" onclick="addPppRow()">+ add PPP</button>
+          </div>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveProfile()">save profile</button></div>
+        </div>
+
+        <!-- Advanced: SSH, cache, display, process filters -->
         <div class="settings-section" id="sec-advanced">
-          <div class="settings-sub-label">Advanced</div>
+          <div class="settings-sub-label">Connection</div>
           <label class="settings-row"><span>SSH timeout (sec)</span><input type="number" id="set-ssh-timeout" min="2" max="60" value="8" style="width:60px"></label>
           <label class="settings-row"><span>Cache freshness (sec)</span><input type="number" id="set-cache-fresh" min="5" max="600" value="30" style="width:60px"></label>
+          <label class="settings-row"><span>GPU stats interval (sec)</span><input type="number" id="set-stats-interval" min="60" max="7200" value="1800" style="width:70px"></label>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveAdvancedSettings()">save connection</button></div>
+          <div class="settings-sub-label" style="margin-top:16px">Display</div>
           <label class="settings-row"><span>History page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>JSONL load mode</span>
@@ -334,68 +405,26 @@
               <option value="first">first N</option><option value="last">last N</option><option value="all">all records</option>
             </select>
           </label>
-          <button class="btn" style="margin-top:8px;width:100%" onclick="saveAdvancedSettings()">save</button>
-        </div>
-        <div class="settings-section" id="sec-projects">
-          <div class="settings-sub-label">Project Prefixes &amp; Colors</div>
-          <div id="project-editor" style="max-height:45vh;overflow-y:auto"></div>
-          <div style="display:flex;gap:5px;margin-top:8px">
-            <button class="btn" style="flex:1" onclick="addProjectRow()">+ add project</button>
-            <button class="btn" style="flex:1" onclick="saveProjects()">save projects</button>
-          </div>
-        </div>
-        <div class="settings-section" id="sec-filters">
-          <div class="settings-sub-label">Local Process Filters</div>
+          <div class="settings-sub-label" style="margin-top:16px">Local Process Filters</div>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="my-framework, my_framework, ..."></label>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Exclude (comma-separated)</span><input type="text" id="set-proc-exclude" style="width:100%" placeholder="cursor, jupyter, ..."></label>
-          <button class="btn" style="margin-top:8px;width:100%" onclick="saveProcessFilters()">save</button>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveProcessFilters()">save filters</button></div>
         </div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Submit Advisor modal -->
-<div class="advisor-overlay" id="advisor-overlay" onclick="if(event.target===this)closeAdvisor()">
-  <div class="advisor-modal">
-    <div class="advisor-head">
-      <div>
-        <div class="advisor-title">Submit Advisor</div>
-        <div class="advisor-sub">Find the best cluster &amp; partition for your job</div>
-      </div>
-      <button class="modal-close" onclick="closeAdvisor()">×</button>
-    </div>
-    <div class="advisor-form">
-      <label class="adv-field"><span>Nodes</span><input type="number" id="adv-nodes" value="1" min="1" max="1024"></label>
-      <label class="adv-field"><span>Time limit</span><input type="text" id="adv-time" value="4:00:00" placeholder="HH:MM:SS"></label>
-      <label class="adv-field"><span>Cluster (optional)</span>
-        <select id="adv-cluster">
-          <option value="">All clusters</option>
-          {% for name in clusters %}{% if name != 'local' %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
-        </select>
-      </label>
-      <label class="adv-field adv-toggle"><input type="checkbox" id="adv-preempt"><span>Include preemptable (backfill)</span></label>
-      <button class="btn advisor-go-btn" onclick="runAdvisor()">Recommend</button>
-    </div>
-    <div class="advisor-results" id="adv-results">
-      <div class="no-jobs">Click "Recommend" to get suggestions</div>
-    </div>
-  </div>
-</div>
 
-<!-- Cluster Availability modal -->
-<div class="avail-overlay" id="avail-overlay" onclick="if(event.target===this)closeClusterAvail()">
-  <div class="avail-modal">
-    <div class="avail-head">
-      <div>
-        <div class="avail-title">Cluster Availability <span style="font-size:9px;font-weight:500;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-bd);padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:4px">beta</span></div>
-        <div class="avail-sub">Partition wait times &amp; idle GPUs across all clusters &mdash; estimates may be inaccurate</div>
-      </div>
-      <button class="modal-close" onclick="closeClusterAvail()">×</button>
+<!-- Spotlight search -->
+<div class="spotlight-overlay" id="spotlight-overlay" onclick="if(event.target===this)closeSpotlight()">
+  <div class="spotlight-modal">
+    <div class="spotlight-input-wrap">
+      <svg class="spotlight-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="spotlight-input" placeholder="Search projects, logbook, runs…" autocomplete="off" oninput="onSpotlightInput()" onkeydown="onSpotlightKey(event)">
+      <kbd class="spotlight-kbd">esc</kbd>
     </div>
-    <div class="avail-body" id="avail-body">
-      <div class="no-jobs">Loading partition data...</div>
-    </div>
+    <div class="spotlight-results" id="spotlight-results"></div>
   </div>
 </div>
 
@@ -404,6 +433,7 @@
 <script id="cluster-data" type="application/json">{{ clusters | tojson }}</script>
 <script id="username-data" type="text/plain">{{ username }}</script>
 <script id="team-data" type="text/plain">{{ team }}</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>
@@ -413,6 +443,7 @@
 <script src="{{ url_for('static', filename='js/runs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/projects.js') }}"></script>
 <script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
+<script src="{{ url_for('static', filename='js/spotlight.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 </body>
 </html>

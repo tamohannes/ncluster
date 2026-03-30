@@ -250,6 +250,12 @@ def api_cleanup():
 
         if not dry_run:
             con.execute("DELETE FROM job_history WHERE ended_at < ? AND cluster != 'local'", (cutoff,))
+            con.execute("""DELETE FROM job_stats_snapshots WHERE job_id IN (
+                SELECT job_id FROM job_stats_snapshots s
+                WHERE s.ts < ? AND NOT EXISTS (
+                    SELECT 1 FROM job_history h WHERE h.cluster = s.cluster AND h.job_id = s.job_id
+                )
+            )""", (cutoff,))
             con.commit()
         return jsonify({"status": "ok", "deleted_records": len(deleted_ids), "cleaned_dirs": len(cleaned_dirs),
                          "dry_run": dry_run, "days": days, "cleaned_paths": cleaned_dirs[:20]})
@@ -492,7 +498,12 @@ def api_run_script(cluster):
 def api_stats(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    return jsonify(get_job_stats_cached(cluster, job_id))
+    from .jobs import get_stats_snapshots
+    result = get_job_stats_cached(cluster, job_id)
+    snapshots = get_stats_snapshots(cluster, job_id)
+    if isinstance(result, dict):
+        result["snapshots"] = snapshots
+    return jsonify(result)
 
 
 @api.route("/api/run_info/<cluster>/<root_job_id>")
@@ -822,8 +833,9 @@ def api_settings_post():
         return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
 
     merged = dict(_CONFIG)
-    for key in ("port", "ssh_timeout", "cache_fresh_sec", "log_search_bases",
-                "nemo_run_bases", "mount_lustre_prefixes", "local_process_filters"):
+    for key in ("port", "ssh_timeout", "cache_fresh_sec", "stats_interval_sec",
+                "log_search_bases", "nemo_run_bases", "mount_lustre_prefixes",
+                "local_process_filters"):
         if key in patch:
             merged[key] = patch[key]
     if "clusters" in patch:
@@ -1048,3 +1060,36 @@ def api_logbook_serve_image(project, filename):
     if not path:
         return jsonify({"status": "error", "error": "Image not found"}), 404
     return send_file(path)
+
+
+@api.route("/api/spotlight")
+def api_spotlight():
+    from .config import get_project_color, get_project_emoji
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"projects": [], "logbook": [], "history": []})
+
+    ql = q.lower()
+    all_projects = get_projects()
+    projects = [
+        {"project": p["project"], "emoji": get_project_emoji(p["project"]),
+         "color": get_project_color(p["project"]), "job_count": p["job_count"]}
+        for p in all_projects if ql in p["project"].lower()
+    ][:8]
+
+    logbook = []
+    try:
+        logbook = _lb_search(q, limit=8)
+    except Exception:
+        pass
+
+    history_rows = get_history(limit=8, search=q)
+    history = [
+        {"cluster": r["cluster"], "job_id": r.get("job_id") or r.get("jobid", ""),
+         "job_name": r.get("job_name") or r.get("name", ""),
+         "state": r.get("state", ""), "project": r.get("project", ""),
+         "started": r.get("started", "")}
+        for r in history_rows
+    ]
+
+    return jsonify({"projects": projects, "logbook": logbook, "history": history})

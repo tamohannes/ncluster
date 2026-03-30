@@ -21,8 +21,8 @@ CRASH_PATTERNS = [
     re.compile(r'CUDA (error|out of memory)', re.I),
     re.compile(r'srun: error:', re.I),
     re.compile(r'Killed\s*$', re.M),
-    re.compile(r'OOM|Out of memory', re.I),
-    re.compile(r'Error executing job', re.I),
+    re.compile(r'\bOOM\b|Out of memory', re.I),
+    re.compile(r'^Error executing job', re.M | re.I),
 ]
 
 # ── False-positive filters ────────────────────────────────────────────────────

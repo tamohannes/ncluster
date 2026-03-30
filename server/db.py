@@ -197,6 +197,23 @@ def init_db():
         END
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS job_stats_snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster       TEXT NOT NULL,
+            job_id        TEXT NOT NULL,
+            ts            TEXT NOT NULL,
+            gpu_util      REAL,
+            gpu_mem_used  REAL,
+            gpu_mem_total REAL,
+            cpu_util      TEXT,
+            rss_used      REAL,
+            max_rss       REAL,
+            gpu_details   TEXT DEFAULT ''
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job ON job_stats_snapshots(cluster, job_id)")
+
     con.commit()
     con.close()
 
@@ -375,7 +392,7 @@ def dismiss_by_state_prefix(cluster, prefixes):
     con.close()
 
 
-def get_history(cluster=None, limit=200, project=None):
+def get_history(cluster=None, limit=200, project=None, search=None):
     from .jobs import parse_dependency
     con = get_db()
     order = "ORDER BY COALESCE(ended_at, started, submitted, '9999') DESC, id DESC"
@@ -387,6 +404,9 @@ def get_history(cluster=None, limit=200, project=None):
     if project:
         conditions.append("project=?")
         params.append(project)
+    if search:
+        conditions.append("job_name LIKE ?")
+        params.append(f"%{search}%")
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(limit)
     rows = con.execute(f"SELECT * FROM job_history {where} {order} LIMIT ?", params).fetchall()

@@ -212,7 +212,9 @@ def get_job_stats(cluster, job_id):
 
         gpu_rows = []
         gpu_probe_error = ""
-        if "gpu" in (gres or "").lower() and state in ("RUNNING", "COMPLETING"):
+        cluster_has_gpus = bool(CLUSTERS.get(cluster, {}).get("gpu_type"))
+        gres_mentions_gpu = "gpu" in (gres or "").lower()
+        if (gres_mentions_gpu or cluster_has_gpus) and state in ("RUNNING", "COMPLETING"):
             gpu_cmd = (f"srun --jobid {job_id} -N1 -n1 --overlap "
                        "bash -lc \"nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total "
                        "--format=csv,noheader,nounits\" 2>/dev/null | head -16")
@@ -228,9 +230,9 @@ def get_job_stats(cluster, job_id):
         if not gpu_rows:
             if gpuutil_ave or gpumem_ave:
                 gpu_summary = f"Ave GPU util: {gpuutil_ave or 'n/a'} | Ave GPU mem: {gpumem_ave or 'n/a'}"
-            elif "gpu" in (gres or "").lower() and state in ("RUNNING", "COMPLETING"):
+            elif (gres_mentions_gpu or cluster_has_gpus) and state in ("RUNNING", "COMPLETING"):
                 gpu_summary = "Per-GPU probe unavailable."
-            elif "gpu" in (gres or "").lower():
+            elif gres_mentions_gpu or cluster_has_gpus:
                 gpu_summary = "GPU job not running; stats unavailable."
 
         return {
@@ -980,6 +982,112 @@ def _extract_progress_with_source(cluster, job_id, files):
     return None, ""
 
 
+def _get_stats_interval():
+    from .config import STATS_INTERVAL_SEC
+    return STATS_INTERVAL_SEC
+
+
+def _parse_rss_bytes(val):
+    """Parse sstat RSS values like '1234K', '56M', '7G' into MB."""
+    if not val:
+        return None
+    val = val.strip().rstrip("c")
+    m = re.match(r'^([\d.]+)\s*([KMGTP]?)$', val, re.I)
+    if not m:
+        return None
+    num = float(m.group(1))
+    suffix = m.group(2).upper()
+    mult = {"": 1, "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024**2, "P": 1024**3}
+    return round(num * mult.get(suffix, 1), 2)
+
+
+def _save_stats_snapshot(cluster, job_id, stats):
+    """Save a stats snapshot to DB if enough time has passed since the last one."""
+    if not stats or stats.get("status") != "ok":
+        return
+    import json
+    con = get_db()
+    row = con.execute(
+        "SELECT MAX(ts) as last_ts FROM job_stats_snapshots WHERE cluster = ? AND job_id = ?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    if row and row["last_ts"]:
+        try:
+            last = datetime.fromisoformat(row["last_ts"])
+            if (datetime.now() - last).total_seconds() < _get_stats_interval():
+                con.close()
+                return
+        except Exception:
+            pass
+
+    gpu_rows = stats.get("gpus", [])
+    gpu_util = None
+    gpu_mem_used = None
+    gpu_mem_total = None
+    if gpu_rows:
+        utils = []
+        mems_used = []
+        mems_total = []
+        for g in gpu_rows:
+            try:
+                utils.append(float(str(g.get("util", "0")).rstrip("%")))
+            except (ValueError, TypeError):
+                pass
+            mem = g.get("mem", "")
+            if "/" in mem:
+                parts = mem.replace("MiB", "").strip().split("/")
+                try:
+                    mems_used.append(float(parts[0].strip()))
+                    mems_total.append(float(parts[1].strip()))
+                except (ValueError, IndexError):
+                    pass
+        if utils:
+            gpu_util = round(sum(utils) / len(utils), 1)
+        if mems_used:
+            gpu_mem_used = round(sum(mems_used) / len(mems_used), 1)
+        if mems_total:
+            gpu_mem_total = round(sum(mems_total) / len(mems_total), 1)
+
+    cpu_util = stats.get("ave_cpu", "") or ""
+    rss_used = _parse_rss_bytes(stats.get("ave_rss", ""))
+    max_rss = _parse_rss_bytes(stats.get("max_rss", ""))
+
+    now = datetime.now().isoformat(timespec="seconds")
+    con.execute(
+        """INSERT INTO job_stats_snapshots
+           (cluster, job_id, ts, gpu_util, gpu_mem_used, gpu_mem_total, cpu_util, rss_used, max_rss, gpu_details)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (cluster, str(job_id), now, gpu_util, gpu_mem_used, gpu_mem_total,
+         cpu_util, rss_used, max_rss, json.dumps(gpu_rows) if gpu_rows else ""),
+    )
+    con.commit()
+    con.close()
+
+
+def get_stats_snapshots(cluster, job_id):
+    """Return historical stats snapshots for a job."""
+    import json as _json
+    con = get_db()
+    rows = con.execute(
+        """SELECT ts, gpu_util, gpu_mem_used, gpu_mem_total, cpu_util, rss_used, max_rss, gpu_details
+           FROM job_stats_snapshots
+           WHERE cluster = ? AND job_id = ?
+           ORDER BY ts ASC""",
+        (cluster, str(job_id)),
+    ).fetchall()
+    con.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        raw = d.pop("gpu_details", "") or ""
+        try:
+            d["per_gpu"] = _json.loads(raw) if raw else []
+        except Exception:
+            d["per_gpu"] = []
+        result.append(d)
+    return result
+
+
 def _prefetch_job_data(cluster, job_id):
     enable_standalone_ssh()
     try:
@@ -994,6 +1102,7 @@ def _prefetch_job_data(cluster, job_id):
         try:
             stats = get_job_stats(cluster, job_id)
             _cache_set(_stats_cache, (cluster, job_id), stats)
+            _save_stats_snapshot(cluster, job_id, stats)
         except Exception:
             pass
     finally:

@@ -54,7 +54,7 @@ function initLogbookPage() {
     .then(projects => {
       if (!Array.isArray(projects)) projects = [];
       sel.innerHTML = projects.length
-        ? projects.map(p => `<option value="${p.project}">${p.project_emoji || ''} ${p.project}</option>`).join('')
+        ? projects.map(p => `<option value="${p.project}">${p.emoji || ''} ${p.project}</option>`).join('')
         : '<option value="">no projects</option>';
 
       if (projects.length) {
@@ -86,6 +86,9 @@ function onLogbookProjectChange() {
   _showMainEmpty();
   _loadEntries(_lbProject);
   _loadRunNames(_lbProject);
+  if (typeof _updateActiveTabExtra === 'function') {
+    _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: null });
+  }
 }
 
 
@@ -167,6 +170,9 @@ async function openLogbookEntry(entryId) {
   const el = document.getElementById('lb-main');
   if (!el) return;
   _highlightSidebarItem(entryId);
+  if (typeof _updateActiveTabExtra === 'function') {
+    _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: entryId });
+  }
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`);
     const entry = await res.json();
