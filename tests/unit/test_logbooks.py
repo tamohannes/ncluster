@@ -1,195 +1,185 @@
-"""Unit tests for server/logbooks.py file operations."""
+"""Unit tests for server/logbooks.py — SQLite+FTS5 logbook CRUD and BM25 search."""
 
-import os
+import sqlite3
 import pytest
 
 from server.logbooks import (
-    list_logbooks, read_logbook, add_entry, update_entry, delete_entry,
-    create_logbook, delete_logbook, rename_logbook,
-    _split_entries, _sanitize_name,
+    list_entries, get_entry, create_entry, update_entry,
+    delete_entry, search_entries,
 )
+from server.db import init_db
 
 
-@pytest.fixture()
-def logbook_dir(tmp_path, monkeypatch):
-    d = str(tmp_path / "logbooks")
-    monkeypatch.setattr("server.logbooks.LOGBOOKS_DIR", d)
-    return d
+@pytest.fixture(autouse=True)
+def _fresh_db(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test.db")
+    monkeypatch.setattr("server.db.DB_PATH", db_path)
+    monkeypatch.setattr("server.logbooks.get_db", lambda: _connect(db_path))
+    init_db()
+    monkeypatch.setattr("server.db.DB_PATH", db_path)
 
 
-@pytest.mark.unit
-class TestSplitEntries:
-    def test_single_entry(self):
-        assert _split_entries("## Note\n\nHello") == ["## Note\n\nHello"]
-
-    def test_multiple_entries(self):
-        content = "entry1\n---\nentry2\n---\nentry3"
-        assert len(_split_entries(content)) == 3
-
-    def test_empty(self):
-        assert _split_entries("") == []
-        assert _split_entries("   ") == []
+def _connect(path):
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    return con
 
 
-@pytest.mark.unit
-class TestSanitizeName:
-    def test_strips_extension(self):
-        assert _sanitize_name("notes.md") == "notes"
-
-    def test_no_extension(self):
-        assert _sanitize_name("notes") == "notes"
-
-    def test_path_traversal(self):
-        assert _sanitize_name("../../etc/passwd") == "passwd"
-
-
-@pytest.mark.unit
-class TestCreateLogbook:
-    def test_create_new(self, logbook_dir):
-        result = create_logbook("proj", "experiments")
+class TestCreateEntry:
+    @pytest.mark.unit
+    def test_basic_create(self):
+        result = create_entry("alpha", "First note", "some body")
         assert result["status"] == "ok"
-        assert os.path.isfile(os.path.join(logbook_dir, "proj", "experiments.md"))
+        assert result["id"] >= 1
+        assert "created_at" in result
 
-    def test_create_existing(self, logbook_dir):
-        create_logbook("proj", "experiments")
-        result = create_logbook("proj", "experiments")
+    @pytest.mark.unit
+    def test_create_empty_body(self):
+        result = create_entry("alpha", "Title only")
         assert result["status"] == "ok"
-        assert "Already exists" in result.get("message", "")
 
 
-@pytest.mark.unit
-class TestListLogbooks:
-    def test_empty_project(self, logbook_dir):
-        assert list_logbooks("proj") == []
+class TestGetEntry:
+    @pytest.mark.unit
+    def test_get_existing(self):
+        r = create_entry("alpha", "Test", "body text")
+        entry = get_entry("alpha", r["id"])
+        assert entry["title"] == "Test"
+        assert entry["body"] == "body text"
+        assert entry["project"] == "alpha"
 
-    def test_lists_files(self, logbook_dir):
-        create_logbook("proj", "notes")
-        create_logbook("proj", "bugs")
-        result = list_logbooks("proj")
-        names = [lb["name"] for lb in result]
-        assert "notes" in names
-        assert "bugs" in names
+    @pytest.mark.unit
+    def test_get_missing(self):
+        result = get_entry("alpha", 9999)
+        assert result.get("status") == "error"
 
-    def test_entry_count(self, logbook_dir):
-        create_logbook("proj", "notes")
-        add_entry("proj", "notes", "entry 1")
-        add_entry("proj", "notes", "entry 2")
-        result = list_logbooks("proj")
-        lb = next(l for l in result if l["name"] == "notes")
-        assert lb["entry_count"] == 2
-
-
-@pytest.mark.unit
-class TestAddEntry:
-    def test_add_to_new_logbook(self, logbook_dir):
-        result = add_entry("proj", "notes", "## First note")
-        assert result["status"] == "ok"
-        assert result["entry_count"] == 1
-
-    def test_prepends(self, logbook_dir):
-        add_entry("proj", "notes", "first")
-        add_entry("proj", "notes", "second")
-        data = read_logbook("proj", "notes")
-        assert data["entries"][0] == "second"
-        assert data["entries"][1] == "first"
+    @pytest.mark.unit
+    def test_get_wrong_project(self):
+        r = create_entry("alpha", "Test", "body")
+        result = get_entry("beta", r["id"])
+        assert result.get("status") == "error"
 
 
-@pytest.mark.unit
-class TestReadLogbook:
-    def test_read_existing(self, logbook_dir):
-        add_entry("proj", "notes", "hello")
-        data = read_logbook("proj", "notes")
-        assert data["name"] == "notes"
-        assert len(data["entries"]) == 1
-        assert "hello" in data["content"]
+class TestListEntries:
+    @pytest.mark.unit
+    def test_list_empty(self):
+        assert list_entries("alpha") == []
 
-    def test_read_missing(self, logbook_dir):
-        data = read_logbook("proj", "nonexistent")
-        assert "error" in data
+    @pytest.mark.unit
+    def test_list_multiple(self):
+        create_entry("alpha", "Note 1", "body1")
+        create_entry("alpha", "Note 2", "body2")
+        create_entry("beta", "Other", "body3")
+        entries = list_entries("alpha")
+        assert len(entries) == 2
+        assert all("body_preview" in e for e in entries)
+        assert all("body" not in e for e in entries)
+
+    @pytest.mark.unit
+    def test_list_with_search(self):
+        create_entry("alpha", "CUDA optimization", "Using mixed precision training")
+        create_entry("alpha", "Bug report", "Segfault in data loader")
+        results = list_entries("alpha", query="CUDA")
+        assert len(results) == 1
+        assert "CUDA" in results[0]["title"]
+
+    @pytest.mark.unit
+    def test_list_limit_offset(self):
+        for i in range(5):
+            create_entry("alpha", f"Note {i}", f"body {i}")
+        page1 = list_entries("alpha", limit=2, offset=0)
+        page2 = list_entries("alpha", limit=2, offset=2)
+        assert len(page1) == 2
+        assert len(page2) == 2
+        assert page1[0]["id"] != page2[0]["id"]
 
 
-@pytest.mark.unit
 class TestUpdateEntry:
-    def test_update_valid_index(self, logbook_dir):
-        add_entry("proj", "notes", "old content")
-        result = update_entry("proj", "notes", 0, "new content")
+    @pytest.mark.unit
+    def test_update_title(self):
+        r = create_entry("alpha", "Old", "body")
+        result = update_entry("alpha", r["id"], title="New")
         assert result["status"] == "ok"
-        data = read_logbook("proj", "notes")
-        assert data["entries"][0] == "new content"
+        entry = get_entry("alpha", r["id"])
+        assert entry["title"] == "New"
+        assert entry["body"] == "body"
 
-    def test_update_out_of_range(self, logbook_dir):
-        add_entry("proj", "notes", "only entry")
-        result = update_entry("proj", "notes", 5, "nope")
+    @pytest.mark.unit
+    def test_update_body(self):
+        r = create_entry("alpha", "Title", "old body")
+        update_entry("alpha", r["id"], body="new body")
+        entry = get_entry("alpha", r["id"])
+        assert entry["body"] == "new body"
+        assert entry["title"] == "Title"
+
+    @pytest.mark.unit
+    def test_update_bumps_edited_at(self):
+        r = create_entry("alpha", "Title", "body")
+        entry_before = get_entry("alpha", r["id"])
+        import time; time.sleep(0.01)
+        update_entry("alpha", r["id"], title="Updated")
+        entry_after = get_entry("alpha", r["id"])
+        assert entry_after["edited_at"] >= entry_before["edited_at"]
+
+    @pytest.mark.unit
+    def test_update_missing(self):
+        result = update_entry("alpha", 9999, title="X")
         assert result["status"] == "error"
 
-    def test_update_missing_logbook(self, logbook_dir):
-        result = update_entry("proj", "nonexistent", 0, "content")
-        assert result["status"] == "error"
 
-
-@pytest.mark.unit
 class TestDeleteEntry:
-    def test_delete_valid(self, logbook_dir):
-        add_entry("proj", "notes", "first")
-        add_entry("proj", "notes", "second")
-        result = delete_entry("proj", "notes", 0)
+    @pytest.mark.unit
+    def test_delete_existing(self):
+        r = create_entry("alpha", "To delete", "body")
+        result = delete_entry("alpha", r["id"])
         assert result["status"] == "ok"
-        assert result["entry_count"] == 1
-        data = read_logbook("proj", "notes")
-        assert data["entries"] == ["first"]
+        assert get_entry("alpha", r["id"]).get("status") == "error"
 
-    def test_delete_out_of_range(self, logbook_dir):
-        add_entry("proj", "notes", "only")
-        result = delete_entry("proj", "notes", 5)
-        assert result["status"] == "error"
-
-    def test_delete_missing_logbook(self, logbook_dir):
-        result = delete_entry("proj", "nope", 0)
-        assert result["status"] == "error"
-
-    def test_delete_last_entry(self, logbook_dir):
-        add_entry("proj", "notes", "only")
-        result = delete_entry("proj", "notes", 0)
-        assert result["status"] == "ok"
-        assert result["entry_count"] == 0
-
-
-@pytest.mark.unit
-class TestRenameLogbook:
-    def test_rename_success(self, logbook_dir):
-        create_logbook("proj", "old-name")
-        add_entry("proj", "old-name", "content")
-        result = rename_logbook("proj", "old-name", "new-name")
-        assert result["status"] == "ok"
-        assert result["name"] == "new-name"
-        assert list_logbooks("proj")[0]["name"] == "new-name"
-        data = read_logbook("proj", "new-name")
-        assert "content" in data["entries"][0]
-
-    def test_rename_missing(self, logbook_dir):
-        result = rename_logbook("proj", "nope", "new")
-        assert result["status"] == "error"
-
-    def test_rename_conflict(self, logbook_dir):
-        create_logbook("proj", "a")
-        create_logbook("proj", "b")
-        result = rename_logbook("proj", "a", "b")
-        assert result["status"] == "error"
-
-    def test_rename_empty_name(self, logbook_dir):
-        create_logbook("proj", "a")
-        result = rename_logbook("proj", "a", "")
+    @pytest.mark.unit
+    def test_delete_missing(self):
+        result = delete_entry("alpha", 9999)
         assert result["status"] == "error"
 
 
-@pytest.mark.unit
-class TestDeleteLogbook:
-    def test_delete_existing(self, logbook_dir):
-        create_logbook("proj", "trash")
-        result = delete_logbook("proj", "trash")
-        assert result["status"] == "ok"
-        assert list_logbooks("proj") == []
+class TestSearchEntries:
+    @pytest.mark.unit
+    def test_bm25_search(self):
+        create_entry("alpha", "Experiment results", "Accuracy reached 92% on GPQA")
+        create_entry("alpha", "Debug notes", "Fixed memory leak in data loader")
+        create_entry("beta", "Other project", "Accuracy on different benchmark")
+        results = search_entries("accuracy")
+        assert len(results) == 2
 
-    def test_delete_missing(self, logbook_dir):
-        result = delete_logbook("proj", "nonexistent")
-        assert result["status"] == "error"
+    @pytest.mark.unit
+    def test_search_filter_project(self):
+        create_entry("alpha", "Note", "accuracy results")
+        create_entry("beta", "Note", "accuracy results")
+        results = search_entries("accuracy", project="alpha")
+        assert len(results) == 1
+        assert results[0]["project"] == "alpha"
+
+    @pytest.mark.unit
+    def test_search_empty_query(self):
+        create_entry("alpha", "Note", "body")
+        assert search_entries("") == []
+        assert search_entries(None) == []
+
+    @pytest.mark.unit
+    def test_search_no_results(self):
+        create_entry("alpha", "Note", "body")
+        results = search_entries("xyznonexistent")
+        assert results == []
+
+    @pytest.mark.unit
+    def test_fts_syncs_on_update(self):
+        r = create_entry("alpha", "Original", "original body")
+        update_entry("alpha", r["id"], title="Updated title", body="updated body")
+        assert len(search_entries("Updated")) == 1
+        assert len(search_entries("Original")) == 0
+
+    @pytest.mark.unit
+    def test_fts_syncs_on_delete(self):
+        r = create_entry("alpha", "Deletable", "unique content")
+        assert len(search_entries("Deletable")) == 1
+        delete_entry("alpha", r["id"])
+        assert len(search_entries("Deletable")) == 0

@@ -106,10 +106,16 @@ function _renderHistPage() {
     const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
     const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
-    const groupLabel = `${runBadge}${_projBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
-
-    if (groupJobs.length > 1) {
-      html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;
+    const hasMultiple = groupJobs.length > 1;
+    const groupId = `${g.cluster}:${rootJobId}`;
+    const isGroupExpanded = _expandedGroups.has(groupId);
+    if (hasMultiple) {
+      const chevronCls = isGroupExpanded ? ' expanded' : '';
+      const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+      const donutHtml = statusDonut(groupJobs);
+      const summaryHtml = statusSummaryHtml(groupJobs);
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
+      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 
     const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -137,7 +143,11 @@ function _renderHistPage() {
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
       const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
-      html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
+      const _grpHidden = hasMultiple && !isGroupExpanded;
+      const _rowDisp = _grpHidden ? 'display:none' : '';
+      const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
+      const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
+      html += `<tr class="hist-compact ${pinKind}${bgClass}"${_grpAttr} style="${_rowStyle}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _histJnHL.prefix, _histJnHL.suffix) : '—'}</span></td>

@@ -60,10 +60,6 @@ async function openProject(projectName) {
   document.getElementById('project-hist-body').innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
 
   await _fetchProjectData();
-  // logbook disabled — moved to DeepLake
-  // _restoreLogbookState();
-  // loadLogbookPanel(projectName);
-  // _loadRunNames(projectName);
 
   if (_projRefreshTimer) clearInterval(_projRefreshTimer);
   _projRefreshTimer = setInterval(() => {
@@ -196,8 +192,22 @@ function _renderProjLive() {
       const runBadge = cluster !== 'local'
         ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
         : highlightedGk;
-      const groupLabel = `${runBadge} ${cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
-      let rows = `<tr class="group-head-row"><td colspan="11">${groupLabel}</td></tr>`;
+      const hasMultiple = groupJobs.length > 1;
+      const groupId = `${cluster}:${rootJobId}`;
+      const isGroupExpanded = _expandedGroups.has(groupId);
+      let groupLabelHtml, headOnclick;
+      if (hasMultiple) {
+        const chevronCls = isGroupExpanded ? ' expanded' : '';
+        const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+        const donutHtml = statusDonut(groupJobs);
+        const summaryHtml = statusSummaryHtml(groupJobs);
+        groupLabelHtml = `<span>${chevronHtml}${donutHtml}${runBadge} ${cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
+        headOnclick = ` onclick="toggleRunGroup('${groupId}')"`;
+      } else {
+        groupLabelHtml = `${runBadge} ${cluster} <span class="group-count">· 1 run</span>`;
+        headOnclick = '';
+      }
+      let rows = `<tr class="group-head-row"${headOnclick}><td colspan="11"><span class="group-head-content">${groupLabelHtml}</span></td></tr>`;
 
       const _liveJobNames = groupJobs.map(j => j.name).filter(Boolean);
       const _liveJnHL = computeNameHighlight(_liveJobNames);
@@ -230,7 +240,11 @@ function _renderProjLive() {
 
         const _prog = resolveProgress(cluster, j.jobid, j.progress, j.state, j.progress_source);
         const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
-        rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}" style="${_rowBg}">
+        const _grpHidden = hasMultiple && !isGroupExpanded;
+        const _rowDisp = _grpHidden ? 'display:none' : '';
+        const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
+        const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
+        rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}"${_grpAttr} style="${_rowStyle}">
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _liveJnHL.prefix, _liveJnHL.suffix) : '—'}</span></td>
           <td>${stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, undefined, _prog.source)} ${depBadge}</td>
@@ -343,9 +357,16 @@ function _renderProjPage() {
     const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
     const highlightedLabel = highlightJobName(g.label, _projGkHL.prefix, _projGkHL.suffix);
     const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
-    const groupLabel = `${runBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
-    if (groupJobs.length > 1) {
-      html += `<tr class="group-head-row"><td colspan="11" style="padding:4px 16px">${groupLabel}</td></tr>`;
+    const hasMultiple = groupJobs.length > 1;
+    const groupId = `${g.cluster}:${rootJobId}`;
+    const isGroupExpanded = _expandedGroups.has(groupId);
+    if (hasMultiple) {
+      const chevronCls = isGroupExpanded ? ' expanded' : '';
+      const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+      const donutHtml = statusDonut(groupJobs);
+      const summaryHtml = statusSummaryHtml(groupJobs);
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
+      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
     const idSet = new Set(groupJobs.map(j => j.jobid));
     const byId = {};
@@ -371,8 +392,12 @@ function _renderProjPage() {
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
       const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+      const _grpHidden = hasMultiple && !isGroupExpanded;
+      const _rowDisp = _grpHidden ? 'display:none' : '';
+      const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
+      const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
 
-      html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
+      html += `<tr class="hist-compact ${pinKind}${bgClass}"${_grpAttr} style="${_rowStyle}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _projJnHL.prefix, _projJnHL.suffix) : '—'}</span></td>

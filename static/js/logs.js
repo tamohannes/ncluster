@@ -502,6 +502,8 @@ function _mdInline(text) {
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
   s = s.replace(/`(.+?)`/g, '<code class="md-inline-code">$1</code>');
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
+  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="lb-inline-img" loading="lazy">');
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return s;
 }
 
@@ -534,6 +536,7 @@ function markdownToHtml(raw) {
   let html = '';
   let inCode = false;
   let inList = false;
+  let inQuote = false;
   let tableBuffer = [];
 
   function flushTable() {
@@ -546,6 +549,7 @@ function markdownToHtml(raw) {
   for (const line of lines) {
     if (line.trim().startsWith('```')) {
       flushTable();
+      if (inQuote) { html += '</blockquote>'; inQuote = false; }
       if (!inCode) {
         if (inList) { html += '</ul>'; inList = false; }
         html += '<pre><code>';
@@ -560,6 +564,16 @@ function markdownToHtml(raw) {
       html += escapeHtml(line) + '\n';
       continue;
     }
+    const quoteMatch = line.match(/^>\s?(.*)$/);
+    if (quoteMatch) {
+      flushTable();
+      if (inList) { html += '</ul>'; inList = false; }
+      if (!inQuote) { html += '<blockquote>'; inQuote = true; }
+      const content = quoteMatch[1];
+      html += content.trim() ? `<p>${_mdInline(content)}</p>` : '<p></p>';
+      continue;
+    }
+    if (inQuote) { html += '</blockquote>'; inQuote = false; }
     if (_isTableRow(line)) {
       if (inList) { html += '</ul>'; inList = false; }
       tableBuffer.push(line);
@@ -581,9 +595,14 @@ function markdownToHtml(raw) {
     }
     if (inList) { html += '</ul>'; inList = false; }
     if (!line.trim()) html += '<p></p>';
+    else if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
+      const m = line.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+      if (m) html += `<figure class="lb-figure"><img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" class="lb-inline-img" loading="lazy">${m[1] ? `<figcaption>${escapeHtml(m[1])}</figcaption>` : ''}</figure>`;
+    }
     else html += `<p>${_mdInline(line)}</p>`;
   }
   flushTable();
+  if (inQuote) html += '</blockquote>';
   if (inList) html += '</ul>';
   if (inCode) html += '</code></pre>';
   return html;

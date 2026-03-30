@@ -949,70 +949,102 @@ def api_recommend():
     return jsonify({"status": "ok", "recommendations": results})
 
 
-# ── Logbook routes (disabled — moved to DeepLake) ────────────────────────────
-# from .logbooks import (
-#     list_logbooks as _list_logbooks,
-#     read_logbook as _read_logbook,
-#     add_entry as _add_entry,
-#     update_entry as _update_entry,
-#     delete_entry as _delete_entry,
-#     rename_logbook as _rename_logbook,
-#     create_logbook as _create_logbook,
-#     delete_logbook as _delete_logbook,
-# )
-#
-#
-# @api.route("/api/logbooks/<project>")
-# def api_logbooks_list(project):
-#     return jsonify(_list_logbooks(project))
-#
-#
-# @api.route("/api/logbook/<project>/<name>")
-# def api_logbook_read(project, name):
-#     return jsonify(_read_logbook(project, name))
-#
-#
-# @api.route("/api/logbook/<project>/<name>", methods=["POST"])
-# def api_logbook_add_entry(project, name):
-#     payload = request.get_json(silent=True) or {}
-#     content = payload.get("content", "").strip()
-#     if not content:
-#         return jsonify({"status": "error", "error": "No content provided"}), 400
-#     return jsonify(_add_entry(project, name, content))
-#
-#
-# @api.route("/api/logbook/<project>/<name>/<int:index>", methods=["PUT"])
-# def api_logbook_update_entry(project, name, index):
-#     payload = request.get_json(silent=True) or {}
-#     content = payload.get("content", "").strip()
-#     if not content:
-#         return jsonify({"status": "error", "error": "No content provided"}), 400
-#     return jsonify(_update_entry(project, name, index, content))
-#
-#
-# @api.route("/api/logbook/<project>/<name>", methods=["DELETE"])
-# def api_logbook_delete(project, name):
-#     return jsonify(_delete_logbook(project, name))
-#
-#
-# @api.route("/api/logbook/<project>/<name>/<int:index>", methods=["DELETE"])
-# def api_logbook_delete_entry(project, name, index):
-#     return jsonify(_delete_entry(project, name, index))
-#
-#
-# @api.route("/api/logbook/<project>/<name>/rename", methods=["POST"])
-# def api_logbook_rename(project, name):
-#     payload = request.get_json(silent=True) or {}
-#     new_name = payload.get("new_name", "").strip()
-#     if not new_name:
-#         return jsonify({"status": "error", "error": "No new_name provided"}), 400
-#     return jsonify(_rename_logbook(project, name, new_name))
-#
-#
-# @api.route("/api/logbook/<project>", methods=["POST"])
-# def api_logbook_create(project):
-#     payload = request.get_json(silent=True) or {}
-#     name = payload.get("name", "").strip()
-#     if not name:
-#         return jsonify({"status": "error", "error": "No name provided"}), 400
-#     return jsonify(_create_logbook(project, name))
+# ── Logbook routes ────────────────────────────────────────────────────────────
+
+from .logbooks import (
+    list_entries as _lb_list,
+    get_entry as _lb_get,
+    create_entry as _lb_create,
+    update_entry as _lb_update,
+    delete_entry as _lb_delete,
+    search_entries as _lb_search,
+    save_image as _lb_save_image,
+    get_image_path as _lb_get_image_path,
+)
+
+
+@api.route("/api/logbook/<project>/entries")
+def api_logbook_list(project):
+    q = request.args.get("q", "")
+    sort = request.args.get("sort", "edited_at")
+    limit = int(request.args.get("limit", 50))
+    offset = int(request.args.get("offset", 0))
+    entry_type = request.args.get("type", "")
+    return jsonify(_lb_list(project, query=q or None, sort=sort, limit=limit, offset=offset, entry_type=entry_type or None))
+
+
+@api.route("/api/logbook/<project>/entries", methods=["POST"])
+def api_logbook_create(project):
+    payload = request.get_json(silent=True) or {}
+    title = (payload.get("title") or "").strip()
+    if not title:
+        return jsonify({"status": "error", "error": "Title is required"}), 400
+    body = (payload.get("body") or "").strip()
+    entry_type = (payload.get("entry_type") or "note").strip()
+    return jsonify(_lb_create(project, title, body, entry_type=entry_type))
+
+
+@api.route("/api/logbook/<project>/entries/<int:entry_id>")
+def api_logbook_read(project, entry_id):
+    result = _lb_get(project, entry_id)
+    if result.get("status") == "error":
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/entries/<int:entry_id>", methods=["PUT"])
+def api_logbook_update(project, entry_id):
+    payload = request.get_json(silent=True) or {}
+    title = payload.get("title")
+    body = payload.get("body")
+    if title is not None:
+        title = title.strip()
+    if body is not None:
+        body = body.strip()
+    entry_type = payload.get("entry_type")
+    result = _lb_update(project, entry_id, title=title, body=body, entry_type=entry_type)
+    if result.get("status") == "error":
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/entries/<int:entry_id>", methods=["DELETE"])
+def api_logbook_delete(project, entry_id):
+    result = _lb_delete(project, entry_id)
+    if result.get("status") == "error":
+        return jsonify(result), 404
+    return jsonify(result)
+
+
+@api.route("/api/logbook/search")
+def api_logbook_search():
+    q = request.args.get("q", "")
+    if not q.strip():
+        return jsonify([])
+    project = request.args.get("project", "")
+    date_from = request.args.get("from", "")
+    date_to = request.args.get("to", "")
+    limit = int(request.args.get("limit", 50))
+    return jsonify(_lb_search(q, project=project or None, date_from=date_from or None, date_to=date_to or None, limit=limit))
+
+
+@api.route("/api/logbook/<project>/images", methods=["POST"])
+def api_logbook_upload_image(project):
+    if "file" not in request.files:
+        return jsonify({"status": "error", "error": "No file uploaded"}), 400
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"status": "error", "error": "No filename"}), 400
+    result = _lb_save_image(project, f.filename, f.read())
+    if result.get("status") == "error":
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/images/<filename>")
+def api_logbook_serve_image(project, filename):
+    from flask import send_file
+    path = _lb_get_image_path(project, filename)
+    if not path:
+        return jsonify({"status": "error", "error": "Image not found"}), 404
+    return send_file(path)

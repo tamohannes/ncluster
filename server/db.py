@@ -149,6 +149,54 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_jh_project ON job_history(project)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_jh_run_id ON job_history(run_id)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_runs_cluster_root ON runs(cluster, root_job_id)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS logbook_entries (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            project    TEXT NOT NULL,
+            title      TEXT NOT NULL,
+            body       TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            edited_at  TEXT NOT NULL
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_project ON logbook_entries(project)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_title ON logbook_entries(project, title)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_created ON logbook_entries(project, created_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_edited ON logbook_entries(project, edited_at)")
+
+    try:
+        con.execute("ALTER TABLE logbook_entries ADD COLUMN entry_type TEXT NOT NULL DEFAULT 'note'")
+    except Exception:
+        pass
+    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_type ON logbook_entries(project, entry_type)")
+
+    con.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS logbook_fts USING fts5(
+            title, body,
+            content=logbook_entries,
+            content_rowid=id,
+            tokenize='porter unicode61'
+        )
+    """)
+
+    con.execute("""
+        CREATE TRIGGER IF NOT EXISTS logbook_ai AFTER INSERT ON logbook_entries BEGIN
+            INSERT INTO logbook_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+        END
+    """)
+    con.execute("""
+        CREATE TRIGGER IF NOT EXISTS logbook_ad AFTER DELETE ON logbook_entries BEGIN
+            INSERT INTO logbook_fts(logbook_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+        END
+    """)
+    con.execute("""
+        CREATE TRIGGER IF NOT EXISTS logbook_au AFTER UPDATE ON logbook_entries BEGIN
+            INSERT INTO logbook_fts(logbook_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
+            INSERT INTO logbook_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
+        END
+    """)
+
     con.commit()
     con.close()
 

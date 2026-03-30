@@ -587,94 +587,178 @@ def clear_completed(cluster: str) -> dict:
     return _api_post(f"/api/clear_completed/{urllib.parse.quote(cluster)}")
 
 
-# ── logbook tools (disabled — moved to DeepLake) ─────────────────────────────
-# _api_post_json moved to helpers section (still used by non-logbook tools).
-#
-# @mcp.tool()
-# def list_logbooks(project: str) -> list[dict]:
-#     """List all logbooks for a project.
-#
-#     Returns name, entry count, and last modified timestamp for each.
-#     """
-#     data = _api_get(f"/api/logbooks/{urllib.parse.quote(project)}")
-#     if isinstance(data, list):
-#         return data
-#     return [data]
-#
-#
-# @mcp.tool()
-# def read_logbook(project: str, name: str) -> dict:
-#     """Read a logbook's full content and entries.
-#
-#     Returns the raw markdown content and a list of individual entries
-#     (split by --- separators). Use @run-name to reference jobs.
-#     """
-#     return _api_get(f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}")
-#
-#
-# @mcp.tool()
-# def add_logbook_entry(project: str, name: str, content: str) -> dict:
-#     """Add a new entry to a project logbook.
-#
-#     The entry is prepended (newest first). Creates the logbook if it
-#     doesn't exist. Use @run-name to reference specific jobs.
-#
-#     Example content:
-#       "## 14 Mar 2026\\n\\nRan @myproject_eval-math with 8 GPUs, accuracy: **82.3%**."
-#     """
-#     return _api_post_json(
-#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}",
-#         {"content": content},
-#     )
-#
-#
-# @mcp.tool()
-# def update_logbook_entry(project: str, name: str, index: int, content: str) -> dict:
-#     """Update an existing logbook entry by index (0 = newest).
-#
-#     Replaces the full entry content at the given position.
-#     """
-#     return _api_put_json(
-#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}",
-#         {"content": content},
-#     )
-#
-#
-# @mcp.tool()
-# def delete_logbook_entry(project: str, name: str, index: int) -> dict:
-#     """Delete a logbook entry by index (0 = newest). This is destructive."""
-#     return _api_delete(
-#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}/{index}"
-#     )
-#
-#
-# @mcp.tool()
-# def rename_logbook(project: str, old_name: str, new_name: str) -> dict:
-#     """Rename a logbook."""
-#     return _api_post_json(
-#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(old_name)}/rename",
-#         {"new_name": new_name},
-#     )
-#
-#
-# @mcp.tool()
-# def create_logbook(project: str, name: str) -> dict:
-#     """Create a new empty logbook for a project.
-#
-#     Common logbook names: experiments, bugs, ideas, eval-notes.
-#     """
-#     return _api_post_json(
-#         f"/api/logbook/{urllib.parse.quote(project)}",
-#         {"name": name},
-#     )
-#
-#
-# @mcp.tool()
-# def delete_logbook(project: str, name: str) -> dict:
-#     """Delete a logbook. This is destructive and cannot be undone."""
-#     return _api_delete(
-#         f"/api/logbook/{urllib.parse.quote(project)}/{urllib.parse.quote(name)}"
-#     )
+# ── logbook tools ─────────────────────────────────────────────────────────────
+
+
+@mcp.tool()
+def list_logbook_entries(
+    project: str,
+    query: Optional[str] = None,
+    sort: str = "edited_at",
+    limit: int = 50,
+    entry_type: Optional[str] = None,
+) -> list[dict]:
+    """List logbook entries for a project, optionally filtered by BM25 search.
+
+    Each entry has: id, project, title, body_preview, entry_type, created_at, edited_at.
+    When query is set, results are ranked by BM25 relevance.
+    Sort options: "edited_at" (default), "created_at", "title".
+    entry_type: "note" for experiment logs/findings, "plan" for implementation plans,
+                or omit for all types.
+    """
+    params = {"limit": str(limit), "sort": sort}
+    if query:
+        params["q"] = query
+    if entry_type:
+        params["type"] = entry_type
+    qs = urllib.parse.urlencode(params)
+    data = _api_get(f"/api/logbook/{urllib.parse.quote(project)}/entries?{qs}")
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
+@mcp.tool()
+def read_logbook_entry(project: str, entry_id: int) -> dict:
+    """Read a single logbook entry with full markdown body.
+
+    Returns: id, project, title, body (full markdown), created_at, edited_at.
+    Use @run-name in the body to reference jobs.
+    """
+    return _api_get(f"/api/logbook/{urllib.parse.quote(project)}/entries/{entry_id}")
+
+
+@mcp.tool()
+def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
+    """Create a new logbook entry for a project.
+
+    The body supports full markdown including tables, code blocks, and
+    @run-name references. created_at and edited_at are set automatically.
+
+    entry_type: "note" (default) for experiment results, debugging sessions,
+    findings. "plan" for implementation plans, research plans, experiment designs.
+
+    Returns: {status, id, created_at}.
+    """
+    return _api_post_json(
+        f"/api/logbook/{urllib.parse.quote(project)}/entries",
+        {"title": title, "body": body, "entry_type": entry_type},
+    )
+
+
+@mcp.tool()
+def update_logbook_entry(
+    project: str,
+    entry_id: int,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+) -> dict:
+    """Update a logbook entry's title and/or body. Bumps edited_at.
+
+    Pass only the fields you want to change — omitted fields stay unchanged.
+    """
+    data = {}
+    if title is not None:
+        data["title"] = title
+    if body is not None:
+        data["body"] = body
+    url = f"{API_BASE}/api/logbook/{urllib.parse.quote(project)}/entries/{entry_id}"
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, method="PUT", data=payload,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as exc:
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+def delete_logbook_entry(project: str, entry_id: int) -> dict:
+    """Delete a logbook entry. This is destructive."""
+    url = f"{API_BASE}/api/logbook/{urllib.parse.quote(project)}/entries/{entry_id}"
+    req = urllib.request.Request(url, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as exc:
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+def search_logbook(
+    query: str,
+    project: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Search logbook entries across all projects using BM25 full-text search.
+
+    Searches both titles and bodies. Results are ranked by relevance.
+    Optionally filter by project and/or date range (ISO 8601 dates).
+
+    Returns: [{id, project, title, body_preview, created_at, edited_at}, ...]
+    """
+    params = {"q": query, "limit": str(limit)}
+    if project:
+        params["project"] = project
+    if date_from:
+        params["from"] = date_from
+    if date_to:
+        params["to"] = date_to
+    qs = urllib.parse.urlencode(params)
+    data = _api_get(f"/api/logbook/search?{qs}")
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
+@mcp.tool()
+def upload_logbook_image(project: str, image_path: str) -> dict:
+    """Upload a local image file to a project's logbook image store.
+
+    Use this to attach plots, figures, screenshots, or diagrams to logbook
+    entries. After uploading, insert the returned URL into an entry body
+    using markdown: ![description](url)
+
+    Args:
+        project:    Project name.
+        image_path: Absolute path to the image file on disk.
+
+    Returns: {status, url, filename} — use the url in markdown image syntax.
+    """
+    import os
+    if not os.path.isfile(image_path):
+        return {"status": "error", "error": f"File not found: {image_path}"}
+
+    filename = os.path.basename(image_path)
+    with open(image_path, "rb") as f:
+        data = f.read()
+
+    boundary = "----ncluster_upload_boundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+
+    url = f"{API_BASE}/api/logbook/{urllib.parse.quote(project)}/images"
+    req = urllib.request.Request(
+        url, method="POST", data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as exc:
+        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 # ── resources ────────────────────────────────────────────────────────────────

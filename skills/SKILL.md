@@ -182,9 +182,27 @@ Also check storage?
 
 ---
 
-## Logbooks (Disabled)
+## Logbooks
 
-Local logbooks have been migrated to DeepLake. The logbook UI, API routes, and MCP tools are commented out. Use DeepLake for experiment notes and artifacts.
+Per-project structured logbook entries stored in SQLite with FTS5 BM25 search.
+Each entry has: id, title, body (markdown), entry_type ("note" or "plan"), created_at, edited_at.
+
+| Tool | Purpose | Example |
+|------|---------|---------|
+| `list_logbook_entries(project, query?, sort?, limit?, entry_type?)` | List or BM25-search entries | `list_logbook_entries("my-project", query="accuracy")` |
+| `read_logbook_entry(project, entry_id)` | Read full entry with markdown body | `read_logbook_entry("my-project", 42)` |
+| `create_logbook_entry(project, title, body, entry_type?)` | Create entry ("note" or "plan") | `create_logbook_entry("my-project", "Eval results", "...", entry_type="note")` |
+| `update_logbook_entry(project, entry_id, title?, body?)` | Update title and/or body | `update_logbook_entry("my-project", 42, body="updated results")` |
+| `delete_logbook_entry(project, entry_id)` | Delete an entry (destructive) | `delete_logbook_entry("my-project", 42)` |
+| `search_logbook(query, project?, date_from?, date_to?)` | Cross-project BM25 search | `search_logbook("CUDA error", project="my-project")` |
+| `upload_logbook_image(project, image_path)` | Attach plot/figure, returns markdown URL | `upload_logbook_image("my-project", "/path/to/plot.png")` |
+
+Entry types: **note** (experiments, debugging, findings) and **plan** (implementation/research plans).
+
+Body supports full markdown: headers, tables, code blocks, blockquotes (`> `), images (`![caption](url)`),
+links (`[text](url)`), and `@run-name` job references. Use `upload_logbook_image` to attach plots/figures,
+then embed the returned URL in the body. Use code blocks for system prompts, JSON, configs.
+Use blockquotes for model outputs or external sources. Titles must be descriptive (no dates).
 
 ---
 

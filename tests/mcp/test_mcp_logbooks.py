@@ -1,17 +1,13 @@
-"""MCP logbook tool contract tests (disabled — logbooks moved to DeepLake)."""
+"""MCP logbook v2 tool contract tests."""
 
 import pytest
 from unittest.mock import patch
 
 import mcp_server
-
-try:
-    from mcp_server import (
-        list_logbooks, read_logbook, add_logbook_entry,
-        update_logbook_entry, create_logbook, delete_logbook,
-    )
-except ImportError:
-    pytest.skip("Logbook MCP tools disabled — moved to DeepLake", allow_module_level=True)
+from mcp_server import (
+    list_logbook_entries, read_logbook_entry, create_logbook_entry,
+    update_logbook_entry, delete_logbook_entry, search_logbook,
+)
 
 
 def _mock_get(response):
@@ -22,69 +18,96 @@ def _mock_post_json(response):
     return patch.object(mcp_server, "_api_post_json", return_value=response)
 
 
-def _mock_put_json(response):
-    return patch.object(mcp_server, "_api_put_json", return_value=response)
-
-
-def _mock_delete(response):
-    return patch.object(mcp_server, "_api_delete", return_value=response)
-
-
 @pytest.mark.mcp
-class TestListLogbooks:
+class TestListLogbookEntries:
     def test_returns_list(self):
-        with _mock_get([{"name": "experiments", "entry_count": 3}]):
-            result = list_logbooks("alpha")
+        entries = [{"id": 1, "title": "Note", "body_preview": "...", "created_at": "2026-03-28", "edited_at": "2026-03-28"}]
+        with _mock_get(entries):
+            result = list_logbook_entries("alpha")
         assert isinstance(result, list)
-        assert result[0]["name"] == "experiments"
+        assert result[0]["title"] == "Note"
 
-    def test_empty_project(self):
-        with _mock_get([]):
-            result = list_logbooks("empty")
-        assert result == []
+    def test_with_search_query(self):
+        with _mock_get([]) as mock:
+            list_logbook_entries("alpha", query="CUDA")
+            url = mock.call_args[0][0]
+            assert "q=CUDA" in url
 
-
-@pytest.mark.mcp
-class TestReadLogbook:
-    def test_returns_content(self):
-        with _mock_get({"name": "notes", "content": "## Note\n\nhello", "entries": ["## Note\n\nhello"]}):
-            result = read_logbook("proj", "notes")
-        assert result["name"] == "notes"
-        assert len(result["entries"]) == 1
-
-    def test_missing_logbook(self):
-        with _mock_get({"name": "x", "content": "", "entries": [], "error": "Logbook not found"}):
-            result = read_logbook("proj", "x")
-        assert "error" in result
+    def test_wraps_error_in_list(self):
+        with _mock_get({"status": "error", "error": "fail"}):
+            result = list_logbook_entries("alpha")
+        assert isinstance(result, list)
 
 
 @pytest.mark.mcp
-class TestAddLogbookEntry:
-    def test_success(self):
-        with _mock_post_json({"status": "ok", "entry_count": 1}):
-            result = add_logbook_entry("proj", "notes", "## New entry")
+class TestReadLogbookEntry:
+    def test_returns_entry(self):
+        entry = {"id": 1, "project": "alpha", "title": "Note", "body": "full content", "created_at": "2026-03-28", "edited_at": "2026-03-28"}
+        with _mock_get(entry):
+            result = read_logbook_entry("alpha", 1)
+        assert result["title"] == "Note"
+        assert result["body"] == "full content"
+
+    def test_calls_correct_url(self):
+        with _mock_get({}) as mock:
+            read_logbook_entry("alpha", 42)
+            assert "/api/logbook/alpha/entries/42" in mock.call_args[0][0]
+
+
+@pytest.mark.mcp
+class TestCreateLogbookEntry:
+    def test_creates_entry(self):
+        resp = {"status": "ok", "id": 1, "created_at": "2026-03-28T10:00:00"}
+        with _mock_post_json(resp):
+            result = create_logbook_entry("alpha", "New note", "body text")
         assert result["status"] == "ok"
+        assert result["id"] == 1
+
+    def test_calls_correct_url(self):
+        with _mock_post_json({"status": "ok", "id": 1}) as mock:
+            create_logbook_entry("alpha", "Title", "Body")
+            url = mock.call_args[0][0]
+            assert "/api/logbook/alpha/entries" in url
+            payload = mock.call_args[0][1]
+            assert payload["title"] == "Title"
+            assert payload["body"] == "Body"
 
 
 @pytest.mark.mcp
 class TestUpdateLogbookEntry:
-    def test_success(self):
-        with _mock_put_json({"status": "ok", "entry_count": 2}):
-            result = update_logbook_entry("proj", "notes", 0, "updated")
+    def test_updates_entry(self):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__ = lambda s: s
+            mock_urlopen.return_value.__exit__ = lambda s, *a: None
+            mock_urlopen.return_value.read.return_value = b'{"status": "ok", "id": 1, "edited_at": "2026-03-28T11:00:00"}'
+            result = update_logbook_entry("alpha", 1, title="Updated")
         assert result["status"] == "ok"
 
 
 @pytest.mark.mcp
-class TestCreateLogbook:
-    def test_success(self):
-        with _mock_post_json({"status": "ok", "name": "bugs"}):
-            result = create_logbook("proj", "bugs")
+class TestDeleteLogbookEntry:
+    def test_deletes_entry(self):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__ = lambda s: s
+            mock_urlopen.return_value.__exit__ = lambda s, *a: None
+            mock_urlopen.return_value.read.return_value = b'{"status": "ok"}'
+            result = delete_logbook_entry("alpha", 1)
         assert result["status"] == "ok"
 
 
 @pytest.mark.mcp
-class TestDeleteLogbook:
-    def test_success(self):
-        with _mock_delete({"status": "ok"}):
-            result = delete_logbook("proj", "trash")
-        assert result["status"] == "ok"
+class TestSearchLogbook:
+    def test_search_returns_list(self):
+        entries = [{"id": 1, "project": "alpha", "title": "Match", "body_preview": "..."}]
+        with _mock_get(entries):
+            result = search_logbook("accuracy")
+        assert isinstance(result, list)
+        assert len(result) == 1
+
+    def test_search_with_filters(self):
+        with _mock_get([]) as mock:
+            search_logbook("test", project="alpha", date_from="2026-01-01", date_to="2026-12-31")
+            url = mock.call_args[0][0]
+            assert "project=alpha" in url
+            assert "from=2026-01-01" in url
+            assert "to=2026-12-31" in url

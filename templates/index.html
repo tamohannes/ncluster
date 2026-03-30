@@ -19,6 +19,7 @@
     <div class="nav-tabs-wrap">
       <button class="nav-tab active" id="tab-live" onclick="showTab('live')">Live</button>
       <button class="nav-tab" id="tab-history" onclick="showTab('history')">History</button>
+      <button class="nav-tab" id="tab-logbook" onclick="showTab('logbook')">Logbook</button>
     </div>
     <div class="countdown-badge" style="display:none">refresh in <b id="cd">30</b>s</div>
     <div class="nav-section">
@@ -102,8 +103,7 @@
         <button class="btn" onclick="showTab('live')">← Dashboard</button>
         <span class="project-detail-title" id="project-detail-title"></span>
         <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
-        <!-- logbook disabled — moved to DeepLake -->
-        <!-- <button class="btn" id="logbook-toggle-btn" onclick="toggleLogbookPanel()">📓 notes</button> -->
+        <button class="btn" onclick="openProjectLogbook()">📓 logbook</button>
       </div>
       <div class="proj-layout">
         <div class="proj-main">
@@ -131,22 +131,31 @@
           </div>
           <div class="hist-pagination" id="proj-pagination"></div>
         </div>
-        <!-- logbook panel disabled — moved to DeepLake
-        <div class="logbook-panel" id="logbook-panel" style="display:none">
-          <div class="logbook-resizer" id="logbook-resizer"></div>
-          <div class="logbook-head">
-            <select id="logbook-select" onchange="switchLogbook()"></select>
-            <button class="btn" onclick="promptNewLogbook()" title="new logbook">+</button>
-            <button class="btn" onclick="promptRenameLogbook()" title="rename logbook">✎</button>
-            <button class="btn" onclick="promptDeleteLogbook()" title="delete logbook" style="color:var(--red)">✕</button>
+      </div>
+    </div>
+
+    <!-- Logbook view -->
+    <div class="logbook-view" id="logbook-view">
+      <div class="lb-page">
+        <div class="lb-sidebar">
+          <div class="lb-sidebar-head">
+            <select id="lb-project-select" onchange="onLogbookProjectChange()"></select>
+            <button class="btn" onclick="showLogbookEditor()" title="new entry">+ new</button>
           </div>
-          <div class="logbook-add">
-            <textarea id="logbook-new-entry" placeholder="Add a note… use @run-name to reference jobs" rows="8"></textarea>
-            <button class="btn" onclick="addLogbookEntry()">add entry</button>
+          <div class="lb-sidebar-search">
+            <input type="text" id="lb-search" placeholder="search entries…" oninput="onLogbookSearch()">
           </div>
-          <div class="logbook-entries" id="logbook-entries"></div>
+          <div class="lb-type-filters">
+            <button class="lb-type-btn active" data-type="" onclick="filterLogbookType(this)">all</button>
+            <button class="lb-type-btn" data-type="note" onclick="filterLogbookType(this)">notes</button>
+            <button class="lb-type-btn" data-type="plan" onclick="filterLogbookType(this)">plans</button>
+          </div>
+          <div class="lb-sidebar-list" id="lb-sidebar-list"></div>
         </div>
-        -->
+        <div class="lb-splitter" id="lb-splitter"></div>
+        <div class="lb-main" id="lb-main">
+          <div class="lb-main-empty">Select an entry or create a new one.</div>
+        </div>
       </div>
     </div>
 
@@ -403,7 +412,7 @@
 <script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/runs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/projects.js') }}"></script>
-<!-- <script src="{{ url_for('static', filename='js/logbooks.js') }}"></script> --> <!-- logbook disabled — moved to DeepLake -->
+<script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 </body>
 </html>

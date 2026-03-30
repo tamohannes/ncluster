@@ -49,9 +49,11 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - SQLite-backed job history with dependency-aware grouping
 - Auto-detected projects from job name prefixes
 - Per-project detail pages with live jobs, stats, and search
+- Per-project logbooks with structured entries, markdown bodies, and BM25 full-text search
+
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 24+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, cluster availability, storage quotas, partition analysis, submission recommendations
+- 30+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, logbook CRUD + BM25 search, cluster availability, storage quotas, partition analysis, submission recommendations
 - `recommend_submission()` — AI agent can ask "where should I submit this job?" and get ranked cluster+partition suggestions
 - `get_partitions()` — detailed partition data (priority tiers, preemption, queue depth, idle nodes)
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
@@ -226,6 +228,17 @@ Dependency chain auto-detection from run name suffixes:
 | POST | `/api/mount/<action>/<cluster>` | Mount/unmount one cluster |
 | GET | `/api/settings` | Current configuration |
 | POST | `/api/settings` | Update configuration (hot-reload) |
+
+### Logbooks
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/logbook/<project>/entries?q=&sort=&limit=` | List or BM25-search entries |
+| POST | `/api/logbook/<project>/entries` | Create entry `{title, body}` |
+| GET | `/api/logbook/<project>/entries/<id>` | Read single entry |
+| PUT | `/api/logbook/<project>/entries/<id>` | Update entry `{title?, body?}` |
+| DELETE | `/api/logbook/<project>/entries/<id>` | Delete entry |
+| GET | `/api/logbook/search?q=&project=&from=&to=` | Cross-project BM25 search |
 
 ## Systemd (User Service)
 

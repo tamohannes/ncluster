@@ -1,172 +1,258 @@
-"""File-based logbook operations for per-project notes."""
+"""SQLite+FTS5-backed logbook with structured entries and BM25 search.
 
+Each entry has: project, title, body (markdown), entry_type, created_at, edited_at.
+entry_type is "note" (experiments, debugging, findings) or "plan" (implementation/research plans).
+Full-text search via FTS5 with porter stemming and BM25 ranking.
+"""
+
+import glob
+import logging
 import os
-import time
 from datetime import datetime
 
 from .config import PROJECT_ROOT
+from .db import get_db
 
-LOGBOOKS_DIR = os.path.join(PROJECT_ROOT, "data", "logbooks")
-ENTRY_SEPARATOR = "\n---\n"
+log = logging.getLogger(__name__)
 
-
-def _project_dir(project):
-    return os.path.join(LOGBOOKS_DIR, project)
-
-
-def _logbook_path(project, name):
-    if not name.endswith(".md"):
-        name += ".md"
-    return os.path.join(_project_dir(project), name)
+BODY_PREVIEW_LEN = 200
+_LEGACY_DIR = os.path.join(PROJECT_ROOT, "data", "logbooks")
+IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "logbook_images")
+ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 
 
-def _sanitize_name(name):
-    """Strip extension and disallow path traversal."""
-    name = os.path.basename(name)
-    if name.endswith(".md"):
-        name = name[:-3]
-    return name
+def _now_iso():
+    return datetime.now().isoformat(timespec="seconds")
 
 
-def _split_entries(content):
-    """Split markdown content into entries by --- separator."""
-    if not content.strip():
-        return []
-    parts = content.split(ENTRY_SEPARATOR)
-    return [p.strip() for p in parts if p.strip()]
+def _row_to_dict(row, preview=False):
+    d = dict(row)
+    if preview and "body" in d:
+        body = d["body"]
+        d["body_preview"] = body[:BODY_PREVIEW_LEN] + ("…" if len(body) > BODY_PREVIEW_LEN else "")
+        del d["body"]
+    return d
 
 
-def _join_entries(entries):
-    return ENTRY_SEPARATOR.join(entries) + "\n"
+def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entry_type=None):
+    con = get_db()
+    allowed_sorts = {"edited_at", "created_at", "title"}
+    sort_col = sort if sort in allowed_sorts else "edited_at"
+    sort_dir = "ASC" if sort_col == "title" else "DESC"
 
-
-def list_logbooks(project):
-    """List .md logbooks for a project."""
-    d = _project_dir(project)
-    if not os.path.isdir(d):
-        return []
-    result = []
-    for fname in sorted(os.listdir(d)):
-        if not fname.endswith(".md"):
-            continue
-        fpath = os.path.join(d, fname)
-        name = fname[:-3]
-        try:
-            with open(fpath, "r", encoding="utf-8") as fh:
-                content = fh.read()
-            entry_count = len(_split_entries(content))
-            mtime = os.path.getmtime(fpath)
-        except Exception:
-            entry_count = 0
-            mtime = 0
-        result.append({
-            "name": name,
-            "entry_count": entry_count,
-            "last_modified": datetime.fromtimestamp(mtime).isoformat(timespec="seconds") if mtime else "",
-        })
-    return result
-
-
-def read_logbook(project, name):
-    """Read full logbook content and return entries."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    if not os.path.isfile(path):
-        return {"name": name, "content": "", "entries": [], "error": "Logbook not found"}
-    with open(path, "r", encoding="utf-8") as fh:
-        content = fh.read()
-    entries = _split_entries(content)
-    return {"name": name, "content": content, "entries": entries}
-
-
-def add_entry(project, name, content):
-    """Prepend a new entry to a logbook. Creates the logbook if needed."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    os.makedirs(_project_dir(project), exist_ok=True)
-
-    existing = ""
-    if os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as fh:
-            existing = fh.read().strip()
-
-    new_content = content.strip()
-    if existing:
-        full = new_content + ENTRY_SEPARATOR + existing
+    if query and query.strip():
+        conditions = ["f.logbook_fts MATCH ?", "e.project = ?"]
+        params = [query.strip(), project]
+        if entry_type:
+            conditions.append("e.entry_type = ?")
+            params.append(entry_type)
+        where = " AND ".join(conditions)
+        params.extend([limit, offset])
+        rows = con.execute(
+            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type
+                FROM logbook_entries e
+                JOIN logbook_fts f ON e.id = f.rowid
+                WHERE {where}
+                ORDER BY rank
+                LIMIT ? OFFSET ?""",
+            params,
+        ).fetchall()
     else:
-        full = new_content
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(full + "\n")
-    return {"status": "ok", "entry_count": len(_split_entries(full))}
+        conditions = ["project = ?"]
+        params = [project]
+        if entry_type:
+            conditions.append("entry_type = ?")
+            params.append(entry_type)
+        where = " AND ".join(conditions)
+        params.extend([limit, offset])
+        rows = con.execute(
+            f"""SELECT id, project, title, body, created_at, edited_at, entry_type
+                FROM logbook_entries
+                WHERE {where}
+                ORDER BY {sort_col} {sort_dir}
+                LIMIT ? OFFSET ?""",
+            params,
+        ).fetchall()
+    con.close()
+    return [_row_to_dict(r, preview=True) for r in rows]
 
 
-def update_entry(project, name, index, content):
-    """Replace an entry at the given index (0 = newest)."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    if not os.path.isfile(path):
-        return {"status": "error", "error": "Logbook not found"}
-    with open(path, "r", encoding="utf-8") as fh:
-        raw = fh.read()
-    entries = _split_entries(raw)
-    if index < 0 or index >= len(entries):
-        return {"status": "error", "error": f"Entry index {index} out of range (0-{len(entries)-1})"}
-    entries[index] = content.strip()
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(_join_entries(entries))
-    return {"status": "ok", "entry_count": len(entries)}
+def get_entry(project, entry_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT id, project, title, body, created_at, edited_at, entry_type FROM logbook_entries WHERE id = ? AND project = ?",
+        (entry_id, project),
+    ).fetchone()
+    con.close()
+    if not row:
+        return {"status": "error", "error": "Entry not found"}
+    return _row_to_dict(row)
 
 
-def create_logbook(project, name):
-    """Create an empty logbook file."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    os.makedirs(_project_dir(project), exist_ok=True)
-    if os.path.isfile(path):
-        return {"status": "ok", "message": "Already exists", "name": name}
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("")
-    return {"status": "ok", "name": name}
+def create_entry(project, title, body="", entry_type="note"):
+    if entry_type not in ("note", "plan"):
+        entry_type = "note"
+    now = _now_iso()
+    con = get_db()
+    cur = con.execute(
+        "INSERT INTO logbook_entries (project, title, body, created_at, edited_at, entry_type) VALUES (?, ?, ?, ?, ?, ?)",
+        (project, title, body, now, now, entry_type),
+    )
+    entry_id = cur.lastrowid
+    con.commit()
+    con.close()
+    return {"status": "ok", "id": entry_id, "created_at": now}
 
 
-def delete_entry(project, name, index):
-    """Delete an entry at the given index (0 = newest)."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    if not os.path.isfile(path):
-        return {"status": "error", "error": "Logbook not found"}
-    with open(path, "r", encoding="utf-8") as fh:
-        raw = fh.read()
-    entries = _split_entries(raw)
-    if index < 0 or index >= len(entries):
-        return {"status": "error", "error": f"Entry index {index} out of range (0-{len(entries)-1})"}
-    entries.pop(index)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(_join_entries(entries) if entries else "")
-    return {"status": "ok", "entry_count": len(entries)}
+def update_entry(project, entry_id, title=None, body=None, entry_type=None):
+    con = get_db()
+    row = con.execute(
+        "SELECT id FROM logbook_entries WHERE id = ? AND project = ?",
+        (entry_id, project),
+    ).fetchone()
+    if not row:
+        con.close()
+        return {"status": "error", "error": "Entry not found"}
+
+    now = _now_iso()
+    sets, params = ["edited_at = ?"], [now]
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title)
+    if body is not None:
+        sets.append("body = ?")
+        params.append(body)
+    if entry_type is not None and entry_type in ("note", "plan"):
+        sets.append("entry_type = ?")
+        params.append(entry_type)
+    params.extend([entry_id, project])
+    con.execute(
+        f"UPDATE logbook_entries SET {', '.join(sets)} WHERE id = ? AND project = ?",
+        params,
+    )
+    con.commit()
+    con.close()
+    return {"status": "ok", "id": entry_id, "edited_at": now}
 
 
-def rename_logbook(project, old_name, new_name):
-    """Rename a logbook file."""
-    old_name = _sanitize_name(old_name)
-    new_name = _sanitize_name(new_name)
-    if not new_name:
-        return {"status": "error", "error": "New name is empty"}
-    old_path = _logbook_path(project, old_name)
-    new_path = _logbook_path(project, new_name)
-    if not os.path.isfile(old_path):
-        return {"status": "error", "error": "Logbook not found"}
-    if os.path.isfile(new_path):
-        return {"status": "error", "error": f"Logbook '{new_name}' already exists"}
-    os.rename(old_path, new_path)
-    return {"status": "ok", "name": new_name}
-
-
-def delete_logbook(project, name):
-    """Delete a logbook file."""
-    name = _sanitize_name(name)
-    path = _logbook_path(project, name)
-    if not os.path.isfile(path):
-        return {"status": "error", "error": "Logbook not found"}
-    os.remove(path)
+def delete_entry(project, entry_id):
+    con = get_db()
+    cur = con.execute(
+        "DELETE FROM logbook_entries WHERE id = ? AND project = ?",
+        (entry_id, project),
+    )
+    con.commit()
+    deleted = cur.rowcount
+    con.close()
+    if not deleted:
+        return {"status": "error", "error": "Entry not found"}
     return {"status": "ok"}
+
+
+def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
+    if not query or not query.strip():
+        return []
+
+    con = get_db()
+    conditions = ["f.logbook_fts MATCH ?"]
+    params = [query.strip()]
+
+    if project:
+        conditions.append("e.project = ?")
+        params.append(project)
+    if date_from:
+        conditions.append("e.created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("e.created_at <= ?")
+        params.append(date_to)
+
+    where = " AND ".join(conditions)
+    params.extend([limit])
+
+    rows = con.execute(
+        f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type
+            FROM logbook_entries e
+            JOIN logbook_fts f ON e.id = f.rowid
+            WHERE {where}
+            ORDER BY rank
+            LIMIT ?""",
+        params,
+    ).fetchall()
+    con.close()
+    return [_row_to_dict(r, preview=True) for r in rows]
+
+
+def _images_dir(project):
+    return os.path.join(IMAGES_DIR, project)
+
+
+def save_image(project, filename, data):
+    """Save image bytes to disk. Returns the serving URL path."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_IMAGE_EXTS:
+        return {"status": "error", "error": f"Unsupported image type: {ext}"}
+    safe_name = os.path.basename(filename)
+    dest_dir = _images_dir(project)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, safe_name)
+    if os.path.exists(dest):
+        base, ext = os.path.splitext(safe_name)
+        i = 1
+        while os.path.exists(os.path.join(dest_dir, f"{base}_{i}{ext}")):
+            i += 1
+        safe_name = f"{base}_{i}{ext}"
+        dest = os.path.join(dest_dir, safe_name)
+    with open(dest, "wb") as fh:
+        fh.write(data)
+    url = f"/api/logbook/{project}/images/{safe_name}"
+    return {"status": "ok", "url": url, "filename": safe_name}
+
+
+def get_image_path(project, filename):
+    """Return the filesystem path for a stored image, or None."""
+    safe_name = os.path.basename(filename)
+    path = os.path.join(_images_dir(project), safe_name)
+    if os.path.isfile(path):
+        return path
+    return None
+
+
+def migrate_legacy_files():
+    """Import .md files from the old file-based logbook into the DB (one-time)."""
+    if not os.path.isdir(_LEGACY_DIR):
+        return
+
+    con = get_db()
+    existing = con.execute("SELECT COUNT(*) FROM logbook_entries").fetchone()[0]
+    if existing > 0:
+        con.close()
+        return
+
+    count = 0
+    for project_dir in sorted(glob.glob(os.path.join(_LEGACY_DIR, "*"))):
+        if not os.path.isdir(project_dir):
+            continue
+        project = os.path.basename(project_dir)
+        for md_file in sorted(glob.glob(os.path.join(project_dir, "*.md"))):
+            fname = os.path.basename(md_file)
+            title = fname[:-3] if fname.endswith(".md") else fname
+            try:
+                with open(md_file, "r", encoding="utf-8") as fh:
+                    body = fh.read().strip()
+                if not body:
+                    continue
+                mtime = os.path.getmtime(md_file)
+                ts = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+                con.execute(
+                    "INSERT INTO logbook_entries (project, title, body, created_at, edited_at) VALUES (?, ?, ?, ?, ?)",
+                    (project, title, body, ts, ts),
+                )
+                count += 1
+            except Exception as exc:
+                log.warning("logbook migration: failed to import %s: %s", md_file, exc)
+
+    con.commit()
+    con.close()
+    if count:
+        log.info("logbook migration: imported %d entries from legacy .md files", count)
