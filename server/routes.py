@@ -53,8 +53,10 @@ def _rebuild_cross_deps(jobs):
     After merging live and pinned jobs, their dependency arrays only reference
     IDs within their original sets.  This rebuilds them so cross-references
     (e.g. a running child pointing to a completed parent) are restored.
+    Uses both explicit dependency parsing and name-based inference.
     """
     from .jobs import parse_dependency
+    from .db import _infer_parent_from_name
     id_set = {j.get("jobid") or j.get("job_id", "") for j in jobs}
     by_name = {}
     for j in jobs:
@@ -71,6 +73,13 @@ def _rebuild_cross_deps(jobs):
                 j["dep_details"] = dep_details
         j["depends_on"] = [d["job_id"] for d in dep_details if d["job_id"] in id_set]
 
+        if not j["depends_on"]:
+            name = j.get("name") or j.get("job_name") or ""
+            inferred = _infer_parent_from_name(name, by_name, id_set, j)
+            if inferred:
+                j["depends_on"] = [inferred]
+                j["dep_details"] = [{"type": "afterany", "job_id": inferred}]
+
     children_map = {}
     for j in jobs:
         jid = j.get("jobid") or j.get("job_id", "")
@@ -79,6 +88,23 @@ def _rebuild_cross_deps(jobs):
     for j in jobs:
         jid = j.get("jobid") or j.get("job_id", "")
         j["dependents"] = children_map.get(jid, [])
+
+
+def _fill_run_ids(cluster, jobs):
+    """Look up run_id from DB for live jobs that are missing it."""
+    need = [j for j in jobs if not j.get("run_id") and not j.get("_pinned")]
+    if not need:
+        return
+    con = get_db()
+    for j in need:
+        jid = j.get("jobid") or j.get("job_id", "")
+        row = con.execute(
+            "SELECT run_id FROM job_history WHERE cluster=? AND job_id=?",
+            (cluster, jid),
+        ).fetchone()
+        if row and row["run_id"]:
+            j["run_id"] = row["run_id"]
+    con.close()
 
 
 @api.route("/")
@@ -118,6 +144,7 @@ def api_jobs():
         if pinned:
             data["jobs"] = data.get("jobs", []) + pinned
             _rebuild_cross_deps(data["jobs"])
+        _fill_run_ids(name, data.get("jobs", []))
         data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
         for j in data.get("jobs", []):
             st = j.get("state", "").upper()
@@ -304,6 +331,7 @@ def api_jobs_cluster(cluster):
             data = dict(data)
             data["jobs"] = data.get("jobs", []) + pinned
             _rebuild_cross_deps(data["jobs"])
+        _fill_run_ids(cluster, data.get("jobs", []))
         data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
         for j in data.get("jobs", []):
             s = str(j.get("state", "")).upper()

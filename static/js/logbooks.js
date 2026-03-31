@@ -128,6 +128,10 @@ function _renderSidebarList(entries) {
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
   }).join('');
+  if (typeof _appTabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
+    const at = _appTabs.find(t => t.id === _activeTabId);
+    if (at && at.lbEntryId) _highlightSidebarItem(at.lbEntryId);
+  }
 }
 
 function _highlightSidebarItem(id) {

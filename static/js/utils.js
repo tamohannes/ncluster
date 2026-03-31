@@ -132,6 +132,9 @@ function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMe
   }
   if (progress != null && st === 'RUNNING') {
     const isSrv = _isServerSource(progressSource);
+    if (isSrv && progress >= 100) {
+      return `<span class="state-chip ${cls}">${s}</span>`;
+    }
     const label = isSrv ? 'loading' : `${progress}%`;
     const pctCls = isSrv ? 'progress-pct progress-pct-server' : 'progress-pct';
     return `<span class="state-chip ${cls}">${s}${progressRing(progress, isSrv)}<span class="${pctCls}">${label}</span></span>`;
@@ -454,6 +457,18 @@ function groupJobsByDependency(jobs) {
     nameGroups[key].push(j.jobid);
   }
   for (const ids of Object.values(nameGroups)) {
+    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+  }
+
+  // Union by run_id so all jobs from the same run stay grouped.
+  const runGroups = {};
+  for (const j of jobs) {
+    if (j.run_id) {
+      if (!runGroups[j.run_id]) runGroups[j.run_id] = [];
+      runGroups[j.run_id].push(j.jobid);
+    }
+  }
+  for (const ids of Object.values(runGroups)) {
     for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
   }
 

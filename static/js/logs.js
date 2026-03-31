@@ -505,6 +505,24 @@ function _mdInline(text) {
   return s;
 }
 
+function _isHtmlEmbed(text) {
+  if (!text) return false;
+  if (/\.(html?)(\?[^\s]*)?$/i.test(text) && /^(https?:\/\/|\/api\/)/.test(text)) return true;
+  const m = text.match(/^!\[([^\]]*)\]\(([^)]+\.html?)\)$/i);
+  return !!m;
+}
+
+function _renderHtmlEmbed(text) {
+  let url = text, caption = '';
+  const m = text.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+  if (m) { caption = m[1]; url = m[2]; }
+  const safeSrc = url.replace(/"/g, '&quot;');
+  return `<div class="lb-html-embed">
+    <iframe src="${safeSrc}" sandbox="allow-scripts allow-same-origin" loading="lazy"></iframe>
+    ${caption ? `<div class="lb-html-embed-caption">${escapeHtml(caption)}</div>` : ''}
+  </div>`;
+}
+
 function _isTableRow(line) {
   const t = line.trim();
   return t.startsWith('|') && t.endsWith('|') && t.includes('|');
@@ -596,6 +614,9 @@ function markdownToHtml(raw) {
     else if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
       const m = line.match(/!\[([^\]]*)\]\(([^)]+)\)/);
       if (m) html += `<figure class="lb-figure"><img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" class="lb-inline-img" loading="lazy">${m[1] ? `<figcaption>${escapeHtml(m[1])}</figcaption>` : ''}</figure>`;
+    }
+    else if (_isHtmlEmbed(line.trim())) {
+      html += _renderHtmlEmbed(line.trim());
     }
     else html += `<p>${_mdInline(line)}</p>`;
   }

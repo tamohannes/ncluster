@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 BODY_PREVIEW_LEN = 200
 _LEGACY_DIR = os.path.join(PROJECT_ROOT, "data", "logbooks")
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "logbook_images")
-ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".html", ".htm"}
 
 
 def _now_iso():

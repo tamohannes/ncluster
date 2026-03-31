@@ -632,8 +632,16 @@ def read_logbook_entry(project: str, entry_id: int) -> dict:
 def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
     """Create a new logbook entry for a project.
 
-    The body supports full markdown including tables, code blocks, and
-    @run-name references. created_at and edited_at are set automatically.
+    The body supports full markdown including tables, code blocks,
+    @run-name references, and images.
+    created_at and edited_at are set automatically.
+
+    Rich content:
+    - Images: upload with upload_logbook_image, embed with ![caption](url)
+    - HTML figures: upload .html files with upload_logbook_image, then paste
+      the returned URL on its own line to embed as an interactive iframe
+      (ideal for plotly, matplotlib, bokeh HTML exports)
+    - Code blocks, blockquotes, tables, links all supported
 
     entry_type: "note" (default) for experiment results, debugging sessions,
     findings. "plan" for implementation plans, research plans, experiment designs.
@@ -720,15 +728,20 @@ def search_logbook(
 
 @mcp.tool()
 def upload_logbook_image(project: str, image_path: str) -> dict:
-    """Upload a local image file to a project's logbook image store.
+    """Upload a local image or HTML file to a project's logbook store.
 
-    Use this to attach plots, figures, screenshots, or diagrams to logbook
-    entries. After uploading, insert the returned URL into an entry body
-    using markdown: ![description](url)
+    Use this to attach plots, figures, screenshots, diagrams, or interactive
+    HTML visualizations (plotly, matplotlib, bokeh exports) to logbook entries.
+
+    For images: insert the returned URL using ![description](url)
+    For HTML files: paste the returned URL on its own line in the entry body
+    to embed it as an interactive iframe.
+
+    Supported formats: .png, .jpg, .jpeg, .gif, .webp, .svg, .html, .htm
 
     Args:
         project:    Project name.
-        image_path: Absolute path to the image file on disk.
+        image_path: Absolute path to the file on disk.
 
     Returns: {status, url, filename} — use the url in markdown image syntax.
     """

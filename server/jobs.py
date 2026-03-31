@@ -323,7 +323,57 @@ def _detect_and_register_runs(cluster, jobs):
     if not jobs:
         return
     groups = _group_jobs_for_runs(jobs)
+
+    # Merge groups that share an existing run_id in the DB.
+    con = get_db()
+    all_job_ids = [jid for _, _, jids in groups for jid in jids]
+    existing_run_ids = {}
+    if all_job_ids:
+        ph = ",".join("?" for _ in all_job_ids)
+        rows = con.execute(
+            f"SELECT job_id, run_id FROM job_history WHERE cluster=? AND job_id IN ({ph}) AND run_id IS NOT NULL",
+            [cluster] + all_job_ids,
+        ).fetchall()
+        for r in rows:
+            if r["run_id"]:
+                existing_run_ids[r["job_id"]] = r["run_id"]
+    con.close()
+
+    # Collect all existing run_ids per group, then merge groups that share any.
+    group_run_ids = []
     for run_name, root_job_id, job_ids in groups:
+        rids = set()
+        for jid in job_ids:
+            rid = existing_run_ids.get(jid)
+            if rid:
+                rids.add(rid)
+        group_run_ids.append(rids)
+
+    # Union-find across groups: if two groups share any existing run_id,
+    # or if a group's jobs depend on jobs in another group, merge them.
+    gp = list(range(len(groups)))
+    def gfind(x):
+        while gp[x] != x: gp[x] = gp[gp[x]]; x = gp[x]
+        return x
+    def gunion(a, b): gp[gfind(a)] = gfind(b)
+
+    rid_to_group = {}
+    for gi, rids in enumerate(group_run_ids):
+        for rid in rids:
+            if rid in rid_to_group:
+                gunion(gi, rid_to_group[rid])
+            rid_to_group[rid] = gi
+
+    merged_groups = {}
+    for gi, (run_name, root_job_id, job_ids) in enumerate(groups):
+        root = gfind(gi)
+        if root not in merged_groups:
+            merged_groups[root] = (run_name, root_job_id, list(job_ids))
+        else:
+            merged_groups[root] = (merged_groups[root][0], merged_groups[root][1],
+                                   merged_groups[root][2] + job_ids)
+
+    for run_name, root_job_id, job_ids in merged_groups.values():
         root_job = next((j for j in jobs if j["jobid"] == root_job_id), None)
         project = root_job.get("project", "") if root_job else ""
         run_id = upsert_run(cluster, root_job_id, run_name, project)
