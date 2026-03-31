@@ -3,11 +3,13 @@
 Each entry has: project, title, body (markdown), entry_type, created_at, edited_at.
 entry_type is "note" (experiments, debugging, findings) or "plan" (implementation/research plans).
 Full-text search via FTS5 with porter stemming and BM25 ranking.
+Entries can reference each other with #<entry_id> syntax.
 """
 
 import glob
 import logging
 import os
+import re
 from datetime import datetime
 
 from .config import PROJECT_ROOT
@@ -89,6 +91,27 @@ def get_entry(project, entry_id):
     return _row_to_dict(row)
 
 
+def _extract_entry_refs(body):
+    """Extract #<id> references from body text."""
+    return list(set(int(m) for m in re.findall(r'#(\d+)', body or "")))
+
+
+def _update_links(con, entry_id, body):
+    """Parse #id refs from body and update logbook_links table."""
+    refs = _extract_entry_refs(body)
+    con.execute("DELETE FROM logbook_links WHERE source_id=?", (entry_id,))
+    for target_id in refs:
+        if target_id != entry_id:
+            try:
+                con.execute(
+                    "INSERT OR IGNORE INTO logbook_links (source_id, target_id) VALUES (?, ?)",
+                    (entry_id, target_id),
+                )
+            except Exception:
+                pass
+
+
+
 def create_entry(project, title, body="", entry_type="note"):
     if entry_type not in ("note", "plan"):
         entry_type = "note"
@@ -99,6 +122,7 @@ def create_entry(project, title, body="", entry_type="note"):
         (project, title, body, now, now, entry_type),
     )
     entry_id = cur.lastrowid
+    _update_links(con, entry_id, body)
     con.commit()
     con.close()
     return {"status": "ok", "id": entry_id, "created_at": now}
@@ -130,6 +154,8 @@ def update_entry(project, entry_id, title=None, body=None, entry_type=None):
         f"UPDATE logbook_entries SET {', '.join(sets)} WHERE id = ? AND project = ?",
         params,
     )
+    if body is not None:
+        _update_links(con, entry_id, body)
     con.commit()
     con.close()
     return {"status": "ok", "id": entry_id, "edited_at": now}

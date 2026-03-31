@@ -214,6 +214,16 @@ def init_db():
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job ON job_stats_snapshots(cluster, job_id)")
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS logbook_links (
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            PRIMARY KEY (source_id, target_id),
+            FOREIGN KEY (source_id) REFERENCES logbook_entries(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_id) REFERENCES logbook_entries(id) ON DELETE CASCADE
+        )
+    """)
+
     con.commit()
     con.close()
 

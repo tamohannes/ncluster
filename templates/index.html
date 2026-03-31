@@ -150,6 +150,9 @@
           <div class="lb-sidebar-head">
             <select id="lb-project-select" onchange="onLogbookProjectChange()"></select>
             <button class="btn" onclick="showLogbookEditor()" title="new entry">+ new</button>
+            <button class="btn lb-map-btn" data-type="map" onclick="toggleLogbookMap()" title="Map view">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </button>
           </div>
           <div class="lb-sidebar-search">
             <input type="text" id="lb-search" placeholder="search entries…" oninput="onLogbookSearch()">
@@ -437,6 +440,7 @@
 <script id="username-data" type="text/plain">{{ username }}</script>
 <script id="team-data" type="text/plain">{{ team }}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>

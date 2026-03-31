@@ -930,8 +930,6 @@ def api_storage_quota(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     data = fetch_storage_quota(cluster)
-    if data.get("status") == "error":
-        return jsonify(data), 400
     return jsonify(data)
 
 
@@ -1096,6 +1094,30 @@ def api_logbook_serve_image(project, filename):
     if not path:
         return jsonify({"status": "error", "error": "Image not found"}), 404
     return send_file(path)
+
+
+@api.route("/api/logbook/<project>/map")
+def api_logbook_map(project):
+    con = get_db()
+    rows = con.execute(
+        "SELECT id, title, entry_type, created_at, edited_at "
+        "FROM logbook_entries WHERE project=? ORDER BY created_at",
+        (project,),
+    ).fetchall()
+    links = con.execute(
+        """SELECT l.source_id, l.target_id FROM logbook_links l
+           JOIN logbook_entries e ON l.source_id = e.id
+           WHERE e.project = ?""",
+        (project,),
+    ).fetchall()
+    con.close()
+
+    nodes = [{"id": r["id"], "title": r["title"], "entry_type": r["entry_type"],
+              "created_at": r["created_at"], "edited_at": r["edited_at"]}
+             for r in rows]
+    explicit_links = [{"source_id": l["source_id"], "target_id": l["target_id"]}
+                      for l in links]
+    return jsonify({"nodes": nodes, "links": explicit_links})
 
 
 @api.route("/api/spotlight")

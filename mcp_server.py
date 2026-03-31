@@ -629,18 +629,119 @@ def read_logbook_entry(project: str, entry_id: int) -> dict:
 
 
 @mcp.tool()
+def bulk_read_logbooks(
+    project: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    sort: str = "created_at",
+    limit_per_project: int = 200,
+    max_entries: int = 1000,
+) -> dict:
+    """Bulk-read full logbook entries for one project or all projects.
+
+    This is a convenience tool for fetching many entries in one MCP call.
+    It returns full entries (including markdown body), not previews.
+
+    Args:
+        project: Optional project name. If omitted, reads all projects.
+        entry_type: Optional filter: "note" or "plan".
+        sort: "edited_at", "created_at", or "title" (default: "created_at").
+        limit_per_project: Max entries to scan per project (default: 200).
+        max_entries: Hard cap across all projects for safety (default: 1000).
+
+    Returns:
+        {
+          "status": "ok" | "error",
+          "count": int,
+          "truncated": bool,
+          "projects": [project_name, ...],
+          "entries": [{id, project, title, body, entry_type, created_at, edited_at}, ...],
+          "errors": {project_name: "error", ...}
+        }
+    """
+    if limit_per_project < 1:
+        return {"status": "error", "error": "limit_per_project must be >= 1"}
+    if max_entries < 1:
+        return {"status": "error", "error": "max_entries must be >= 1"}
+    if sort not in ("edited_at", "created_at", "title"):
+        return {"status": "error", "error": "sort must be one of: edited_at, created_at, title"}
+    if entry_type not in (None, "", "note", "plan"):
+        return {"status": "error", "error": "entry_type must be 'note', 'plan', or omitted"}
+
+    if project:
+        projects = [project]
+    else:
+        proj_data = _api_get("/api/projects")
+        if isinstance(proj_data, dict) and proj_data.get("status") == "error":
+            return proj_data
+        projects = [p.get("project") for p in proj_data if isinstance(p, dict) and p.get("project")]
+        if not projects:
+            return {
+                "status": "ok",
+                "count": 0,
+                "truncated": False,
+                "projects": [],
+                "entries": [],
+                "errors": {},
+            }
+
+    entries = []
+    errors = {}
+    truncated = False
+
+    for p in projects:
+        params = {"limit": str(limit_per_project), "sort": sort}
+        if entry_type:
+            params["type"] = entry_type
+        qs = urllib.parse.urlencode(params)
+        listed = _api_get(f"/api/logbook/{urllib.parse.quote(p)}/entries?{qs}")
+        if isinstance(listed, dict) and listed.get("status") == "error":
+            errors[p] = listed.get("error", "Failed to list entries")
+            continue
+        if not isinstance(listed, list):
+            errors[p] = "Unexpected list response format"
+            continue
+
+        for item in listed:
+            entry_id = item.get("id")
+            if entry_id is None:
+                continue
+            full = _api_get(f"/api/logbook/{urllib.parse.quote(p)}/entries/{entry_id}")
+            if isinstance(full, dict) and full.get("status") == "error":
+                errors[f"{p}:{entry_id}"] = full.get("error", "Failed to read entry")
+                continue
+            if isinstance(full, dict):
+                entries.append(full)
+            if len(entries) >= max_entries:
+                truncated = True
+                break
+
+        if truncated:
+            break
+
+    return {
+        "status": "ok",
+        "count": len(entries),
+        "truncated": truncated,
+        "projects": projects,
+        "entries": entries,
+        "errors": errors,
+    }
+
+
+@mcp.tool()
 def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
     """Create a new logbook entry for a project.
 
     The body supports full markdown including tables, code blocks,
-    @run-name references, and images.
+    @run-name references, #entry_id cross-references, and images.
     created_at and edited_at are set automatically.
 
     Rich content:
     - Images: upload with upload_logbook_image, embed with ![caption](url)
     - HTML figures: upload .html files with upload_logbook_image, then paste
       the returned URL on its own line to embed as an interactive iframe
-      (ideal for plotly, matplotlib, bokeh HTML exports)
+    - Cross-references: use #<entry_id> to link to another logbook entry
+      (e.g. #42 links to entry 42). These show in the semantic map.
     - Code blocks, blockquotes, tables, links all supported
 
     entry_type: "note" (default) for experiment results, debugging sessions,

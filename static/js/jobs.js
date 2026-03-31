@@ -188,6 +188,12 @@ function navClick(event, type, label, project) {
 
 document.addEventListener('keydown', e => {
   if (typeof _recordingShortcutId !== 'undefined' && _recordingShortcutId) return;
+  if ((e.ctrlKey || e.metaKey) && e.key === 'r' && currentTab === 'live') {
+    e.preventDefault();
+    toast('Refreshing live data…');
+    fetchAll();
+    return;
+  }
   if (matchesShortcut(e, 'toggleSidebar')) { e.preventDefault(); toggleSidebar(); return; }
   if (matchesShortcut(e, 'openSpotlight')) { e.preventDefault(); if (typeof openSpotlight === 'function') openSpotlight(); return; }
   if (matchesShortcut(e, 'closeTab')) { e.preventDefault(); closeAppTab(_activeTabId); return; }
