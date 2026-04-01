@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 520" fill="none">
+  <style>
+    text { font-family: 'JetBrains Mono', 'SF Mono', 'Menlo', monospace; }
+    .box { rx: 12; ry: 12; fill: rgba(28,33,40,0.92); stroke-width: 2; }
+    .title { fill: #e6edf3; font-size: 20px; font-weight: 700; }
+    .sub { fill: #8b949e; font-size: 12px; }
+    .label { fill: #8b949e; font-size: 11px; }
+    .arrow { stroke: #8b949e; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .lane { stroke-width: 14; stroke-linecap: round; opacity: 0.35; }
+    .lane-label { font-size: 11px; font-weight: 600; }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8b949e"/>
+    </marker>
+  </defs>
+
+  <!-- Browser UI box -->
+  <rect class="box" x="20" y="60" width="240" height="130" stroke="#2BA298"/>
+  <text class="title" x="60" y="115">Browser UI</text>
+  <text class="sub" x="32" y="140">Live Board &#183; Explorer &#183; History</text>
+  <text class="sub" x="42" y="158">Logbook &#183; Clusters &#183; Projects</text>
+
+  <!-- MCP Agent box -->
+  <rect class="box" x="20" y="320" width="240" height="90" stroke="#E95378"/>
+  <text class="title" x="42" y="372">MCP Agent</text>
+  <text class="sub" x="114" y="393">(Cursor)</text>
+
+  <!-- Flask Backend box -->
+  <rect class="box" x="380" y="160" width="260" height="160" stroke="#484f58"/>
+  <text class="title" x="412" y="230">Flask Backend</text>
+  <text class="sub" x="414" y="253">REST API &#183; SQLite &#183; Caches</text>
+
+  <!-- Login Nodes box -->
+  <rect class="box" x="770" y="60" width="240" height="120" stroke="#484f58"/>
+  <text class="title" x="808" y="112">Login Nodes</text>
+  <text class="sub" x="800" y="138">squeue &#183; sacct &#183; scancel</text>
+
+  <!-- Data-Copier Nodes box -->
+  <rect class="box" x="770" y="310" width="240" height="120" stroke="#484f58"/>
+  <text class="title" x="790" y="362">Data-Copier</text>
+  <text class="title" x="838" y="388">Nodes</text>
+  <text class="sub" x="806" y="412">File I/O &#183; Logs &#183; JSONL</text>
+
+  <!-- Arrow: Browser UI -> Flask -->
+  <path class="arrow" d="M260,125 L380,210"/>
+  <text class="label" x="296" y="148">HTTP</text>
+
+  <!-- Arrow: MCP Agent -> Flask -->
+  <path class="arrow" d="M260,365 L380,280"/>
+  <text class="label" x="296" y="340">stdio</text>
+
+  <!-- SSH pool lanes -->
+  <text class="label" x="650" y="210">SSH pool</text>
+
+  <!-- Primary lane -->
+  <line class="lane" x1="640" y1="228" x2="770" y2="228" stroke="#2BA298"/>
+  <text class="lane-label" x="676" y="232" fill="#2BA298">primary</text>
+
+  <!-- Background lane -->
+  <line class="lane" x1="640" y1="252" x2="770" y2="252" stroke="#58a6ff"/>
+  <text class="lane-label" x="662" y="256" fill="#58a6ff">background</text>
+
+  <!-- Data lane -->
+  <line class="lane" x1="640" y1="276" x2="770" y2="276" stroke="#d29922"/>
+  <text class="lane-label" x="688" y="280" fill="#d29922">data</text>
+
+  <!-- Arrow: Flask -> Login Nodes -->
+  <path class="arrow" d="M640,220 L770,140"/>
+
+  <!-- Arrow: Flask -> Data-Copier -->
+  <path class="arrow" d="M640,280 L770,360"/>
+
+  <!-- Cluster labels -->
+  <text class="sub" x="790" y="465">Cluster A &#183; Cluster B &#183; ... &#183; Cluster N</text>
+</svg>

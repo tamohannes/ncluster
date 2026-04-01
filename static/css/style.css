@@ -257,8 +257,12 @@ body {
   font-family: 'Space Grotesk', var(--sans); font-size: 14px; font-weight: 700;
   color: var(--text); letter-spacing: -0.4px;
   flex-shrink: 0; margin-right: 4px;
+  display: flex; align-items: center; gap: 2px;
 }
-.topbar-title span { color: var(--accent); }
+.topbar-logo {
+  border-radius: 5px;
+  flex-shrink: 0;
+}
 .topbar-right {
   margin-left: auto; display: flex; align-items: center; gap: 10px;
   flex-shrink: 0; padding-left: 8px;
