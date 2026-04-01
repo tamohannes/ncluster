@@ -828,6 +828,119 @@ def search_logbook(
 
 
 @mcp.tool()
+def find_logbook_entries(
+    pattern: str,
+    project: Optional[str] = None,
+    field: str = "title",
+    regex: bool = False,
+    entry_type: Optional[str] = None,
+    full_body: bool = True,
+    limit: int = 50,
+) -> dict:
+    """Find logbook entries by substring or regex match on title or body.
+
+    More flexible than search_logbook (BM25): supports exact substring
+    matching and Python regex patterns. Returns full entries by default.
+
+    Args:
+        pattern:    String to search for (substring match by default).
+        project:    Optional project name. If omitted, searches all projects.
+        field:      "title" (default), "body", or "both".
+        regex:      If true, pattern is treated as a Python regex.
+        entry_type: Optional filter: "note" or "plan".
+        full_body:  If true (default), returns full body. If false, body_preview only.
+        limit:      Max entries to return (default: 50).
+
+    Returns:
+        {
+          "status": "ok" | "error",
+          "count": int,
+          "entries": [{id, project, title, body/body_preview, entry_type, created_at, edited_at}, ...],
+        }
+
+    Examples:
+        find_logbook_entries("GPQA Diamond")                   # title substring
+        find_logbook_entries("accuracy.*8[0-9]%", regex=True, field="body")  # regex in body
+        find_logbook_entries("sandbox", field="both", project="hle")
+    """
+    import re as _re
+
+    if field not in ("title", "body", "both"):
+        return {"status": "error", "error": "field must be 'title', 'body', or 'both'"}
+    if entry_type and entry_type not in ("note", "plan"):
+        return {"status": "error", "error": "entry_type must be 'note', 'plan', or omitted"}
+    if limit < 1:
+        return {"status": "error", "error": "limit must be >= 1"}
+
+    if regex:
+        try:
+            compiled = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as e:
+            return {"status": "error", "error": f"Invalid regex: {e}"}
+        test = lambda text: bool(compiled.search(text or ""))
+    else:
+        pat_lower = pattern.lower()
+        test = lambda text: pat_lower in (text or "").lower()
+
+    if project:
+        projects = [project]
+    else:
+        proj_data = _api_get("/api/projects")
+        if isinstance(proj_data, dict) and proj_data.get("status") == "error":
+            return proj_data
+        projects = [p.get("project") for p in proj_data if isinstance(p, dict) and p.get("project")]
+
+    results = []
+    for p in projects:
+        params = {"limit": "500", "sort": "edited_at"}
+        if entry_type:
+            params["type"] = entry_type
+        qs = urllib.parse.urlencode(params)
+        listed = _api_get(f"/api/logbook/{urllib.parse.quote(p)}/entries?{qs}")
+        if not isinstance(listed, list):
+            continue
+
+        for item in listed:
+            entry_id = item.get("id")
+            if entry_id is None:
+                continue
+            title = item.get("title", "")
+
+            title_match = test(title) if field in ("title", "both") else False
+
+            if field == "title" and not title_match:
+                continue
+
+            if field in ("body", "both") and not title_match:
+                full_entry = _api_get(f"/api/logbook/{urllib.parse.quote(p)}/entries/{entry_id}")
+                if not isinstance(full_entry, dict) or full_entry.get("status") == "error":
+                    continue
+                body_text = full_entry.get("body", "")
+                if not test(body_text):
+                    continue
+                results.append(full_entry)
+            elif full_body:
+                full_entry = _api_get(f"/api/logbook/{urllib.parse.quote(p)}/entries/{entry_id}")
+                if isinstance(full_entry, dict) and full_entry.get("status") != "error":
+                    results.append(full_entry)
+                else:
+                    results.append(item)
+            else:
+                results.append(item)
+
+            if len(results) >= limit:
+                break
+        if len(results) >= limit:
+            break
+
+    return {
+        "status": "ok",
+        "count": len(results),
+        "entries": results,
+    }
+
+
+@mcp.tool()
 def upload_logbook_image(project: str, image_path: str) -> dict:
     """Upload a local image or HTML file to a project's logbook store.
 

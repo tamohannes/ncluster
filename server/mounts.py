@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import subprocess
+import threading
+import time
 
 from .config import (
     CLUSTERS, MOUNT_MAP, MOUNT_REMOTE_MAP, MOUNT_SCRIPT_PATH,
@@ -416,3 +418,77 @@ def run_mount_script(action, cluster="all"):
         return True, out or f"{action} completed"
     except Exception as e:
         return False, str(e)
+
+
+# ── Mount health check ──────────────────────────────────────────────────────
+
+MOUNT_HEALTH_INTERVAL = 300  # check every 5 minutes
+
+
+def _test_mount_alive(mount_path, timeout_sec=4):
+    """Test if a FUSE mount is responsive by listing it in a subprocess with timeout."""
+    try:
+        proc = subprocess.run(
+            ["ls", mount_path],
+            capture_output=True, timeout=timeout_sec,
+        )
+        return proc.returncode == 0
+    except (subprocess.TimeoutExpired, Exception):
+        return False
+
+
+def _remount_cluster(cluster_name):
+    """Force-unmount stale FUSE and remount a cluster."""
+    mps = _proc_mount_points()
+    for r in MOUNT_MAP.get(cluster_name, []):
+        rp = _resolve(r)
+        if rp in mps:
+            subprocess.run(["fusermount", "-uz", rp],
+                           capture_output=True, timeout=10)
+    time.sleep(1)
+    ok, msg = run_mount_script("mount", cluster_name)
+    return ok, msg
+
+
+def mount_health_check():
+    """Check all mounted clusters and remount any stale ones."""
+    mps = _proc_mount_points()
+    checked = 0
+    remounted = 0
+    for cluster_name in list(CLUSTERS.keys()):
+        if cluster_name == "local":
+            continue
+        roots = MOUNT_MAP.get(cluster_name, [])
+        if not roots:
+            continue
+
+        first_root = _resolve(roots[0])
+        if first_root not in mps:
+            continue
+
+        checked += 1
+        if _test_mount_alive(first_root):
+            continue
+
+        log.warning("Stale mount detected for %s, remounting…", cluster_name)
+        ok, msg = _remount_cluster(cluster_name)
+        if ok:
+            log.info("Remounted %s: %s", cluster_name, msg)
+            remounted += 1
+        else:
+            log.warning("Remount failed for %s: %s", cluster_name, msg)
+
+    return checked, remounted
+
+
+def mount_health_loop():
+    """Background loop: periodically check mount health and auto-remount."""
+    time.sleep(60)
+    while True:
+        try:
+            checked, remounted = mount_health_check()
+            if remounted:
+                log.info("Mount health: checked %d, remounted %d", checked, remounted)
+        except Exception as e:
+            log.warning("Mount health check error: %s", e)
+        time.sleep(MOUNT_HEALTH_INTERVAL)
