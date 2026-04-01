@@ -110,18 +110,22 @@ unmount_cluster() {
   local cluster_base="${BASE}/${c}"
 
   # Unmount old-style single mount (migration from remote_root)
-  if mountpoint -q "$cluster_base" 2>/dev/null; then
+  # Use -uz (lazy) to handle stale/unreachable FUSE mounts after reboot.
+  if timeout 2 mountpoint -q "$cluster_base" 2>/dev/null; then
     echo "[${c}] unmounting old-style mount at ${cluster_base}"
-    fusermount -u "$cluster_base" 2>/dev/null || umount "$cluster_base" 2>/dev/null || true
+    fusermount -uz "$cluster_base" 2>/dev/null || umount -l "$cluster_base" 2>/dev/null || true
   fi
 
   # Unmount indexed submounts
   if [[ -d "$cluster_base" ]]; then
     for sub in "$cluster_base"/*/; do
       [[ -d "$sub" ]] || continue
-      if mountpoint -q "$sub"; then
+      if timeout 2 mountpoint -q "$sub" 2>/dev/null; then
         echo "[${c}] unmounting ${sub}"
-        fusermount -u "$sub" 2>/dev/null || umount "$sub" 2>/dev/null || true
+        fusermount -uz "$sub" 2>/dev/null || umount -l "$sub" 2>/dev/null || true
+      elif grep -qs " ${sub%/} fuse.sshfs" /proc/mounts 2>/dev/null; then
+        echo "[${c}] force-unmounting stale ${sub}"
+        fusermount -uz "$sub" 2>/dev/null || umount -l "$sub" 2>/dev/null || true
       fi
       rmdir "$sub" 2>/dev/null || true
     done

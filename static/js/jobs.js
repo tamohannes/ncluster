@@ -188,7 +188,7 @@ function navClick(event, type, label, project) {
 
 document.addEventListener('keydown', e => {
   if (typeof _recordingShortcutId !== 'undefined' && _recordingShortcutId) return;
-  if ((e.ctrlKey || e.metaKey) && e.key === 'r' && currentTab === 'live') {
+  if (matchesShortcut(e, 'refreshLive') && currentTab === 'live') {
     e.preventDefault();
     toast('Refreshing live data…');
     fetchAll();
@@ -313,6 +313,7 @@ function renderMountPanel(data) {
           ${mounted
             ? `<button class="icon-btn" onclick="unmountCluster('${name}')">unmount</button>`
             : `<button class="icon-btn" onclick="mountCluster('${name}')">mount</button>`}
+          <button class="icon-btn" onclick="remountCluster('${name}')">restart</button>
         </div>
       </div>`;
     }).join('');

@@ -131,7 +131,7 @@ function _renderSidebarList(entries) {
     const isPlan = e.entry_type === 'plan';
     const typeCls = isPlan ? ' lb-type-plan' : '';
     return `<div class="lb-sidebar-item${typeCls}" data-id="${e.id}" onclick="openLogbookEntry(${e.id})">
-      <div class="lb-sidebar-item-title">${title}</div>
+      <div class="lb-sidebar-item-title">${title} <span class="lb-sidebar-item-id">#${e.id}</span></div>
       <div class="lb-sidebar-item-date">${date}</div>
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
@@ -237,7 +237,7 @@ async function openLogbookEntry(entryId, opts = {}) {
           <button class="btn" onclick="editLogbookEntry(${entry.id})">edit</button>
           <button class="btn" onclick="deleteLogbookEntry(${entry.id})" style="color:var(--red)">delete</button>
         </div>
-        <h1 class="lb-detail-title">${title}</h1>
+        <h1 class="lb-detail-title">${title} <span class="lb-detail-id">#${entry.id}</span></h1>
         <div class="lb-detail-meta">
           <span>Created ${created}</span>
           ${entry.created_at !== entry.edited_at ? `<span>· Edited ${edited}</span>` : ''}
@@ -374,6 +374,7 @@ async function saveLogbookEntry() {
   const entry_type = typeSelect ? typeSelect.value : 'note';
   if (!title) { toast('Title is required', 'error'); return; }
 
+  const t = toastLoading(_lbEditingId ? 'Saving entry…' : 'Creating entry…');
   try {
     let res;
     if (_lbEditingId) {
@@ -391,36 +392,37 @@ async function saveLogbookEntry() {
     }
     const d = await res.json();
     if (d.status === 'ok') {
-      toast(_lbEditingId ? 'Entry updated' : 'Entry created');
+      t.done(_lbEditingId ? 'Entry updated' : 'Entry created');
       const openId = _lbEditingId || d.id;
       _lbEditingId = null;
       _invalidateMapCache(_lbProject);
       await _loadEntries(_lbProject);
       if (openId) openLogbookEntry(openId);
     } else {
-      toast(d.error || 'Failed', 'error');
+      t.done(d.error || 'Failed', 'error');
     }
   } catch (e) {
-    toast('Failed to save entry', 'error');
+    t.done('Failed to save entry', 'error');
   }
 }
 
 async function deleteLogbookEntry(entryId) {
   if (!_lbProject) return;
   if (!confirm('Delete this entry? This cannot be undone.')) return;
+  const t = toastLoading('Deleting entry…');
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`, { method: 'DELETE' });
     const d = await res.json();
     if (d.status === 'ok') {
-      toast('Entry deleted');
+      t.done('Entry deleted');
       _invalidateMapCache(_lbProject);
       _showMainEmpty();
       await _loadEntries(_lbProject);
     } else {
-      toast(d.error || 'Failed', 'error');
+      t.done(d.error || 'Failed', 'error');
     }
   } catch (e) {
-    toast('Failed to delete entry', 'error');
+    t.done('Failed to delete entry', 'error');
   }
 }
 

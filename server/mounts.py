@@ -1,5 +1,6 @@
 """Mount resolution, status, and path helpers."""
 
+import logging
 import os
 import re
 import subprocess
@@ -8,6 +9,28 @@ from .config import (
     CLUSTERS, MOUNT_MAP, MOUNT_REMOTE_MAP, MOUNT_SCRIPT_PATH,
     _cache_set, _dir_list_cache,
 )
+
+log = logging.getLogger(__name__)
+
+
+def _proc_mount_points():
+    """Read /proc/mounts and return a set of mounted paths (no filesystem stat).
+    Uses realpath to resolve symlinks so paths match regardless of symlink vs target."""
+    try:
+        with open("/proc/mounts", "r") as f:
+            return {line.split()[1] for line in f if len(line.split()) >= 2}
+    except Exception:
+        return set()
+
+
+def _resolve(path):
+    """Resolve a path using realpath so symlinks match /proc/mounts entries."""
+    return os.path.realpath(os.path.expanduser(path))
+
+
+def _is_mounted(path):
+    """Check if path is a mount point using /proc/mounts (never blocks on stale FUSE)."""
+    return _resolve(path) in _proc_mount_points()
 
 
 def _resolve_symlink_candidates(mount_root, remote_path, out, seen):
@@ -143,8 +166,8 @@ def cluster_mount_status(cluster_name):
     return {
         "cluster": cluster_name,
         "mounted": bool(active),
-        "root": active[0] if active else (os.path.abspath(os.path.expanduser(roots[0])) if roots else ""),
-        "roots": [os.path.abspath(os.path.expanduser(r)) for r in roots],
+        "root": active[0] if active else (_resolve(roots[0]) if roots else ""),
+        "roots": [_resolve(r) for r in roots],
         "active_roots": active,
     }
 
@@ -155,19 +178,21 @@ def all_mount_status():
 
 def mounted_root(cluster_name):
     """Return the first mounted root for a cluster, or empty string."""
+    mps = _proc_mount_points()
     for r in MOUNT_MAP.get(cluster_name, []):
-        p = os.path.abspath(os.path.expanduser(r))
-        if os.path.ismount(p):
+        p = _resolve(r)
+        if p in mps:
             return p
     return ""
 
 
 def mounted_roots(cluster_name):
     """Return all currently mounted roots for a cluster."""
+    mps = _proc_mount_points()
     out = []
     for r in MOUNT_MAP.get(cluster_name, []):
-        p = os.path.abspath(os.path.expanduser(r))
-        if os.path.ismount(p):
+        p = _resolve(r)
+        if p in mps:
             out.append(p)
     return out
 
@@ -182,9 +207,10 @@ def remote_path_from_mounted(cluster_name, local_path):
     remote_paths = MOUNT_REMOTE_MAP.get(cluster_name, [])
     lp = os.path.abspath(local_path)
 
+    mps = _proc_mount_points()
     for i, root in enumerate(roots):
-        rp = os.path.abspath(os.path.expanduser(root))
-        if not os.path.ismount(rp):
+        rp = _resolve(root)
+        if rp not in mps:
             continue
         try:
             rel = os.path.relpath(lp, rp)
@@ -351,9 +377,10 @@ def _resolve_log_dir_on_mount(cluster_name, mount_root, remote_log_dir):
     roots = MOUNT_MAP.get(cluster_name, [])
     remote_paths = MOUNT_REMOTE_MAP.get(cluster_name, [])
 
+    mps = _proc_mount_points()
     for i, root in enumerate(roots):
-        rp = os.path.abspath(os.path.expanduser(root))
-        if not os.path.ismount(rp):
+        rp = _resolve(root)
+        if rp not in mps:
             continue
         if i < len(remote_paths) and remote_paths[i]:
             remote_base = remote_paths[i].rstrip("/")

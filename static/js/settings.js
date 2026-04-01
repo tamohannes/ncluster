@@ -50,6 +50,7 @@ const SHORTCUT_DEFAULTS = {
   closeTab:      { label: 'Close tab',         key: 'w',   meta: true,  ctrl: false, shift: false },
   nextTab:       { label: 'Next tab',          key: ']',   meta: true,  ctrl: false, shift: false },
   prevTab:       { label: 'Previous tab',      key: '[',   meta: true,  ctrl: false, shift: false },
+  refreshLive:   { label: 'Refresh live data', key: 'r',   meta: true,  ctrl: false, shift: true  },
 };
 
 let _shortcuts = {};
@@ -444,17 +445,19 @@ async function clearCompleted(cluster) {
 // ── Cancel ──
 async function cancelJob(cluster, jobId) {
   if (!confirm(`Cancel job ${jobId} on ${cluster}?`)) return;
+  const t = toastLoading(`Cancelling ${jobId}…`);
   try {
     const res = await fetch(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' });
     const d = await res.json();
-    if (d.status === 'ok') { toast(`Cancelled ${jobId}`); refreshCluster(cluster); }
-    else toast(d.error, 'error');
-  } catch { toast('Cancel failed', 'error'); }
+    if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); refreshCluster(cluster); }
+    else t.done(d.error, 'error');
+  } catch { t.done('Cancel failed', 'error'); }
 }
 
 async function cancelGroup(cluster, jobIdsJson, groupName) {
   const jobIds = JSON.parse(jobIdsJson);
   if (!confirm(`Cancel ${jobIds.length} job${jobIds.length !== 1 ? 's' : ''} in "${groupName}" on ${cluster}?`)) return;
+  const t = toastLoading(`Cancelling ${jobIds.length} jobs…`);
   try {
     const res = await fetch(`/api/cancel_jobs/${cluster}`, {
       method: 'POST',
@@ -462,81 +465,128 @@ async function cancelGroup(cluster, jobIdsJson, groupName) {
       body: JSON.stringify({ job_ids: jobIds }),
     });
     const d = await res.json();
-    if (d.status === 'ok') { toast(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster); }
-    else if (d.status === 'partial') { toast(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster); }
-    else toast(d.error, 'error');
-  } catch { toast('Cancel group failed', 'error'); }
+    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster); }
+    else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster); }
+    else t.done(d.error, 'error');
+  } catch { t.done('Cancel group failed', 'error'); }
 }
 
 async function cancelAll(cluster) {
   if (!confirm(`Cancel ALL your jobs on ${cluster}?`)) return;
+  const t = toastLoading(`Cancelling all jobs on ${cluster}…`);
   try {
     const res = await fetch(`/api/cancel_all/${cluster}`, { method: 'POST' });
     const d = await res.json();
-    if (d.status === 'ok') { toast(`Cancelled all on ${cluster}`); refreshCluster(cluster); }
-    else toast(d.error, 'error');
-  } catch { toast('Cancel failed', 'error'); }
+    if (d.status === 'ok') { t.done(`Cancelled all on ${cluster}`); refreshCluster(cluster); }
+    else t.done(d.error, 'error');
+  } catch { t.done('Cancel failed', 'error'); }
+}
+
+// ── Fetch with timeout ──
+const MOUNT_TIMEOUT_MS = 60000;
+
+function _fetchTimeout(url, opts = {}, timeoutMs = MOUNT_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  return fetch(url, { ...opts, signal: ctrl.signal })
+    .finally(() => clearTimeout(timer));
 }
 
 // ── Mount controls ──
 async function mountCluster(cluster) {
+  const t = toastLoading(`Mounting ${cluster}…`);
   try {
-    const res = await fetch(`/api/mount/mount/${cluster}`, { method: 'POST' });
+    const res = await _fetchTimeout(`/api/mount/mount/${cluster}`, { method: 'POST' });
     const d = await res.json();
     if (d.status === 'ok') {
-      toast(`Mounted ${cluster}`);
-      await refreshCluster(cluster);
+      t.done(`Mounted ${cluster}`);
+      refreshCluster(cluster);
     } else {
-      toast(d.error || `Mount failed on ${cluster}`, 'error');
+      t.done(d.error || `Mount failed: ${cluster}`, 'error');
     }
-  } catch {
-    toast(`Mount failed on ${cluster}`, 'error');
+  } catch (e) {
+    t.done(e.name === 'AbortError' ? `Mount timed out: ${cluster}` : `Mount failed: ${cluster}`, 'error');
   }
+  renderMountPanel(allData);
 }
 
 async function unmountCluster(cluster) {
+  const t = toastLoading(`Unmounting ${cluster}…`);
   try {
-    const res = await fetch(`/api/mount/unmount/${cluster}`, { method: 'POST' });
+    const res = await _fetchTimeout(`/api/mount/unmount/${cluster}`, { method: 'POST' });
     const d = await res.json();
     if (d.status === 'ok') {
-      toast(`Unmounted ${cluster}`);
-      await refreshCluster(cluster);
+      t.done(`Unmounted ${cluster}`);
+      refreshCluster(cluster);
     } else {
-      toast(d.error || `Unmount failed on ${cluster}`, 'error');
+      t.done(d.error || `Unmount failed: ${cluster}`, 'error');
     }
-  } catch {
-    toast(`Unmount failed on ${cluster}`, 'error');
+  } catch (e) {
+    t.done(e.name === 'AbortError' ? `Unmount timed out: ${cluster}` : `Unmount failed: ${cluster}`, 'error');
   }
+  renderMountPanel(allData);
+}
+
+async function remountCluster(cluster) {
+  const t = toastLoading(`Restarting mount: ${cluster}…`);
+  try { await _fetchTimeout(`/api/mount/unmount/${cluster}`, { method: 'POST' }, 15000); } catch {}
+  try {
+    const res = await _fetchTimeout(`/api/mount/mount/${cluster}`, { method: 'POST' });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      t.done(`Remounted ${cluster}`);
+      refreshCluster(cluster);
+    } else {
+      t.done(d.error || `Remount failed: ${cluster}`, 'error');
+    }
+  } catch (e) {
+    t.done(e.name === 'AbortError' ? `Remount timed out: ${cluster}` : `Remount failed: ${cluster}`, 'error');
+  }
+  renderMountPanel(allData);
 }
 
 async function mountAll() {
-  try {
-    const res = await fetch('/api/mount/mount', { method: 'POST' });
-    const d = await res.json();
-    if (d.status === 'ok') {
-      toast('Mounted all clusters');
-      await fetchAll();
-    } else {
-      toast(d.error || 'Mount all failed', 'error');
+  const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
+  const t = toastLoading(`Mounting ${clusters.length} clusters…`);
+  let ok = 0, fail = 0;
+  const failed = [];
+  await Promise.allSettled(clusters.map(async c => {
+    try {
+      const res = await _fetchTimeout(`/api/mount/mount/${c}`, { method: 'POST' });
+      const d = await res.json();
+      if (d.status === 'ok') { ok++; } else { fail++; failed.push(c); }
+    } catch (e) {
+      fail++;
+      failed.push(e.name === 'AbortError' ? `${c} (timeout)` : c);
     }
-  } catch {
-    toast('Mount all failed', 'error');
-  }
+    t.update(`Mounting… ${ok + fail}/${clusters.length}`);
+  }));
+  if (fail === 0) t.done(`Mounted all ${ok} clusters`);
+  else t.done(`Mounted ${ok}/${clusters.length} — failed: ${failed.join(', ')}`, fail === clusters.length ? 'error' : 'ok');
+  fetchAll();
+  renderMountPanel(allData);
 }
 
 async function unmountAll() {
-  try {
-    const res = await fetch('/api/mount/unmount', { method: 'POST' });
-    const d = await res.json();
-    if (d.status === 'ok') {
-      toast('Unmounted all clusters');
-      await fetchAll();
-    } else {
-      toast(d.error || 'Unmount all failed', 'error');
+  const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
+  const t = toastLoading(`Unmounting ${clusters.length} clusters…`);
+  let ok = 0, fail = 0;
+  const failed = [];
+  await Promise.allSettled(clusters.map(async c => {
+    try {
+      const res = await _fetchTimeout(`/api/mount/unmount/${c}`, { method: 'POST' });
+      const d = await res.json();
+      if (d.status === 'ok') { ok++; } else { fail++; failed.push(c); }
+    } catch (e) {
+      fail++;
+      failed.push(e.name === 'AbortError' ? `${c} (timeout)` : c);
     }
-  } catch {
-    toast('Unmount all failed', 'error');
-  }
+    t.update(`Unmounting… ${ok + fail}/${clusters.length}`);
+  }));
+  if (fail === 0) t.done(`Unmounted all ${ok} clusters`);
+  else t.done(`Unmounted ${ok}/${clusters.length} — failed: ${failed.join(', ')}`, fail === clusters.length ? 'error' : 'ok');
+  fetchAll();
+  renderMountPanel(allData);
 }
 
 async function checkMountStatus(cluster) {
@@ -564,6 +614,22 @@ function toast(msg, type='ok') {
   el.textContent = msg;
   document.getElementById('toasts').appendChild(el);
   setTimeout(() => el.remove(), 3000);
+}
+
+function toastLoading(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast loading';
+  el.innerHTML = `<span class="toast-msg">${msg.replace(/</g,'&lt;')}</span><div class="toast-bar"><div class="toast-bar-fill"></div></div>`;
+  document.getElementById('toasts').appendChild(el);
+  return {
+    update(newMsg) { const s = el.querySelector('.toast-msg'); if (s) s.textContent = newMsg; },
+    done(finalMsg, type='ok') {
+      el.className = `toast ${type}`;
+      el.innerHTML = finalMsg.replace(/</g,'&lt;');
+      setTimeout(() => el.remove(), type === 'error' ? 6000 : 3000);
+    },
+    remove() { el.remove(); },
+  };
 }
 
 // ── Countdown ──
