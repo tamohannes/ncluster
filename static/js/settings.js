@@ -684,6 +684,8 @@ async function loadSettingsPanel() {
     document.getElementById('set-ssh-timeout').value = cfg.ssh_timeout || 8;
     document.getElementById('set-cache-fresh').value = cfg.cache_fresh_sec || 30;
     document.getElementById('set-stats-interval').value = cfg.stats_interval_sec || 1800;
+    document.getElementById('set-backup-interval').value = cfg.backup_interval_hours || 24;
+    document.getElementById('set-backup-max').value = cfg.backup_max_keep || 7;
 
     const inc = (cfg.local_process_filters || {}).include || [];
     const exc = (cfg.local_process_filters || {}).exclude || [];
@@ -909,11 +911,19 @@ async function saveAdvancedSettings() {
   const sshTimeout = parseInt(document.getElementById('set-ssh-timeout').value) || 8;
   const cacheFresh = parseInt(document.getElementById('set-cache-fresh').value) || 30;
   const statsInterval = parseInt(document.getElementById('set-stats-interval').value) || 1800;
+  const backupInterval = parseInt(document.getElementById('set-backup-interval').value) || 24;
+  const backupMax = parseInt(document.getElementById('set-backup-max').value) || 7;
   try {
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ssh_timeout: sshTimeout, cache_fresh_sec: cacheFresh, stats_interval_sec: statsInterval }),
+      body: JSON.stringify({
+        ssh_timeout: sshTimeout,
+        cache_fresh_sec: cacheFresh,
+        stats_interval_sec: statsInterval,
+        backup_interval_hours: backupInterval,
+        backup_max_keep: backupMax,
+      }),
     });
     const d = await res.json();
     if (d.status === 'ok') toast('Advanced settings saved');

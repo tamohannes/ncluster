@@ -117,7 +117,7 @@ class TestRemotePathFromMounted:
     def test_basic(self, monkeypatch):
         monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
         monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": ["/remote/base"]})
-        monkeypatch.setattr("os.path.ismount", lambda p: p == "/mnt/c1")
+        monkeypatch.setattr("server.mounts._proc_mount_points", lambda: {"/mnt/c1"})
         result = remote_path_from_mounted("c1", "/mnt/c1/data/file.txt")
         assert result == "/remote/base/data/file.txt"
 
@@ -125,7 +125,7 @@ class TestRemotePathFromMounted:
     def test_root_returns_base(self, monkeypatch):
         monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
         monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": ["/remote/base"]})
-        monkeypatch.setattr("os.path.ismount", lambda p: p == "/mnt/c1")
+        monkeypatch.setattr("server.mounts._proc_mount_points", lambda: {"/mnt/c1"})
         result = remote_path_from_mounted("c1", "/mnt/c1")
         assert result == "/remote/base"
 
@@ -133,7 +133,7 @@ class TestRemotePathFromMounted:
     def test_no_mount_returns_empty(self, monkeypatch):
         monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": ["/mnt/c1"]})
         monkeypatch.setattr("server.mounts.MOUNT_REMOTE_MAP", {"c1": []})
-        monkeypatch.setattr("os.path.ismount", lambda p: False)
+        monkeypatch.setattr("server.mounts._proc_mount_points", lambda: set())
         assert remote_path_from_mounted("c1", "/any/path") == ""
 
 

@@ -15,6 +15,8 @@ DB_PATH = os.path.join(PROJECT_ROOT, "data", "history.db")
 SSH_TIMEOUT = 8
 CACHE_FRESH_SEC = 30
 STATS_INTERVAL_SEC = 1800
+BACKUP_INTERVAL_HOURS = 24
+BACKUP_MAX_KEEP = 7
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "conf", "config.json")
 _CONFIG_EXAMPLE_PATH = os.path.join(PROJECT_ROOT, "conf", "config.example.json")
@@ -275,6 +277,7 @@ def _cache_set(store, key, value):
 def reload_config(new_cfg):
     """Hot-reload mutable globals from a new config dict. Writes to disk first."""
     global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME, PPPS
+    global BACKUP_INTERVAL_HOURS, BACKUP_MAX_KEEP
     global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
     global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
 
@@ -292,6 +295,8 @@ def reload_config(new_cfg):
     SSH_TIMEOUT = new_cfg.get("ssh_timeout", 8)
     CACHE_FRESH_SEC = new_cfg.get("cache_fresh_sec", 30)
     STATS_INTERVAL_SEC = new_cfg.get("stats_interval_sec", 1800)
+    BACKUP_INTERVAL_HOURS = new_cfg.get("backup_interval_hours", 24)
+    BACKUP_MAX_KEEP = new_cfg.get("backup_max_keep", 7)
     TEAM_NAME = new_cfg.get("team", "")
     PPPS = new_cfg.get("ppps", {})
 
@@ -334,6 +339,8 @@ def settings_response():
     cfg["ssh_timeout"] = SSH_TIMEOUT
     cfg["cache_fresh_sec"] = CACHE_FRESH_SEC
     cfg["stats_interval_sec"] = STATS_INTERVAL_SEC
+    cfg["backup_interval_hours"] = BACKUP_INTERVAL_HOURS
+    cfg["backup_max_keep"] = BACKUP_MAX_KEEP
     cfg["projects"] = dict(PROJECTS)
     cfg["team"] = TEAM_NAME
     cfg["ppps"] = dict(PPPS)

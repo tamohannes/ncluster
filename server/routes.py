@@ -870,6 +870,7 @@ def api_settings_post():
 
     merged = dict(_CONFIG)
     for key in ("port", "ssh_timeout", "cache_fresh_sec", "stats_interval_sec",
+                "backup_interval_hours", "backup_max_keep",
                 "log_search_bases", "nemo_run_bases", "mount_lustre_prefixes",
                 "local_process_filters"):
         if key in patch:

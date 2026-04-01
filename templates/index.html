@@ -399,7 +399,10 @@
           <label class="settings-row"><span>SSH timeout (sec)</span><input type="number" id="set-ssh-timeout" min="2" max="60" value="8" style="width:60px"></label>
           <label class="settings-row"><span>Cache freshness (sec)</span><input type="number" id="set-cache-fresh" min="5" max="600" value="30" style="width:60px"></label>
           <label class="settings-row"><span>GPU stats interval (sec)</span><input type="number" id="set-stats-interval" min="60" max="7200" value="1800" style="width:70px"></label>
-          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveAdvancedSettings()">save connection</button></div>
+          <div class="settings-sub-label" style="margin-top:14px">Database Backups</div>
+          <label class="settings-row"><span>Backup interval (hours)</span><input type="number" id="set-backup-interval" min="1" max="168" value="24" style="width:60px"></label>
+          <label class="settings-row"><span>Keep last N backups</span><input type="number" id="set-backup-max" min="1" max="90" value="7" style="width:60px"></label>
+          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveAdvancedSettings()">save</button></div>
           <div class="settings-sub-label" style="margin-top:16px">Display</div>
           <label class="settings-row"><span>History page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" style="width:60px" onchange="saveLocalSettings()"></label>

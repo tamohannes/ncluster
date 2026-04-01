@@ -10,7 +10,7 @@ Monitor, explore, and manage GPU jobs across HPC clusters from a single browser 
                   ┌─────────────────────────────────┐
                   │           Browser UI             │
                   │  Live Board · Explorer · History  │
-                  │  Projects · Settings              │
+                  │  Logbook · Clusters · Projects    │
                   └──────────────┬──────────────────┘
                                  │ HTTP
   ┌──────────┐    ┌──────────────▼──────────────────┐
@@ -35,9 +35,13 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 ### Live Board
 - Multi-cluster job board grouped by run name (active, idle, unreachable, local)
 - Slurm dependency chain detection with topological sorting
+- Persistent run grouping — completed jobs retain their dependency structure
 - Live progress tracking, crash detection (OOM, segfault, traceback)
 - Cluster availability tooltip with wait-time estimates, pending reason translation, and team fair-share priority
 - Board-pinned terminal jobs persist until dismissed
+- Background job dimming for long-running server processes (configurable suffixes)
+- Per-GPU utilization and memory charts, CPU utilization, RSS memory tracking
+- Configurable GPU stats snapshot interval
 
 ### Log Explorer
 - Mount-first reads with SSH fallback to data-copier nodes
@@ -45,19 +49,85 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Syntax-aware rendering for `.json`, `.jsonl`, `.jsonl-async`, `.md`
 - Full log pagination, JSONL record viewer, clipboard copy
 
-### History and Projects
+### History
 - SQLite-backed job history with dependency-aware grouping
+- Text search, state filters (completed/failed/cancelled/timeout/running/pending)
+- Paginated view with configurable page size
+
+### Projects
 - Auto-detected projects from job name prefixes
 - Per-project detail pages with live jobs, stats, and search
-- Per-project logbooks with structured entries, markdown bodies, and BM25 full-text search
+- Customizable project colors and emojis
+
+### Logbook
+- Per-project structured entries with BM25 full-text search (FTS5 with porter stemming)
+- Two entry types: **note** (experiments, debugging, findings) and **plan** (implementation/research plans)
+- Full markdown support: tables, code blocks, blockquotes, links
+- `@run-name` references to link to job logs
+- `#id` cross-references between entries (rendered as clickable links with title resolution)
+- Drag/drop and paste image uploads
+- HTML file embeds for interactive figures (plotly, bokeh, matplotlib exports)
+- `@` autocomplete for run names in the editor
+- Entry IDs displayed in sidebar and detail view for agent communication
+
+### Logbook Map
+- Visual map of entry relationships built from `#id` cross-references
+- **Tree view**: hierarchical layout with connector lines, sorted by edit time
+- **Graph view**: static DAG layout with D3.js, curved directed edges, zoom/pan/drag
+- Entry-centric graph: open from any entry's detail page with configurable neighbor depth (1–5 hops or all)
+- Edge direction filter: show outgoing, incoming, or both connections
+- Focus controls shared between tree and graph views
+- Color-coded nodes: neutral for notes, red for plans (matching sidebar)
+
+### Cluster Tools
+- **Cluster Availability**: Cross-cluster GPU utilization from the Science dashboard
+- **Partitions**: Detailed partition data with priority tiers, preemption, queue depth, idle nodes
+- **Submit Advisor**: Recommend best cluster + partition for a job based on node count, time limit, and queue state
+- **Mounts**: SSHFS mount/unmount/remount per cluster; mount-all in parallel with progress; stale mount detection via `/proc/mounts` (never blocks on dead FUSE)
+- **Storage Quotas**: Lustre filesystem and PPP project quotas
+
+### Settings
+- **Profile**: Avatar, username, team name, PPP quota list
+- **General**: Theme (system/light/dark), auto-refresh toggle, refresh interval
+- **Shortcuts**: Configurable keyboard bindings (toggle sidebar, spotlight, close/next/prev tab, refresh live data)
+- **Clusters**: Add/edit/remove clusters, mount controls with restart button
+- **Projects**: Prefix, color, and emoji customization
+- **Advanced**: SSH timeout, cache freshness, GPU stats interval, database backup interval and retention, history page size, JSONL record limits, background run suffixes, local process include/exclude filters
+
+### UI
+- Multi-tab interface with persistent tab state across sessions
+- Collapsible sidebar with draggable width
+- Spotlight search (Cmd+P): search across projects, logbook entries, and job history
+- Loading toasts with animated progress bar for all async actions
+- Theme-aware color system with CSS custom properties
+- Keyboard shortcuts: Cmd+Shift+R (refresh live), Cmd+S (toggle sidebar), Cmd+P (spotlight), Cmd+W (close tab), Cmd+]/[ (cycle tabs)
+- Charts: per-GPU utilization/memory line charts, CPU utilization, RSS memory (Chart.js)
+- D3.js for interactive logbook graph visualization
+
+### Database Backups
+- Automatic daily backups using SQLite online backup API (safe during writes)
+- Configurable backup interval (default: 24 hours) and retention (default: 7 backups)
+- Stored in `data/backups/history-YYYY-MM-DD.db`
+- Old backups automatically cleaned up
 
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 30+ tools: job listing, log reading, stats, history, run metadata, script execution, cancellation, logbook CRUD + BM25 search, cluster availability, storage quotas, partition analysis, submission recommendations
-- `recommend_submission()` — AI agent can ask "where should I submit this job?" and get ranked cluster+partition suggestions
-- `get_partitions()` — detailed partition data (priority tiers, preemption, queue depth, idle nodes)
+- 31 tools covering every aspect of the dashboard:
+
+| Category | Tools |
+|----------|-------|
+| Jobs | `list_jobs`, `get_job_log`, `get_job_stats`, `list_log_files` |
+| History | `get_history`, `list_projects`, `get_project_jobs` |
+| Actions | `cancel_job`, `cancel_jobs`, `cancel_all_cluster_jobs`, `cancel_project_jobs` |
+| Runs | `get_run_info`, `run_script`, `cleanup_history` |
+| Clusters | `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
+| Mounts | `get_mounts`, `mount_cluster`, `clear_failed`, `clear_completed` |
+| Logbook | `list_logbook_entries`, `read_logbook_entry`, `bulk_read_logbooks`, `create_logbook_entry`, `update_logbook_entry`, `delete_logbook_entry`, `search_logbook`, `upload_logbook_image` |
+
+- `recommend_submission()` — agent asks "where should I submit this job?" and gets ranked cluster+partition suggestions
+- `bulk_read_logbooks()` — fetch all entries across projects in one call
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
-- `cancel_project_jobs()` / `cancel_all_cluster_jobs()` — bulk cancellation
+- Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
 - No SSH, no DB access — wraps the Flask API cleanly
 
 ### Performance
@@ -65,6 +135,7 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Three-lane SSH connection pool with data-copier node routing
 - Per-cluster caching with configurable TTL
 - Prefetch warming for running jobs (log index, content, stats)
+- Mount status detection via `/proc/mounts` (no filesystem stat, never blocks on stale FUSE)
 - No background polling — login nodes are not contacted when nobody is looking
 
 ## Quick Start
@@ -125,7 +196,9 @@ Primary configuration file. Editable from the UI Settings panel or directly.
       "host": "login-node.example.com",
       "data_host": "dc-node.example.com",
       "port": 22,
-      "gpu_type": "H100"
+      "gpu_type": "H100",
+      "gpus_per_node": 8,
+      "mount_paths": ["/lustre/.../users/$USER"]
     }
   },
   "log_search_bases": ["/lustre/.../users/$USER"],
@@ -136,7 +209,10 @@ Primary configuration file. Editable from the UI Settings panel or directly.
     "exclude": ["cursor", "jupyter"]
   },
   "ssh_timeout": 8,
-  "cache_fresh_sec": 30
+  "cache_fresh_sec": 30,
+  "stats_interval_sec": 1800,
+  "backup_interval_hours": 24,
+  "backup_max_keep": 7
 }
 ```
 
@@ -179,6 +255,7 @@ Dependency chain auto-detection from run name suffixes:
 | GET | `/api/run_info/<cluster>/<root_job_id>` | Run metadata (batch script, env, conda/pip, scontrol) |
 | GET | `/api/history?cluster=&limit=&project=` | Job history, filterable by cluster and project |
 | GET | `/api/projects` | All known projects with job counts |
+| GET | `/api/spotlight?q=` | Search across projects, logbook, and history |
 
 ### Logs & Files
 
@@ -195,7 +272,7 @@ Dependency chain auto-detection from run name suffixes:
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats (GPU/CPU/memory) |
+| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats (GPU/CPU/memory) with time series |
 | POST | `/api/prefetch_visible` | Prefetch log index, content, and stats for visible jobs |
 | POST | `/api/progress` | Batch-fetch progress for multiple jobs |
 
@@ -208,6 +285,7 @@ Dependency chain auto-detection from run name suffixes:
 | POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
 | POST | `/api/run_script/<cluster>` | Run script on cluster via SSH |
 | POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
+| POST | `/api/clear_cancelled/<cluster>` | Dismiss cancelled pins |
 | POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
 | POST | `/api/cleanup` | Delete old history records |
 
@@ -219,13 +297,15 @@ Dependency chain auto-detection from run name suffixes:
 | GET | `/api/partitions/<cluster>` | Partition data for one cluster |
 | GET | `/api/partition_summary` | Compact cross-cluster partition overview |
 | POST | `/api/recommend` | Recommend best cluster+partition for a job (JSON body) |
+| GET | `/api/storage_quota/<cluster>` | Lustre filesystem and PPP quotas |
 
 ### Mounts & Settings
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/mounts` | Mount status |
+| GET | `/api/mounts` | Mount status for all clusters |
 | POST | `/api/mount/<action>/<cluster>` | Mount/unmount one cluster |
+| POST | `/api/mount/<action>` | Mount/unmount all clusters |
 | GET | `/api/settings` | Current configuration |
 | POST | `/api/settings` | Update configuration (hot-reload) |
 
@@ -233,12 +313,15 @@ Dependency chain auto-detection from run name suffixes:
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/logbook/<project>/entries?q=&sort=&limit=` | List or BM25-search entries |
-| POST | `/api/logbook/<project>/entries` | Create entry `{title, body}` |
+| GET | `/api/logbook/<project>/entries?q=&sort=&limit=&type=` | List or BM25-search entries |
+| POST | `/api/logbook/<project>/entries` | Create entry `{title, body, entry_type}` |
 | GET | `/api/logbook/<project>/entries/<id>` | Read single entry |
-| PUT | `/api/logbook/<project>/entries/<id>` | Update entry `{title?, body?}` |
+| PUT | `/api/logbook/<project>/entries/<id>` | Update entry `{title?, body?, entry_type?}` |
 | DELETE | `/api/logbook/<project>/entries/<id>` | Delete entry |
 | GET | `/api/logbook/search?q=&project=&from=&to=` | Cross-project BM25 search |
+| POST | `/api/logbook/<project>/images` | Upload image or HTML file |
+| GET | `/api/logbook/<project>/images/<filename>` | Serve uploaded file |
+| GET | `/api/logbook/<project>/map` | Map data (nodes + links from #id refs) |
 
 ## Systemd (User Service)
 
@@ -253,6 +336,8 @@ WorkingDirectory=%h/ncluster
 ExecStart=%h/miniconda3/bin/python %h/ncluster/app.py
 Restart=always
 RestartSec=5
+TimeoutStopSec=10
+KillMode=mixed
 
 [Install]
 WantedBy=default.target
@@ -265,7 +350,7 @@ systemctl --user enable --now ncluster.service
 
 ## Testing
 
-348 tests across unit, integration, MCP, frontend, and live layers.
+442 tests across unit, integration, and MCP layers.
 
 ```bash
 pip install pytest pytest-cov
@@ -276,21 +361,19 @@ pytest -m mcp                # MCP tool contracts
 pytest -m live               # real cluster tests (requires running app)
 ```
 
-| Layer | Directory | Count | What it covers |
-|-------|-----------|-------|----------------|
-| Unit | `tests/unit/` | 133 | Parsers, DB ops, cache, mount resolution, config |
-| Integration | `tests/integration/` | 69 | All Flask routes via test client |
-| MCP | `tests/mcp/` | 38 | Tool contracts, transport errors, edge cases |
-| Frontend | `tests/frontend/` | -- | JS utils, log renderers (Vitest) |
-| E2E | `tests/e2e/` | -- | Dashboard, explorer, settings (Playwright) |
-| Live | `tests/live/` | 19 | Real SSH/Slurm reads + job cancel |
+| Layer | Directory | What it covers |
+|-------|-----------|----------------|
+| Unit | `tests/unit/` | Parsers, DB ops, cache, mount resolution, config, entry refs |
+| Integration | `tests/integration/` | All Flask routes via test client, logbook map, storage quota |
+| MCP | `tests/mcp/` | Tool contracts, bulk read, transport errors, edge cases |
+| Live | `tests/live/` | Real SSH/Slurm reads + job cancel |
 
 CI runs without `config.json` — falls back to `config.example.json` with a mock cluster.
 
 ## Built With
 
-- **Backend**: Python, Flask, Paramiko, SQLite
-- **Frontend**: Vanilla JS, CSS custom properties (no build step)
+- **Backend**: Python, Flask, Paramiko, SQLite (FTS5)
+- **Frontend**: Vanilla JS, CSS custom properties, Chart.js, D3.js (no build step)
 - **Agent API**: MCP (Model Context Protocol)
 - **Infrastructure**: SSH connection pooling, SSHFS mounts, systemd
 
