@@ -26,6 +26,12 @@ function _saveProjectSearch(projectName, value) {
   } catch (_) {}
 }
 
+function _highlightProjectBtn(projectName) {
+  document.querySelectorAll('.nav-project-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.project === projectName);
+  });
+}
+
 async function loadProjectButtons() {
   const el = document.getElementById('nav-project-grid');
   if (!el) return;
@@ -40,7 +46,7 @@ async function loadProjectButtons() {
       const emoji = p.emoji || '';
       const rawColor = p.color || '';
       const color = rawColor ? (_isDarkTheme() ? darkenColor(rawColor, 0.6) : rawColor) : 'var(--surface)';
-      return `<button class="nav-project-btn" style="border-color:${color}" onclick="navClick(event,'project','${p.project}','${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
+      return `<button class="nav-project-btn" data-project="${p.project}" style="--proj-color:${color}" onclick="navClick(event,'project','${p.project}','${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
     }).join('');
   } catch (_) {}
 }
@@ -59,6 +65,7 @@ async function openProject(projectName, fromTab) {
     _renderAppTabs();
     _persistTabs();
   }
+  _highlightProjectBtn(projectName);
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';
   document.getElementById('project-detail-title').textContent = `${emoji ? emoji + ' ' : ''}${projectName}`;
@@ -89,7 +96,7 @@ async function _fetchProjectData() {
   // Fetch live jobs and history in parallel
   const [liveRes, histRes] = await Promise.all([
     fetch('/api/jobs').then(r => r.json()).catch(() => ({})),
-    fetch(`/api/history?project=${encodeURIComponent(name)}&limit=500`).then(r => r.json()).catch(() => []),
+    fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []),
   ]);
 
   // Extract live + pinned jobs for this project from the board.

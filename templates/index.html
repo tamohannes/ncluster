@@ -23,6 +23,7 @@
     <div class="topbar-sep"></div>
     <div class="topbar-title"><img class="topbar-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="n" width="20" height="20">cluster</div>
   </div>
+  <div class="topbar-sep"></div>
   <div class="topbar-tabs" id="topbar-tabs"></div>
   <div class="topbar-right">
     <span class="topbar-stat" id="topbar-stat"></span>
@@ -31,10 +32,10 @@
 <div class="app-shell" id="app-shell">
   <aside class="side-nav" id="side-nav">
     <div class="nav-tabs-wrap">
-      <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')">Live</button>
-      <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','History')">History</button>
-      <button class="nav-tab" id="tab-logbook" onclick="navClick(event,'logbook','Logbook')">Logbook</button>
-      <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Clusters')">Clusters</button>
+      <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')"><span class="nav-tab-icon">⚡</span> Live</button>
+      <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','History')"><span class="nav-tab-icon">📋</span> History</button>
+      <button class="nav-tab" id="tab-logbook" onclick="navClick(event,'logbook','Logbook')"><span class="nav-tab-icon">📓</span> Logbook</button>
+      <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Clusters')"><span class="nav-tab-icon">🖥</span> Clusters</button>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Projects</div>

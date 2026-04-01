@@ -6,7 +6,7 @@ let histGroups = [];
 async function loadHistory() {
   const cluster = document.getElementById('hist-cluster').value;
   try {
-    const res = await fetch(`/api/history?cluster=${cluster}&limit=500`);
+    const res = await fetch(`/api/history?cluster=${cluster}&limit=10000`);
     historyData = await res.json();
     histPage = 0;
     _buildHistGroups(historyData);

@@ -20,6 +20,9 @@ function _activateView(tab) {
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
   document.getElementById('tab-logbook').classList.toggle('active', tab === 'logbook');
   document.getElementById('tab-clusters').classList.toggle('active', tab === 'clusters');
+  if (tab !== 'project') {
+    document.querySelectorAll('.nav-project-btn').forEach(b => b.classList.remove('active'));
+  }
   if (tab === 'history') loadHistory();
   if (tab === 'logbook') initLogbookPage();
   if (tab === 'clusters') { if (!_partitionData) fetchPartitions().then(() => _renderAvailTable()); else _renderAvailTable(); }
