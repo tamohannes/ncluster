@@ -1,8 +1,14 @@
-# ncluster
+<p align="center">
+  <img src="docs/icon.png" width="80" alt="ncluster logo">
+</p>
 
-Multi-cluster Slurm dashboard with AI agent integration via MCP.
+<h1 align="center">ncluster</h1>
 
-Monitor, explore, and manage GPU jobs across HPC clusters from a single browser tab — or let your AI coding agent do it through the built-in MCP server.
+<p align="center">
+  Multi-cluster Slurm dashboard with AI agent integration via MCP.<br>
+  Monitor, explore, and manage GPU jobs across HPC clusters from a single browser tab —<br>
+  or let your AI coding agent do it through the built-in MCP server.
+</p>
 
 ## Architecture
 
