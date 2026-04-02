@@ -231,81 +231,6 @@ def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
 
 
 @mcp.tool()
-def cancel_all_cluster_jobs(cluster: str) -> dict:
-    """Cancel ALL of your running and pending jobs on a cluster.
-
-    Runs `scancel -u $USER` on the cluster. This is very destructive —
-    it kills every job you own on that cluster, not just jobs from one
-    project. Only use when the user explicitly asks to cancel everything
-    on a cluster.
-
-    Does not work for the 'local' cluster.
-
-    Returns {"status": "ok"} on success.
-    """
-    return _api_post(f"/api/cancel_all/{urllib.parse.quote(cluster)}")
-
-
-@mcp.tool()
-def cancel_project_jobs(project: str, cluster: Optional[str] = None) -> dict:
-    """Cancel all running and pending jobs belonging to a project.
-
-    Fetches live jobs across all clusters (or a specific cluster),
-    filters to those matching the project, and cancels them in batch.
-    Pinned terminal jobs (already finished) are skipped.
-
-    This is destructive — only use when the user explicitly asks to
-    cancel all jobs for a project.
-
-    Args:
-        project:  Project name (e.g. "my-project", "eval-suite").
-        cluster:  Optional — restrict to a single cluster.
-
-    Returns a summary with cancelled count per cluster and any errors.
-    """
-    data = _api_get("/api/jobs")
-    if isinstance(data, dict) and data.get("status") == "error":
-        return {"status": "error", "error": data.get("error", "Failed to fetch jobs")}
-
-    to_cancel: dict[str, list[str]] = {}
-    for cname, cdata in data.items():
-        if cluster and cname != cluster:
-            continue
-        if not isinstance(cdata, dict) or cdata.get("status") == "error":
-            continue
-        for j in cdata.get("jobs", []):
-            if j.get("_pinned"):
-                continue
-            st = (j.get("state") or "").upper()
-            if st not in ("RUNNING", "COMPLETING", "PENDING"):
-                continue
-            if j.get("project") == project:
-                to_cancel.setdefault(cname, []).append(str(j["jobid"]))
-
-    if not to_cancel:
-        return {"status": "ok", "cancelled": 0, "detail": f"No active jobs found for project '{project}'."}
-
-    results = {}
-    total = 0
-    errors = []
-    for cname, ids in to_cancel.items():
-        resp = _api_post_json(
-            f"/api/cancel_jobs/{urllib.parse.quote(cname)}",
-            {"job_ids": ids},
-        )
-        if resp.get("status") == "ok":
-            results[cname] = len(ids)
-            total += len(ids)
-        else:
-            errors.append(f"{cname}: {resp.get('error', 'unknown')}")
-
-    out: dict = {"status": "ok", "cancelled": total, "per_cluster": results}
-    if errors:
-        out["errors"] = errors
-    return out
-
-
-@mcp.tool()
 def cleanup_history(days: int = 30, dry_run: bool = False) -> dict:
     """Delete history records older than N days and remove their local log files.
 
@@ -986,6 +911,169 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
         return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+def get_team_gpu_status(cluster: Optional[str] = None) -> dict:
+    """Get your team's GPU usage, weekly allocations, and per-member breakdown.
+
+    Combines three data sources:
+    1. Weekly GPU allocations (set in Settings > Profile) — the informal
+       quota your manager communicates (e.g., "you get 1000 GPUs on DFW").
+    2. Live team usage from Slurm (squeue by account) — who on your team
+       is actually using how many GPUs right now.
+    3. Science dashboard team allocation — the formal cluster-level alloc.
+
+    Use this to answer questions like:
+    - "Why are my jobs pending?" → teammate using all the quota
+    - "How much of our allocation is free?" → alloc - running
+    - "Who is using our GPUs?" → per-user breakdown
+
+    Args:
+        cluster: Optional cluster name. If omitted, returns all clusters.
+
+    Returns:
+        {
+          status: "ok",
+          clusters: {
+            "<cluster>": {
+              weekly_alloc_gpus: 1000,    # from Settings (0 if not set)
+              running_gpus: 720,          # team total from Slurm
+              pending_gpus: 128,          # team total pending
+              free_gpus: 280,             # weekly_alloc - running (if alloc set)
+              account: "llmservice_...",  # auto-detected Slurm account
+              users: {                    # per-member breakdown
+                "alice": {running_gpus: 512, pending_gpus: 0},
+                "bob": {running_gpus: 208, pending_gpus: 128},
+              }
+            }
+          }
+        }
+    """
+    settings = _api_get("/api/settings")
+    allocs = settings.get("team_gpu_allocations", {}) if isinstance(settings, dict) else {}
+
+    progress_payload = {"jobs": []}
+    if cluster:
+        progress_payload["jobs"] = [{"cluster": cluster, "job_id": "0"}]
+    else:
+        for c in _api_get("/api/jobs") or {}:
+            if c != "local":
+                progress_payload["jobs"].append({"cluster": c, "job_id": "0"})
+
+    progress = _api_post_json("/api/progress", progress_payload)
+    team_usage = progress.get("team_usage", {}) if isinstance(progress, dict) else {}
+
+    clusters_out = {}
+    target_clusters = [cluster] if cluster else list(set(list(allocs.keys()) + list(team_usage.keys())))
+
+    for c in target_clusters:
+        if c == "local":
+            continue
+        tu = team_usage.get(c, {})
+        weekly = allocs.get(c, 0)
+        running = tu.get("total_running_gpus", 0)
+        pending = tu.get("total_pending_gpus", 0)
+        clusters_out[c] = {
+            "weekly_alloc_gpus": weekly,
+            "running_gpus": running,
+            "pending_gpus": pending,
+            "free_gpus": max(0, weekly - running) if weekly else None,
+            "account": tu.get("account", ""),
+            "users": tu.get("users", {}),
+        }
+
+    return {"status": "ok", "clusters": clusters_out}
+
+
+@mcp.tool()
+def get_cluster_status(cluster: Optional[str] = None) -> dict:
+    """Get a unified snapshot of cluster health, capacity, and team position.
+
+    Combines partition data, utilization, team usage, and weekly allocations
+    into a single response. Use this before submitting jobs to understand
+    where your jobs will start fastest.
+
+    Args:
+        cluster: Optional cluster name. If omitted, returns all clusters.
+
+    Returns per cluster:
+        - gpu_type, total_nodes, running_nodes, idle_nodes, pending_jobs
+        - team: weekly_alloc, running_gpus, pending_gpus, free_gpus, status
+        - top_partition: name, idle_nodes, priority_tier, est_wait
+        - recommendation: score, tip (from the submit advisor)
+    """
+    result = {}
+
+    avail = _api_get("/api/partition_summary")
+    if isinstance(avail, dict) and avail.get("status") == "error":
+        avail = {}
+
+    team_data = get_team_gpu_status(cluster)
+    team_clusters = team_data.get("clusters", {}) if isinstance(team_data, dict) else {}
+
+    settings = _api_get("/api/settings")
+    allocs = settings.get("team_gpu_allocations", {}) if isinstance(settings, dict) else {}
+
+    clusters_to_check = [cluster] if cluster else [
+        c for c in (avail if isinstance(avail, dict) else {}) if c not in ("status",)
+    ]
+
+    for c in clusters_to_check:
+        cdata = avail.get(c, {}) if isinstance(avail, dict) else {}
+        if not isinstance(cdata, dict):
+            continue
+
+        parts = cdata.get("partitions", [])
+        gpu_parts = [p for p in parts if p.get("gpus_per_node", 0) > 0]
+        best = sorted(gpu_parts, key=lambda p: (-p.get("idle_nodes", 0), -p.get("priority_tier", 0)))
+
+        tc = team_clusters.get(c, {})
+        weekly = allocs.get(c, 0)
+        running = tc.get("running_gpus", 0)
+        free = tc.get("free_gpus")
+
+        team_status = "unknown"
+        if weekly > 0:
+            ratio = running / weekly
+            if ratio >= 1.0:
+                team_status = "over_quota"
+            elif ratio >= 0.7:
+                team_status = "near_quota"
+            else:
+                team_status = "under_quota"
+
+        entry = {
+            "gpu_type": cdata.get("gpu_type", ""),
+            "total_nodes": cdata.get("total_nodes", 0),
+            "idle_nodes": cdata.get("idle_nodes", 0),
+            "pending_jobs": cdata.get("pending_jobs", 0),
+            "team": {
+                "weekly_alloc": weekly,
+                "running_gpus": running,
+                "pending_gpus": tc.get("pending_gpus", 0),
+                "free_gpus": free,
+                "status": team_status,
+                "top_users": sorted(
+                    [{"user": u, **d} for u, d in tc.get("users", {}).items()],
+                    key=lambda x: -x.get("running_gpus", 0),
+                )[:5],
+            },
+        }
+
+        if best:
+            b = best[0]
+            entry["top_partition"] = {
+                "name": b.get("name", ""),
+                "idle_nodes": b.get("idle_nodes", 0),
+                "priority_tier": b.get("priority_tier", 0),
+                "est_wait": b.get("est_wait", ""),
+                "est_wait_cls": b.get("est_wait_cls", ""),
+            }
+
+        result[c] = entry
+
+    return {"status": "ok", "clusters": result}
 
 
 # ── resources ────────────────────────────────────────────────────────────────

@@ -202,6 +202,18 @@
           <div class="clusters-section" style="margin-top:24px">
             <div class="clusters-section-head">
               <div>
+                <div class="clusters-section-title">Team GPU Status</div>
+                <div class="clusters-section-sub">Your team's GPU usage vs weekly allocations across clusters</div>
+              </div>
+              <button class="btn" onclick="refreshTeamGpuStatus()" style="margin-left:auto">↻ refresh</button>
+            </div>
+            <div id="team-gpu-body">
+              <div class="no-jobs">Loading team GPU data...</div>
+            </div>
+          </div>
+          <div class="clusters-section" style="margin-top:24px">
+            <div class="clusters-section-head">
+              <div>
                 <div class="clusters-section-title">Cluster Availability</div>
                 <div class="clusters-section-sub">Partition wait times and idle GPUs across all clusters</div>
               </div>
@@ -348,7 +360,11 @@
 
         <!-- Clusters + Mounts -->
         <div class="settings-section" id="sec-clusters">
-          <div class="settings-sub-label">Cluster Configuration</div>
+          <div class="settings-sub-label">Weekly GPU Allocations</div>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:6px">Your team's weekly GPU allocation per cluster. Update when your manager sends new numbers.</div>
+          <div id="gpu-alloc-editor"></div>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveGpuAllocations()">save allocations</button></div>
+          <div class="settings-sub-label" style="margin-top:16px">Cluster Configuration</div>
           <div id="cluster-editor" style="max-height:40vh;overflow-y:auto"></div>
           <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:14px">
             <button class="btn" onclick="addClusterRow()">+ add cluster</button>

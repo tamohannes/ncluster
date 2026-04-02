@@ -22,23 +22,6 @@ class TestApiCancel:
         assert data["status"] == "error"
 
 
-@pytest.mark.integration
-class TestApiCancelAll:
-    def test_unknown_cluster_404(self, client, mock_ssh):
-        resp = client.post("/api/cancel_all/nonexistent")
-        assert resp.status_code == 404
-
-    def test_local_not_supported(self, client, mock_ssh):
-        resp = client.post("/api/cancel_all/local")
-        data = resp.get_json()
-        assert data["status"] == "error"
-        assert "Not supported" in data["error"]
-
-    def test_remote_cancel_all(self, client, mock_ssh, mock_cluster):
-        mock_ssh.set(mock_cluster, "scancel", ("", ""))
-        resp = client.post(f"/api/cancel_all/{mock_cluster}")
-        assert resp.get_json()["status"] == "ok"
-
 
 @pytest.mark.integration
 class TestApiStats:

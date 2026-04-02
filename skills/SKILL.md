@@ -49,9 +49,7 @@ All cluster interactions MUST go through the ncluster MCP server. Do NOT write a
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `cancel_job(cluster, job_id)` | Cancel a single job (destructive, ask first) | `cancel_job("my-cluster", "12345")` |
-| `cancel_jobs(cluster, job_ids)` | Cancel multiple jobs at once | `cancel_jobs("my-cluster", ["123","456"])` |
-| `cancel_project_jobs(project, cluster?)` | Cancel all jobs for a project | `cancel_project_jobs("my-project")` |
-| `cancel_all_cluster_jobs(cluster)` | Cancel ALL your jobs on a cluster (very destructive) | `cancel_all_cluster_jobs("my-cluster")` |
+| `cancel_jobs(cluster, job_ids)` | Cancel multiple jobs by ID | `cancel_jobs("my-cluster", ["123","456"])` |
 | `cleanup_history(days, dry_run?)` | Delete old history records + local logs | `cleanup_history(30, dry_run=True)` |
 
 ### Mounts & Board

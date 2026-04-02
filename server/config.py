@@ -35,6 +35,7 @@ else:
 
 APP_PORT = _CONFIG.get("port", 7272)
 TEAM_NAME = _CONFIG.get("team", "")
+TEAM_GPU_ALLOC = _CONFIG.get("team_gpu_allocations", {})
 PPPS = _CONFIG.get("ppps", {})
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])
 NEMO_RUN_BASES = _CONFIG.get("nemo_run_bases", [])
@@ -53,6 +54,7 @@ for _name, _cfg in _CONFIG.get("clusters", {}).items():
         "port": _cfg.get("port", 22),
         "gpu_type": _cfg.get("gpu_type", ""),
         "gpus_per_node": _cfg.get("gpus_per_node", 0),
+        "account": _cfg.get("account", ""),
     }
 CLUSTERS["local"] = {
     "host": None, "data_host": "", "user": None, "key": None,
@@ -147,6 +149,7 @@ _progress_cache = {}
 _progress_source_cache = {}
 _crash_cache = {}
 _est_start_cache = {}
+_team_usage_cache = {}
 _prefetch_last = {}
 LOG_INDEX_TTL_SEC = 120
 LOG_CONTENT_TTL_SEC = 45
@@ -155,6 +158,7 @@ DIR_LIST_TTL_SEC = 20
 PROGRESS_TTL_SEC = 60
 CRASH_TTL_SEC = 60
 EST_START_TTL_SEC = 120
+TEAM_USAGE_TTL_SEC = 120
 PREFETCH_MIN_GAP_SEC = 120
 
 TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL"}
@@ -240,9 +244,35 @@ def get_project_emoji(project_name):
     return cfg["emoji"]
 
 
-def _persist_projects():
-    """Write current PROJECTS back into _CONFIG and save to disk."""
-    _CONFIG["projects"] = PROJECTS
+def _sync_config():
+    """Sync all live globals back into _CONFIG so disk writes are consistent."""
+    _CONFIG["ssh_timeout"] = SSH_TIMEOUT
+    _CONFIG["cache_fresh_sec"] = CACHE_FRESH_SEC
+    _CONFIG["stats_interval_sec"] = STATS_INTERVAL_SEC
+    _CONFIG["backup_interval_hours"] = BACKUP_INTERVAL_HOURS
+    _CONFIG["backup_max_keep"] = BACKUP_MAX_KEEP
+    _CONFIG["team"] = TEAM_NAME
+    _CONFIG["team_gpu_allocations"] = dict(TEAM_GPU_ALLOC)
+    _CONFIG["ppps"] = dict(PPPS)
+    _CONFIG["log_search_bases"] = LOG_SEARCH_BASES
+    _CONFIG["nemo_run_bases"] = NEMO_RUN_BASES
+    _CONFIG["mount_lustre_prefixes"] = MOUNT_LUSTRE_PREFIXES
+    _CONFIG["local_process_filters"] = {
+        "include": LOCAL_PROC_INCLUDE,
+        "exclude": LOCAL_PROC_EXCLUDE,
+    }
+    _CONFIG["projects"] = dict(PROJECTS)
+    clusters_out = {}
+    for cname, ccfg in CLUSTERS.items():
+        if cname == "local":
+            continue
+        clusters_out[cname] = {k: v for k, v in ccfg.items() if k not in ("host",) or v}
+    if clusters_out:
+        _CONFIG["clusters"] = clusters_out
+
+
+def _write_config():
+    """Write _CONFIG to disk. Call _sync_config() first."""
     if os.path.isfile(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "w") as fh:
@@ -250,6 +280,12 @@ def _persist_projects():
                 fh.write("\n")
         except Exception:
             pass
+
+
+def _persist_projects():
+    """Write current PROJECTS back into _CONFIG and save to disk."""
+    _sync_config()
+    _write_config()
 
 
 def _dir_label(path):
@@ -276,7 +312,7 @@ def _cache_set(store, key, value):
 
 def reload_config(new_cfg):
     """Hot-reload mutable globals from a new config dict. Writes to disk first."""
-    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME, PPPS
+    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME, TEAM_GPU_ALLOC, PPPS
     global BACKUP_INTERVAL_HOURS, BACKUP_MAX_KEEP
     global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
     global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
@@ -298,6 +334,7 @@ def reload_config(new_cfg):
     BACKUP_INTERVAL_HOURS = new_cfg.get("backup_interval_hours", 24)
     BACKUP_MAX_KEEP = new_cfg.get("backup_max_keep", 7)
     TEAM_NAME = new_cfg.get("team", "")
+    TEAM_GPU_ALLOC = new_cfg.get("team_gpu_allocations", {})
     PPPS = new_cfg.get("ppps", {})
 
     from .ssh import close_cluster_client
@@ -312,6 +349,7 @@ def reload_config(new_cfg):
             "port": ccfg.get("port", 22),
             "gpu_type": ccfg.get("gpu_type", ""),
             "gpus_per_node": ccfg.get("gpus_per_node", 0),
+            "account": ccfg.get("account", ""),
         }
     new_clusters["local"] = {
         "host": None, "data_host": "", "user": None, "key": None,
@@ -335,6 +373,7 @@ def reload_config(new_cfg):
 
 def settings_response():
     """Build the settings payload for GET /api/settings."""
+    _sync_config()
     cfg = dict(_CONFIG)
     cfg["ssh_timeout"] = SSH_TIMEOUT
     cfg["cache_fresh_sec"] = CACHE_FRESH_SEC
@@ -343,5 +382,6 @@ def settings_response():
     cfg["backup_max_keep"] = BACKUP_MAX_KEEP
     cfg["projects"] = dict(PROJECTS)
     cfg["team"] = TEAM_NAME
+    cfg["team_gpu_allocations"] = dict(TEAM_GPU_ALLOC)
     cfg["ppps"] = dict(PPPS)
     return cfg

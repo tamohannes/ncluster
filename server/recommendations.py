@@ -7,17 +7,18 @@ with estimated wait times and actionable tips.
 
 import logging
 
-from .config import CLUSTERS
+from .config import CLUSTERS, _cache_get, _team_usage_cache, TEAM_USAGE_TTL_SEC
 from .partitions import get_all_partitions, _parse_timelimit, _estimate_partition_wait
 
 log = logging.getLogger(__name__)
 
 _SKIP_PARTITIONS = {"defq", "fake", "admin"}
 
-_W_QUEUE = 0.35
-_W_OCCUPANCY = 0.25
-_W_PRIORITY = 0.25
+_W_QUEUE = 0.30
+_W_OCCUPANCY = 0.20
+_W_PRIORITY = 0.20
 _W_IDLE = 0.15
+_W_TEAM = 0.15
 
 
 def _time_to_sec(time_limit):
@@ -169,11 +170,30 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
             tier_norm = tier / max_tier_cluster
             idle_norm = idle / active
 
+            tu = _cache_get(_team_usage_cache, cluster_name, TEAM_USAGE_TTL_SEC)
+            team_score = 0.0
+            team_status = "unknown"
+            if tu:
+                team_running = tu.get("total_running_gpus", 0)
+                cluster_cfg = CLUSTERS.get(cluster_name, {})
+                gpn_cfg = cluster_cfg.get("gpus_per_node", 0) or 8
+                team_alloc = active * gpn_cfg
+                if team_alloc > 0:
+                    team_ratio = team_running / team_alloc
+                    team_score = min(team_ratio, 1.5) / 1.5
+                    if team_ratio >= 1.0:
+                        team_status = "over_quota"
+                    elif team_ratio >= 0.7:
+                        team_status = "near_quota"
+                    else:
+                        team_status = "under_quota"
+
             score = (
                 _W_QUEUE * min(queue_ratio, 3.0) / 3.0
                 + _W_OCCUPANCY * (occupancy_pct / 100.0)
                 + _W_PRIORITY * (1.0 - tier_norm)
                 + _W_IDLE * (1.0 - idle_norm)
+                + _W_TEAM * team_score
             )
 
             wait_label, wait_cls = _estimate_partition_wait(part)
@@ -189,6 +209,7 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
                 "score": round(score, 4),
                 "est_wait": wait_label,
                 "est_wait_cls": wait_cls,
+                "team_status": team_status,
                 "details": {
                     "total_nodes": total,
                     "idle_nodes": idle,

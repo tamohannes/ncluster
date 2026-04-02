@@ -25,7 +25,11 @@ function _activateView(tab) {
   }
   if (tab === 'history') loadHistory();
   if (tab === 'logbook') initLogbookPage();
-  if (tab === 'clusters') { if (!_partitionData) fetchPartitions().then(() => _renderAvailTable()); else _renderAvailTable(); }
+  if (tab === 'clusters') {
+    if (_partitionData) _renderAvailTable();
+    showTeamGpuCached();
+    refreshTeamGpuStatus(true);
+  }
 }
 
 function showTab(tab) {
@@ -498,9 +502,7 @@ function renderCard(name, data) {
   const pinnedCompletedCount = jobs.filter(j => j._pinned && isCompletedState(j.state)).length;
   const liveCount   = jobs.filter(j => !j._pinned).length;
 
-  const cancelAllBtn = (!isErr && liveCount > 0 && name !== 'local')
-    ? `<button class="icon-btn danger" onclick="cancelAll('${name}')">cancel all</button>`
-    : '';
+  const cancelAllBtn = '';
   const clearFailedBtn = pinnedFailedCount > 0
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
     : '';
@@ -681,6 +683,14 @@ async function _fetchProgressUpdate(batch) {
     const progressMap = result.progress || result;
     const progressSources = result.progress_sources || {};
     const estStarts = result.est_starts || {};
+    if (result.team_usage) {
+      for (const [c, tu] of Object.entries(result.team_usage)) {
+        _teamUsageData[c] = tu;
+      }
+    }
+    if (result.team_gpu_allocations) {
+      _teamGpuAlloc = result.team_gpu_allocations;
+    }
     let changed = false;
     for (const [key, pct] of Object.entries(progressMap)) {
       const [cluster, jobid] = key.split(':');

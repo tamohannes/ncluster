@@ -471,16 +471,6 @@ async function cancelGroup(cluster, jobIdsJson, groupName) {
   } catch { t.done('Cancel group failed', 'error'); }
 }
 
-async function cancelAll(cluster) {
-  if (!confirm(`Cancel ALL your jobs on ${cluster}?`)) return;
-  const t = toastLoading(`Cancelling all jobs on ${cluster}…`);
-  try {
-    const res = await fetch(`/api/cancel_all/${cluster}`, { method: 'POST' });
-    const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled all on ${cluster}`); refreshCluster(cluster); }
-    else t.done(d.error, 'error');
-  } catch { t.done('Cancel failed', 'error'); }
-}
 
 // ── Fetch with timeout ──
 const MOUNT_TIMEOUT_MS = 60000;
@@ -693,6 +683,7 @@ async function loadSettingsPanel() {
     document.getElementById('set-proc-exclude').value = exc.join(', ');
 
     document.getElementById('set-team').value = cfg.team || '';
+    renderGpuAllocEditor(cfg.team_gpu_allocations || {});
     renderPppEditor(cfg.ppps || {});
 
     renderClusterEditor(cfg.clusters || {});
@@ -718,6 +709,67 @@ function renderPppEditor(ppps) {
   `).join('');
 }
 
+function renderGpuAllocEditor(allocs) {
+  const el = document.getElementById('gpu-alloc-editor');
+  const clusterNames = Object.keys(CLUSTERS).filter(c => c !== 'local').sort();
+  if (!clusterNames.length) {
+    el.innerHTML = '<div style="font-family:var(--mono);font-size:10px;color:var(--muted)">No clusters configured</div>';
+    return;
+  }
+  let html = '<table class="gpu-alloc-table"><thead><tr><th>Cluster</th><th>GPUs</th><th></th></tr></thead><tbody>';
+  for (const c of clusterNames) {
+    const raw = allocs[c];
+    const isAny = raw === 'any' || raw === -1;
+    const val = isAny ? '' : (raw || '');
+    const checked = isAny ? ' checked' : '';
+    const disabled = isAny ? ' disabled' : '';
+    html += `<tr data-alloc-row="${c}">
+      <td>${c}</td>
+      <td><input data-alloc-cluster="${c}" type="number" value="${val}" min="0" max="99999" class="gpu-alloc-input" placeholder="0"${disabled}></td>
+      <td><label class="gpu-alloc-any-label"><input type="checkbox" data-alloc-any="${c}" onchange="_toggleAllocAny('${c}', this.checked)"${checked}> <span>any</span></label></td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function _toggleAllocAny(cluster, isAny) {
+  const inp = document.querySelector(`input[data-alloc-cluster="${cluster}"]`);
+  if (!inp) return;
+  inp.disabled = isAny;
+  if (isAny) inp.value = '';
+}
+
+function _readGpuAllocations() {
+  const allocInputs = document.querySelectorAll('#gpu-alloc-editor input[data-alloc-cluster]');
+  const team_gpu_allocations = {};
+  for (const inp of allocInputs) {
+    const cluster = inp.dataset.allocCluster;
+    const anyBox = document.querySelector(`input[data-alloc-any="${cluster}"]`);
+    if (anyBox && anyBox.checked) {
+      team_gpu_allocations[cluster] = 'any';
+    } else {
+      const gpus = parseInt(inp.value) || 0;
+      if (gpus > 0) team_gpu_allocations[cluster] = gpus;
+    }
+  }
+  return team_gpu_allocations;
+}
+
+async function saveGpuAllocations() {
+  const team_gpu_allocations = _readGpuAllocations();
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team_gpu_allocations }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') toast('GPU allocations saved');
+    else toast(d.error || 'Save failed', 'error');
+  } catch { toast('Save failed', 'error'); }
+}
+
 function addPppRow() {
   const el = document.getElementById('ppp-editor');
   const div = document.createElement('div');
@@ -738,6 +790,7 @@ function addPppRow() {
 
 async function saveProfile() {
   const team = document.getElementById('set-team').value.trim();
+  const team_gpu_allocations = _readGpuAllocations();
   const cards = document.querySelectorAll('#ppp-editor .cluster-edit-card');
   const ppps = {};
   for (const card of cards) {
@@ -749,7 +802,7 @@ async function saveProfile() {
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team, ppps }),
+      body: JSON.stringify({ team, team_gpu_allocations, ppps }),
     });
     const d = await res.json();
     if (d.status === 'ok') {
@@ -852,7 +905,7 @@ function renderProjectEditor(projects) {
         <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
         <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="${p.prefix || ''}" placeholder="name_"></div>
         <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="${p.emoji || ''}" placeholder="🔬" style="width:40px;text-align:center"></div>
-        <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="${p.color || '#e8f4fd'}" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
+        <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="${p.color || '#e8f4fd'}" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="${p.color || '#e8f4fd'}" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
       </div>
     </div>
   `).join('');
@@ -871,7 +924,7 @@ function addProjectRow() {
       <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="my-project"></div>
       <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="" placeholder="my-project_"></div>
       <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="" placeholder="🔬" style="width:40px;text-align:center"></div>
-      <div class="ce-field"><span>Color</span><input data-f="color" type="color" value="#e8f4fd" style="width:40px;height:28px;padding:0;border:none;cursor:pointer"></div>
+      <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="#e8f4fd" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="#e8f4fd" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
     </div>
   `;
   el.appendChild(div);

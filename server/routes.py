@@ -14,7 +14,9 @@ from .config import (
     _CONFIG, _cache_lock, _cache,
     _cache_get, _cache_set,
     _log_content_cache, _dir_list_cache, _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
+    _team_usage_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
+    TEAM_USAGE_TTL_SEC,
     reload_config, settings_response,
     get_project_color, get_project_emoji, extract_project,
 )
@@ -38,6 +40,7 @@ from .logs import (
 from .jobs import (
     refresh_all_clusters, refresh_cluster,
     schedule_prefetch, prefetch_cluster_bulk, fetch_est_start_bulk,
+    fetch_team_usage,
     get_job_stats_cached, fetch_run_metadata_sync,
     create_run_on_demand,
     _last_polled,
@@ -398,6 +401,11 @@ def api_prefetch_visible():
             t = threading.Thread(target=fetch_est_start_bulk, args=(c, ids), daemon=True)
             threads.append(t)
             t.start()
+        team_clusters = set(pending_by_cluster.keys())
+        for c in team_clusters:
+            t = threading.Thread(target=fetch_team_usage, args=(c,), daemon=True)
+            threads.append(t)
+            t.start()
         for t in threads:
             t.join(timeout=25)
 
@@ -428,7 +436,47 @@ def api_progress():
         est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC)
         if est:
             est_starts[f"{c}:{jid}"] = est
-    return jsonify({"progress": progress, "progress_sources": progress_sources, "est_starts": est_starts})
+
+    team_usage = {}
+    seen_clusters = {item.get("cluster") for item in jobs if item.get("cluster")}
+    for c in seen_clusters:
+        tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC)
+        if tu:
+            team_usage[c] = tu
+
+    from .config import TEAM_GPU_ALLOC
+    return jsonify({"progress": progress, "progress_sources": progress_sources, "est_starts": est_starts, "team_usage": team_usage, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
+
+
+@api.route("/api/team_usage", methods=["POST"])
+def api_team_usage():
+    """Fetch fresh team GPU usage for specified clusters (triggers SSH)."""
+    payload = request.get_json(silent=True) or {}
+    cluster_list = payload.get("clusters", [])
+    if not cluster_list:
+        cluster_list = [c for c in CLUSTERS if c != "local"]
+
+    results = {}
+    threads = []
+    import threading as _th
+    def _fetch(c):
+        try:
+            r = fetch_team_usage(c)
+            if r:
+                results[c] = r
+        except Exception:
+            pass
+    for c in cluster_list:
+        if c not in CLUSTERS or c == "local":
+            continue
+        t = _th.Thread(target=_fetch, args=(c,), daemon=True)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join(timeout=25)
+
+    from .config import TEAM_GPU_ALLOC
+    return jsonify({"status": "ok", "team_usage": results, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
 
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
@@ -472,18 +520,6 @@ def api_cancel_jobs(cluster):
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
-
-@api.route("/api/cancel_all/<cluster>", methods=["POST"])
-def api_cancel_all(cluster):
-    if cluster not in CLUSTERS:
-        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    try:
-        if cluster == "local":
-            return jsonify({"status": "error", "error": "Not supported for local"})
-        ssh_run(cluster, "scancel -u $USER")
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)})
 
 
 @api.route("/api/run_script/<cluster>", methods=["POST"])
@@ -868,6 +904,8 @@ def api_settings_post():
     if not patch or not isinstance(patch, dict):
         return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
 
+    from .config import _sync_config
+    _sync_config()
     merged = dict(_CONFIG)
     for key in ("port", "ssh_timeout", "cache_fresh_sec", "stats_interval_sec",
                 "backup_interval_hours", "backup_max_keep",
@@ -881,6 +919,8 @@ def api_settings_post():
         merged["projects"] = patch["projects"]
     if "team" in patch:
         merged["team"] = patch["team"]
+    if "team_gpu_allocations" in patch:
+        merged["team_gpu_allocations"] = patch["team_gpu_allocations"]
     if "ppps" in patch:
         merged["ppps"] = patch["ppps"]
 

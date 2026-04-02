@@ -15,6 +15,7 @@ from .config import (
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, _stats_cache,
     _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
+    _team_usage_cache,
     _prefetch_last, _warm_lock,
     LOG_INDEX_TTL_SEC, STATS_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC,
     EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
@@ -1182,6 +1183,88 @@ def fetch_est_start_bulk(cluster, pending_job_ids):
         jid, start = parts[0].strip(), parts[1].strip()
         if start and start not in ("N/A", "Unknown", "(null)"):
             _cache_set(_est_start_cache, (cluster, jid), start)
+
+
+_detected_accounts = {}
+
+def fetch_team_usage(cluster):
+    """Fetch per-user GPU breakdown for the team's Slurm account on a cluster.
+
+    Auto-detects the account from the user's own jobs if not configured.
+    Caches detected accounts in memory so detection only runs once.
+    Returns {account, users: {user: {running_gpus, pending_gpus}}, total_running, total_pending}.
+    """
+    enable_standalone_ssh()
+    if cluster == "local":
+        return None
+
+    cfg = CLUSTERS.get(cluster, {})
+    gpus_per_node = cfg.get("gpus_per_node", 8) or 8
+    account = cfg.get("account", "") or _detected_accounts.get(cluster, "")
+
+    if not account:
+        try:
+            out, _ = ssh_run_with_timeout(
+                cluster,
+                'squeue -u $USER -h -o "%a" 2>/dev/null | head -1',
+                timeout_sec=8,
+            )
+            account = out.strip().split()[0] if out.strip() else ""
+        except Exception:
+            pass
+    if not account:
+        try:
+            out, _ = ssh_run_with_timeout(
+                cluster,
+                'sacctmgr show user $USER withassoc format=account%-60 -n 2>/dev/null | head -1',
+                timeout_sec=8,
+            )
+            account = out.strip().split()[0] if out.strip() else ""
+        except Exception:
+            pass
+    if not account:
+        return None
+    _detected_accounts[cluster] = account
+
+    try:
+        out, _ = ssh_run_with_timeout(
+            cluster,
+            f'squeue -A {account} -h -o "%u|%T|%D|%P" 2>/dev/null',
+            timeout_sec=10,
+        )
+    except Exception:
+        return None
+
+    users = {}
+    for line in out.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) < 3:
+            continue
+        user, state, nodes_str = parts[0].strip(), parts[1].strip().upper(), parts[2].strip()
+        try:
+            nodes = int(nodes_str)
+        except ValueError:
+            nodes = 1
+        gpus = nodes * gpus_per_node
+
+        if user not in users:
+            users[user] = {"running_gpus": 0, "pending_gpus": 0}
+        if state == "RUNNING":
+            users[user]["running_gpus"] += gpus
+        elif state == "PENDING":
+            users[user]["pending_gpus"] += gpus
+
+    total_running = sum(u["running_gpus"] for u in users.values())
+    total_pending = sum(u["pending_gpus"] for u in users.values())
+
+    result = {
+        "account": account,
+        "users": users,
+        "total_running_gpus": total_running,
+        "total_pending_gpus": total_pending,
+    }
+    _cache_set(_team_usage_cache, cluster, result)
+    return result
 
 
 def prefetch_cluster_bulk(cluster, job_ids):

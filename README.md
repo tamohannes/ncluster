@@ -116,7 +116,7 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 |----------|-------|
 | Jobs | `list_jobs`, `get_job_log`, `get_job_stats`, `list_log_files` |
 | History | `get_history`, `list_projects`, `get_project_jobs` |
-| Actions | `cancel_job`, `cancel_jobs`, `cancel_all_cluster_jobs`, `cancel_project_jobs` |
+| Actions | `cancel_job`, `cancel_jobs` |
 | Runs | `get_run_info`, `run_script`, `cleanup_history` |
 | Clusters | `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
 | Mounts | `get_mounts`, `mount_cluster`, `clear_failed`, `clear_completed` |
@@ -270,7 +270,6 @@ Dependency chain auto-detection from run name suffixes:
 |--------|----------|---------|
 | POST | `/api/cancel/<cluster>/<job_id>` | Cancel a single job |
 | POST | `/api/cancel_jobs/<cluster>` | Cancel multiple jobs (JSON body: `job_ids`) |
-| POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
 | POST | `/api/run_script/<cluster>` | Run script on cluster via SSH |
 | POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
 | POST | `/api/clear_cancelled/<cluster>` | Dismiss cancelled pins |
