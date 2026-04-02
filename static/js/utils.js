@@ -806,33 +806,39 @@ function showTeamGpuCached() {
 async function refreshTeamGpuStatus(silent) {
   const el = document.getElementById('team-gpu-body');
   if (!el) return;
-  const t = silent ? null : toastLoading('Refreshing cluster data…');
+  const t = silent ? null : toastLoading('Refreshing team GPU data…');
 
   const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
-  const fetches = [
-    fetch('/api/team_usage', {
+  try {
+    const res = await fetch('/api/team_usage', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clusters }),
-    }).then(r => r.json()),
-  ];
-  if (!silent) {
-    fetches.push(fetchPartitions().then(() => _renderAvailTable()));
-  }
-  try {
-    const [teamRes] = await Promise.all(fetches);
+    });
+    const teamRes = await res.json();
     const tu = teamRes.team_usage || {};
     const allocs = teamRes.team_gpu_allocations || {};
     for (const [c, d] of Object.entries(tu)) _teamUsageData[c] = d;
     if (Object.keys(allocs).length) _teamGpuAlloc = allocs;
     _renderTeamGpuStatus(tu, allocs);
     _saveTeamCache();
-    if (t) t.done(`Cluster data refreshed (${Object.keys(tu).length} clusters)`);
+    if (t) t.done(`Team data refreshed (${Object.keys(tu).length} clusters)`);
   } catch (e) {
     if (!Object.keys(_teamUsageData).length) {
       el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to load team GPU data</div>';
     }
-    if (t) t.done('Failed to fetch cluster data', 'error');
+    if (t) t.done('Failed to fetch team data', 'error');
+  }
+}
+
+async function refreshClusterAvailability() {
+  const t = toastLoading('Fetching partition data…');
+  try {
+    await fetchPartitions();
+    _renderAvailTable();
+    t.done('Partition data refreshed');
+  } catch (e) {
+    t.done('Failed to fetch partition data', 'error');
   }
 }
 
