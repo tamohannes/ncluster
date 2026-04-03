@@ -946,6 +946,11 @@ function _renderPppAllocations(data) {
   const clusters = data.clusters || {};
   const configOrder = Object.keys(CLUSTERS).filter(c => c !== 'local');
   const names = Object.keys(clusters).sort((a, b) => {
+    const aAlloc = clusters[a].team_gpu_alloc;
+    const bAlloc = clusters[b].team_gpu_alloc;
+    const aHas = aAlloc === 'any' || (typeof aAlloc === 'number' && aAlloc > 0) ? 0 : 1;
+    const bHas = bAlloc === 'any' || (typeof bAlloc === 'number' && bAlloc > 0) ? 0 : 1;
+    if (aHas !== bHas) return aHas - bHas;
     const ai = configOrder.indexOf(a);
     const bi = configOrder.indexOf(b);
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
@@ -973,7 +978,8 @@ function _renderPppAllocations(data) {
 
     const maxAlloc = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : rawMaxAlloc;
 
-    html += `<div class="ppp-card">
+    const hasTeamQuota = teamAlloc === 'any' || (teamNum && teamNum > 0);
+    html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'}">
       <div class="ppp-card-head">
         <span class="ppp-card-cluster">${cn}</span>
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}

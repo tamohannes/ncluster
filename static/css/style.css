@@ -2649,6 +2649,8 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   transition: border-color 0.15s;
 }
 .ppp-card:hover { border-color: var(--accent-bd); }
+.ppp-card-dim { opacity: 0.45; }
+.ppp-card-dim:hover { opacity: 0.8; }
 .ppp-card-head {
   display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
 }
