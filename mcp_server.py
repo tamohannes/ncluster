@@ -1026,21 +1026,178 @@ def get_ppp_allocations(cluster: Optional[str] = None) -> dict:
 
 
 @mcp.tool()
+def where_to_submit(
+    nodes: int = 1,
+    gpu_type: str = "",
+) -> dict:
+    """Answer "where should I submit my job?" with a ranked list of clusters.
+
+    This is the primary tool for deciding where to run a job. It combines
+    formal PPP allocations (from AI Hub), team quota, team member usage,
+    cluster occupancy, and fairshare scheduling priority into a single
+    ranked recommendation.
+
+    Each cluster is scored by: min(PPP_headroom, team_alloc - team_running)
+    weighted by fairshare level. Higher score = better place to submit.
+
+    For each recommended cluster, returns:
+    - cluster name, GPU type
+    - free_for_team: GPUs available considering both PPP headroom and team quota
+    - best_account: which PPP account to use (e.g. "llmservice_nemo_reasoning")
+    - level_fs: fairshare scheduling priority (>1.0 = credit, <1.0 = overdrawn)
+    - cluster_occupancy: total cluster GPU utilization percentage
+    - team_running / team_pending: your team's current GPU usage
+    - my_running / my_pending: your personal GPU usage
+
+    Args:
+        nodes:    Number of GPU nodes needed (filters out clusters with
+                  insufficient headroom). Default 1.
+        gpu_type: Prefer clusters with this GPU type (e.g. "H100", "B200").
+                  Same-type clusters rank first, others still included.
+
+    Returns:
+        {"status": "ok", "recommendations": [...], "my_total_running": N, "my_total_pending": N}
+
+    Example use cases:
+    - "Where should I submit a 4-node H100 job?" → where_to_submit(nodes=4, gpu_type="H100")
+    - "Which cluster has the most room?" → where_to_submit()
+    - "Why are my jobs pending on eos?" → Use get_ppp_allocations("eos") for details
+    """
+    alloc = _api_get("/api/aihub/allocations")
+    if not isinstance(alloc, dict) or alloc.get("status") != "ok":
+        return {"status": "error", "error": "Could not fetch allocation data"}
+
+    team_jobs = _api_get("/api/team_jobs")
+    tj_clusters = team_jobs.get("clusters", {}) if isinstance(team_jobs, dict) else {}
+
+    settings = _api_get("/api/settings")
+    team_allocs = settings.get("team_gpu_allocations", {}) if isinstance(settings, dict) else {}
+
+    gpus_per_node = 8
+    job_gpus = nodes * gpus_per_node
+    pref_gpu = gpu_type.lower() if gpu_type else ""
+
+    recommendations = []
+    my_total_running = 0
+    my_total_pending = 0
+
+    for cn, cd in alloc.get("clusters", {}).items():
+        bp = cd.get("best_priority", {})
+        bc = cd.get("best_capacity", {})
+        ppp_headroom = bc.get("headroom", 0)
+        level_fs = bp.get("level_fs", 0)
+        best_acct = bc.get("account", "") if ppp_headroom > 50 else bp.get("account", "")
+        cluster_gpu = (cd.get("gpu_type") or "").lower()
+
+        ta = team_allocs.get(cn)
+        team_num = None
+        if ta == "any":
+            team_num = None
+        elif isinstance(ta, (int, float)) and ta > 0:
+            team_num = int(ta)
+
+        tj = tj_clusters.get(cn, {}).get("summary", {})
+        tj_users = tj.get("by_user", {})
+
+        team_running = tj.get("total_running", 0)
+        team_pending = tj.get("total_pending", 0) + tj.get("total_dependent", 0)
+
+        import os
+        me = os.environ.get("USER", "")
+        my_data = tj_users.get(me, {})
+        my_r = my_data.get("running", 0)
+        my_p = my_data.get("pending", 0) + my_data.get("dependent", 0)
+        my_total_running += my_r
+        my_total_pending += my_p
+
+        if team_num is not None:
+            free = min(ppp_headroom, max(0, team_num - team_running))
+        else:
+            free = ppp_headroom
+
+        score = free * min(level_fs, 3)
+        same_gpu = (pref_gpu == cluster_gpu) if pref_gpu else True
+
+        occ = cd.get("cluster_occupied_gpus", 0)
+        tot = cd.get("cluster_total_gpus", 0)
+        occ_pct = round(occ / tot * 100) if tot > 0 else 0
+
+        if free >= job_gpus:
+            recommendations.append({
+                "cluster": cn,
+                "gpu_type": cd.get("gpu_type", ""),
+                "same_gpu_type": same_gpu,
+                "free_for_team": free,
+                "best_account": best_acct,
+                "level_fs": round(level_fs, 2),
+                "cluster_occupancy_pct": occ_pct,
+                "team_running": team_running,
+                "team_pending": team_pending,
+                "team_alloc": ta if ta is not None else "not set",
+                "my_running": my_r,
+                "my_pending": my_p,
+                "score": round(score, 1),
+            })
+
+    recommendations.sort(key=lambda r: (-int(r["same_gpu_type"]), -r["score"]))
+
+    return {
+        "status": "ok",
+        "recommendations": recommendations,
+        "my_total_running": my_total_running,
+        "my_total_pending": my_total_pending,
+        "job_gpus_requested": job_gpus,
+    }
+
+
+@mcp.tool()
+def get_gpu_usage_history(
+    cluster: Optional[str] = None,
+    days: int = 14,
+) -> dict:
+    """Get GPU allocation vs consumption history over time.
+
+    Shows daily time-series data per PPP account per cluster, useful for
+    understanding usage trends, identifying underutilized allocations,
+    and planning capacity.
+
+    Each data point includes:
+    - gpus_allocated: formal allocation for the day
+    - gpus_consumed: actual GPU consumption
+    - fairshare_avail: effective availability after fairshare
+    - gpus_consumed_normal: consumed under normal QOS
+    - gpus_consumed_free: consumed under free/backfill QOS
+
+    Args:
+        cluster: Optional cluster name (e.g. "eos"). If omitted, returns all.
+        days:    Number of days of history (default 14, max 90).
+
+    Returns:
+        {"status": "ok", "clusters": {"eos": {"account_name": [{"date": "...", ...}]}}}
+    """
+    params = f"?days={min(days, 90)}"
+    if cluster:
+        params += f"&cluster={cluster}"
+    return _api_get(f"/api/aihub/history{params}")
+
+
+@mcp.tool()
 def get_cluster_status(cluster: Optional[str] = None) -> dict:
     """Get a unified snapshot of cluster health, capacity, and team position.
 
-    Combines partition data, utilization, team usage, and weekly allocations
-    into a single response. Use this before submitting jobs to understand
-    where your jobs will start fastest.
+    Combines partition data, team usage, weekly allocations, and AI Hub
+    fairshare data into a single response. This is a detailed diagnostic
+    tool — for quick "where to submit" answers, use where_to_submit().
 
     Args:
         cluster: Optional cluster name. If omitted, returns all clusters.
 
     Returns per cluster:
-        - gpu_type, total_nodes, running_nodes, idle_nodes, pending_jobs
+        - gpu_type, total_nodes, idle_nodes, pending_jobs
         - team: weekly_alloc, running_gpus, pending_gpus, free_gpus, status
+        - ppp_allocations: per-account formal allocations and fairshare
+        - best_priority_account / best_capacity_account: recommended PPP accounts
         - top_partition: name, idle_nodes, priority_tier, est_wait
-        - recommendation: score, tip (from the submit advisor)
     """
     result = {}
 
