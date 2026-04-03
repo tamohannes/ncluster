@@ -1150,6 +1150,23 @@ def api_aihub_my_fairshare():
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 
+@api.route("/api/wds_history")
+def api_wds_history():
+    from .wds import get_wds_history
+    cluster = request.args.get("cluster", "")
+    account = request.args.get("account", "")
+    days = int(request.args.get("days", 30))
+    try:
+        rows = get_wds_history(
+            cluster=cluster or None,
+            account=account or None,
+            days=days,
+        )
+        return jsonify({"status": "ok", "rows": rows, "count": len(rows)})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
 # ── Logbook routes ────────────────────────────────────────────────────────────
 
 from .logbooks import (

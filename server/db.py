@@ -224,6 +224,33 @@ def init_db():
         )
     """)
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS wds_history (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT NOT NULL,
+            cluster         TEXT NOT NULL,
+            account         TEXT NOT NULL,
+            wds             INTEGER NOT NULL,
+            resource_gate   REAL,
+            my_level_fs     REAL,
+            ppp_level_fs    REAL,
+            queue_score     REAL,
+            idle_nodes      INTEGER,
+            pending_queue   INTEGER,
+            ppp_headroom    INTEGER,
+            free_for_team   INTEGER,
+            gpus_consumed   INTEGER,
+            gpus_allocated  INTEGER,
+            team_running    INTEGER,
+            my_running      INTEGER,
+            my_pending      INTEGER,
+            req_nodes       INTEGER DEFAULT 1,
+            req_gpus_per_node INTEGER DEFAULT 8
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_wds_ts ON wds_history(ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_wds_cluster ON wds_history(cluster, account, ts)")
+
     con.commit()
     con.close()
 

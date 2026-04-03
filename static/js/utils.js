@@ -858,6 +858,8 @@ async function refreshPppAllocations() {
     const [allocRes] = await Promise.all([
       fetch('/api/aihub/allocations'),
       _ensureOverlayData(),
+      fetchPartitions(),
+      _fetchMyFairshare(),
     ]);
     const data = await allocRes.json();
     if (data.status === 'ok') {
@@ -900,6 +902,60 @@ function _getJobStats(cn) {
   };
 }
 
+function _getWdsInputs() {
+  const nodes = parseInt(document.getElementById('wds-nodes')?.value || '1') || 1;
+  const gpn = parseInt(document.getElementById('wds-gpn')?.value || '8') || 8;
+  return { reqNodes: nodes, reqGpn: gpn, reqGpus: nodes * gpn };
+}
+
+function computeWds(cn, acct, ad, curGpuType) {
+  const { reqNodes, reqGpus } = _getWdsInputs();
+  const ps = _partitionData?.[cn];
+  const idleNodes = ps?.idle_nodes || 0;
+  const pendingQueue = ps?.pending_jobs || 0;
+  const pppHeadroom = ad?.headroom || 0;
+  const s = _clusterSubmitScore(_pppAllocData?.clusters?.[cn] || {}, cn);
+  const freeForTeam = s.freeForTeam || 0;
+  const teamNum = s.teamNum;
+
+  const myFs = _myFairshareData?.clusters?.[cn]?.[acct];
+  const myLevelFs = myFs?.level_fs || 0;
+  const pppLevelFs = ad?.level_fs || 0;
+
+  const clusterGpu = (CLUSTERS[cn]?.gpu_type || '').toLowerCase();
+  const prefGpu = (curGpuType || '').toLowerCase();
+  const machineScore = (!prefGpu || clusterGpu === prefGpu) ? 1.0 : 0.85;
+
+  const hardCapacity = Math.max(pppHeadroom, freeForTeam);
+  const resourceGate = Math.min(
+    1,
+    hardCapacity / Math.max(reqGpus, 1),
+    idleNodes / Math.max(reqNodes, 1)
+  );
+
+  const teamPenalty = (teamNum && teamNum > 0 && freeForTeam <= 0) ? 0.7 : 1.0;
+
+  const myFsScore = Math.min(myLevelFs / 1.5, 1);
+  const pppFsScore = Math.min(pppLevelFs / 1.5, 1);
+  const queueScore = 1 - Math.min(Math.log1p(pendingQueue / Math.max(idleNodes, 1)) / Math.log1p(50), 1);
+
+  const priorityBlend = 0.55 * myFsScore + 0.20 * pppFsScore + 0.25 * queueScore;
+  const wds = Math.round(100 * resourceGate * priorityBlend * machineScore * teamPenalty);
+
+  return {
+    wds: Math.max(0, Math.min(100, wds)),
+    resourceGate: Math.round(resourceGate * 100) / 100,
+    myLevelFs, pppLevelFs,
+    queueScore: Math.round(queueScore * 100) / 100,
+    machineScore,
+    idleNodes, pendingQueue, freeForTeam, pppHeadroom,
+  };
+}
+
+function onWdsSizeChange() {
+  if (_pppAllocData) _renderPppAllocations(_pppAllocData);
+}
+
 function _clusterSubmitScore(cd, cn) {
   const bc = cd.best_capacity || {};
   const bp = cd.best_priority || {};
@@ -926,6 +982,7 @@ function _clusterSubmitScore(cd, cn) {
 }
 
 function _renderSubmitSummary(clusters) {
+  const curGpuType = '';
   const ranked = Object.entries(clusters)
     .map(([cn, cd]) => {
       const bc = cd.best_capacity || {};
@@ -933,15 +990,17 @@ function _renderSubmitSummary(clusters) {
       const bestAcct = (bc.headroom || 0) > 50 ? (bc.account || '') : (bp.account || '');
       const gpuType = cd.gpu_type || '';
       const s = _clusterSubmitScore(cd, cn);
-      return { cn, gpuType, bestAcct, ...s };
+      const bestAd = cd.accounts?.[bestAcct] || {};
+      const wdsResult = computeWds(cn, bestAcct, bestAd, curGpuType);
+      return { cn, gpuType, bestAcct, wds: wdsResult.wds, ...s };
     })
     .filter(c => c.freeForTeam > 0 || c.levelFs > 0.5)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => b.wds - a.wds);
 
   if (!ranked.length) return '<div class="ws-strip"><span class="ws-none">No clusters with available headroom</span></div>';
 
   return '<div class="ws-strip">' + ranked.map((c, i) => {
-    const cls = i === 0 ? 'ws-best' : c.freeForTeam > 50 ? 'ws-good' : 'ws-ok';
+    const cls = i === 0 ? 'ws-best' : c.wds >= 50 ? 'ws-good' : 'ws-ok';
     const acctShort = c.bestAcct ? _shortAcct(c.bestAcct) : '';
     const teamLabel = c.teamNum ? ` / ${c.teamNum}` : '';
     const tooltip = `Team free: ${c.freeForTeam} GPUs (using ${c.teamRunning}${teamLabel}), PPP headroom: ${c.pppHeadroom}, FS: ${c.levelFs.toFixed(1)}`;
@@ -951,9 +1010,11 @@ function _renderSubmitSummary(clusters) {
     const teamR = c.teamRunning || 0;
     const teamP = c.teamPending || 0;
 
+    const wdsCls = c.wds >= 75 ? 'wds-high' : c.wds >= 50 ? 'wds-med' : 'wds-low';
     return `<div class="ws-chip ${cls}" title="${tooltip}">
       <span class="ws-cluster">${c.cn}</span>
       ${c.gpuType ? `<span class="ws-gpu">${c.gpuType}</span>` : ''}
+      <span class="wds-badge ${wdsCls}">${c.wds}</span>
       <span class="ws-headroom">${c.freeForTeam} free</span>
       ${(() => {
         const cps = _partitionData?.[c.cn];
@@ -966,16 +1027,6 @@ function _renderSubmitSummary(clusters) {
         const cls = mf.level_fs >= 1.2 ? 'ws-fs-good' : mf.level_fs >= 0.8 ? 'ws-fs-neutral' : 'ws-fs-low';
         return `<span class="ws-my-fs ${cls}">you ${mf.level_fs.toFixed(1)}</span>`;
       })()}
-      <div class="ws-usage-row">
-        <span class="ws-usage-me" title="You: ${myR} running, ${myP} pending">
-          <span class="ws-dot ws-dot-me-run"></span>${myR}
-          ${myP > 0 ? `<span class="ws-dot ws-dot-me-pend"></span>${myP}` : ''}
-        </span>
-        <span class="ws-usage-team" title="Team: ${teamR} running, ${teamP} pending">
-          <span class="ws-dot ws-dot-team-run"></span>${teamR}
-          ${teamP > 0 ? `<span class="ws-dot ws-dot-team-pend"></span>${teamP}` : ''}
-        </span>
-      </div>
     </div>`;
   }).join('') + '</div>';
 }
@@ -1051,24 +1102,28 @@ function _renderPppAllocations(data) {
         teamAllocMarker = `<div class="ppp-team-marker" style="left:${markerPct}%"></div>`;
       }
 
+      const acctJobs = hasJobSplit ? (_teamJobsData?.clusters?.[cn]?.jobs || []).filter(j => j.account === acct) : [];
       const acctUsers = overlayCluster[acct] || {};
       const acctShortName = _shortAcct(acct);
-      let myTotal = acctUsers[currentUser] || 0;
+      let myTotalAihub = acctUsers[currentUser] || 0;
+      let myTotalSqueue = 0;
       let teamOthersTotal = 0;
       if (teamMembers.length) {
         for (const m of teamMembers) {
           if (m !== currentUser) teamOthersTotal += (acctUsers[m] || 0);
         }
       }
-      myTotal = Math.min(myTotal, consumed);
-      teamOthersTotal = Math.min(teamOthersTotal, consumed - myTotal);
+      for (const j of acctJobs) {
+        if (j.user === currentUser) myTotalSqueue += (j.gpus || 0);
+      }
+      let myTotal = Math.max(myTotalAihub, myTotalSqueue);
+      myTotal = Math.min(myTotal, consumed || myTotal);
+      teamOthersTotal = Math.min(teamOthersTotal, Math.max(0, (consumed || 0) - myTotal));
       const pppNonTeam = Math.max(0, consumed - myTotal - teamOthersTotal);
 
       const clusterOccupied = cd.cluster_occupied_gpus || 0;
       const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
       const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
-
-      const acctJobs = hasJobSplit ? (_teamJobsData?.clusters?.[cn]?.jobs || []).filter(j => j.account === acct) : [];
       let segments = '';
       if (hasJobSplit) {
         let myRunning = 0, myPending = 0, teamRunGpus = 0, teamPendGpus = 0;
@@ -1155,12 +1210,23 @@ function _renderPppAllocations(data) {
           <div class="ppp-popup">${popupHtml}</div>
         </div>
         <span class="ppp-acct-nums"><strong>${consumed}</strong> / ${ad.gpus_allocated}</span>
-        <span class="ppp-fs-indicator ${fsCls}" title="PPP fairshare ${ad.level_fs.toFixed(2)}">${ad.level_fs.toFixed(1)}</span>
         ${(() => {
-          const myFs = _myFairshareData?.clusters?.[cn]?.[acct];
-          if (!myFs) return '';
-          const mfCls = myFs.level_fs >= 1.2 ? 'ppp-fs-good' : myFs.level_fs >= 0.8 ? 'ppp-fs-neutral' : 'ppp-fs-low';
-          return `<span class="ppp-my-fs ${mfCls}" title="Your personal fairshare ${myFs.level_fs.toFixed(2)}">you ${myFs.level_fs.toFixed(1)}</span>`;
+          const curGpu = CLUSTERS[cn]?.gpu_type || '';
+          const w = computeWds(cn, acct, ad, curGpu);
+          const wCls = w.wds >= 75 ? 'wds-high' : w.wds >= 50 ? 'wds-med' : 'wds-low';
+          const myFsCls = w.myLevelFs >= 1.2 ? 'green' : w.myLevelFs >= 0.8 ? 'amber' : 'red';
+          const pppFsCls = ad.level_fs >= 1.2 ? 'green' : ad.level_fs >= 0.8 ? 'amber' : 'red';
+          return `<span class="wds-badge-wrap">
+            <span class="wds-badge ${wCls}">${w.wds}</span>
+            <div class="wds-popup">
+              <div class="wds-pop-row wds-pop-head"><span>WDS</span><span class="${wCls}">${w.wds}</span></div>
+              <div class="wds-pop-row"><span>resource fit</span><span class="${w.resourceGate >= 1 ? 'green' : w.resourceGate >= 0.5 ? 'amber' : 'red'}">${w.resourceGate >= 1 ? 'fits' : w.resourceGate.toFixed(2)}</span></div>
+              <div class="wds-pop-row"><span>your FS</span><span class="${myFsCls}">${w.myLevelFs > 0 ? w.myLevelFs.toFixed(2) : 'no data'}</span></div>
+              <div class="wds-pop-row"><span>PPP FS</span><span class="${pppFsCls}">${ad.level_fs.toFixed(2)}</span></div>
+              <div class="wds-pop-row"><span>queue</span><span class="${w.idleNodes > 0 ? (w.queueScore >= 0.5 ? 'green' : 'amber') : 'red'}">${w.idleNodes} idle / ${w.pendingQueue}q</span></div>
+              <div class="wds-pop-row"><span>team quota</span><span class="${w.freeForTeam > 0 ? 'green' : w.pppHeadroom > 0 ? 'amber' : 'red'}">${w.freeForTeam > 0 ? `${w.freeForTeam} free` : w.pppHeadroom > 0 ? `over (PPP ${w.pppHeadroom})` : 'full'}</span></div>
+            </div>
+          </span>`;
         })()}
       </div>`;
     });
@@ -1363,10 +1429,7 @@ async function _fetchMyFairshare() {
   try {
     const res = await fetch('/api/aihub/my_fairshare');
     const data = await res.json();
-    if (data.status === 'ok') {
-      _myFairshareData = data;
-      if (_pppAllocData) _renderPppAllocations(_pppAllocData);
-    }
+    if (data.status === 'ok') _myFairshareData = data;
   } catch (_) {}
 }
 
@@ -1516,9 +1579,6 @@ function _populateAccountSelect() {
 }
 
 async function initClustersPage() {
-  _ensureOverlayData();
-  _fetchMyFairshare();
-  fetchPartitions();
   refreshPppAllocations().then(() => _populateAccountSelect());
   refreshTeamJobs();
   refreshUsageHistory();

@@ -1028,6 +1028,7 @@ def get_ppp_allocations(cluster: Optional[str] = None) -> dict:
 @mcp.tool()
 def where_to_submit(
     nodes: int = 1,
+    gpus_per_node: int = 8,
     gpu_type: str = "",
 ) -> dict:
     """Answer "where should I submit my job?" with a ranked list of clusters.
@@ -1035,12 +1036,17 @@ def where_to_submit(
     This is the primary tool for deciding where to run a job. It combines
     formal PPP allocations (from AI Hub), team quota, team member usage,
     cluster occupancy, and fairshare scheduling priority into a single
-    ranked recommendation.
+    WDS (Where Do I Submit) score from 0-100.
 
-    Each cluster is scored by: min(PPP_headroom, team_alloc - team_running)
-    weighted by fairshare level. Higher score = better place to submit.
+    WDS formula: resource_gate * priority_blend * machine_match
+    - resource_gate: can the cluster fit the requested compute?
+    - priority_blend: 55% your FS + 20% PPP FS + 25% queue pressure
+    - machine_match: 1.0 if GPU type matches, 0.85 if different
+
+    Higher WDS = better. >= 75 is good, 50-74 moderate, < 50 unlikely.
 
     For each recommended cluster, returns:
+    - wds: 0-100 composite score
     - cluster name, GPU type
     - free_for_team: GPUs available considering both PPP headroom and team quota
     - idle_nodes: real-time idle GPU nodes from sinfo (updates every 2min)
@@ -1048,15 +1054,16 @@ def where_to_submit(
     - best_account: which PPP account to use (e.g. "llmservice_nemo_reasoning")
     - ppp_level_fs: PPP-wide fairshare priority (>1.0 = credit, <1.0 = overdrawn)
     - my_level_fs: YOUR personal fairshare on that account (determines queue position)
+    - resource_gate, queue_score, machine_score: WDS factors for transparency
     - cluster_occupancy: total cluster GPU utilization percentage
     - team_running / team_pending: your team's current GPU usage
     - my_running / my_pending: your personal GPU usage
 
     Args:
-        nodes:    Number of GPU nodes needed (filters out clusters with
-                  insufficient headroom). Default 1.
-        gpu_type: Prefer clusters with this GPU type (e.g. "H100", "B200").
-                  Same-type clusters rank first, others still included.
+        nodes:         Number of GPU nodes needed. Default 1.
+        gpus_per_node: GPUs per node (default 8). Total GPUs = nodes * gpus_per_node.
+        gpu_type:      Prefer clusters with this GPU type (e.g. "H100", "B200").
+                       Same-type clusters rank first, others still included.
 
     Returns:
         {"status": "ok", "recommendations": [...], "my_total_running": N, "my_total_pending": N}
@@ -1082,7 +1089,6 @@ def where_to_submit(
     settings = _api_get("/api/settings")
     team_allocs = settings.get("team_gpu_allocations", {}) if isinstance(settings, dict) else {}
 
-    gpus_per_node = 8
     job_gpus = nodes * gpus_per_node
     pref_gpu = gpu_type.lower() if gpu_type else ""
 
@@ -1124,7 +1130,6 @@ def where_to_submit(
         else:
             free = ppp_headroom
 
-        score = free * min(level_fs, 3)
         same_gpu = (pref_gpu == cluster_gpu) if pref_gpu else True
 
         occ = cd.get("cluster_occupied_gpus", 0)
@@ -1138,27 +1143,41 @@ def where_to_submit(
         my_acct_fs = my_fs_clusters.get(cn, {}).get(best_acct, {})
         my_level_fs = round(my_acct_fs.get("level_fs", 0), 2) if my_acct_fs else 0
 
-        if free >= job_gpus:
+        import math
+        hard_capacity = max(ppp_headroom, free)
+        resource_gate = min(1, hard_capacity / max(job_gpus, 1), idle_nodes / max(nodes, 1))
+        team_penalty = 0.7 if (team_num is not None and free <= 0) else 1.0
+        my_fs_score = min(my_level_fs / 1.5, 1)
+        ppp_fs_score = min(level_fs / 1.5, 1)
+        queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
+        machine_score = 1.0 if same_gpu else 0.85
+        priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
+        wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty)))
+
+        if free >= job_gpus or wds > 0:
             recommendations.append({
                 "cluster": cn,
                 "gpu_type": cd.get("gpu_type", ""),
                 "same_gpu_type": same_gpu,
+                "wds": wds,
                 "free_for_team": free,
                 "idle_nodes": idle_nodes,
                 "pending_queue": pending_queue,
                 "best_account": best_acct,
                 "ppp_level_fs": round(level_fs, 2),
                 "my_level_fs": my_level_fs,
+                "resource_gate": round(resource_gate, 2),
+                "queue_score": round(queue_score, 2),
+                "machine_score": machine_score,
                 "cluster_occupancy_pct": occ_pct,
                 "team_running": team_running,
                 "team_pending": team_pending,
                 "team_alloc": ta if ta is not None else "not set",
                 "my_running": my_r,
                 "my_pending": my_p,
-                "score": round(score, 1),
             })
 
-    recommendations.sort(key=lambda r: (-int(r["same_gpu_type"]), -r["score"]))
+    recommendations.sort(key=lambda r: -r["wds"])
 
     return {
         "status": "ok",
@@ -1198,6 +1217,41 @@ def get_gpu_usage_history(
     if cluster:
         params += f"&cluster={cluster}"
     return _api_get(f"/api/aihub/history{params}")
+
+
+@mcp.tool()
+def get_wds_history(
+    cluster: Optional[str] = None,
+    account: Optional[str] = None,
+    days: int = 30,
+) -> dict:
+    """Get historical WDS scores and their component factors over time.
+
+    WDS (Where Do I Submit) scores are snapshotted every 15 minutes and
+    stored with all component factors. Use this to analyze trends:
+    - How does my personal fairshare change when I overuse quota?
+    - Which clusters have the best scores at which times of day?
+    - Does queue pressure correlate with team usage?
+
+    Each row includes: ts, cluster, account, wds, resource_gate,
+    my_level_fs, ppp_level_fs, queue_score, idle_nodes, pending_queue,
+    ppp_headroom, free_for_team, gpus_consumed, gpus_allocated,
+    team_running, my_running, my_pending.
+
+    Args:
+        cluster: Filter by cluster name (optional).
+        account: Filter by account name or short name like "reasoning" (optional).
+        days:    Number of days of history (default 30).
+
+    Returns:
+        {"status": "ok", "rows": [...], "count": N}
+    """
+    params = f"?days={days}"
+    if cluster:
+        params += f"&cluster={cluster}"
+    if account:
+        params += f"&account={account}"
+    return _api_get(f"/api/wds_history{params}")
 
 
 @mcp.tool()

@@ -10,6 +10,7 @@ from server.logbooks import migrate_legacy_files
 from server.ssh import ssh_pool_gc_loop
 from server.backup import backup_loop
 from server.mounts import mount_health_loop
+from server.wds import wds_snapshot_loop
 from server.routes import api
 
 app = Flask(__name__)
@@ -22,4 +23,5 @@ if __name__ == "__main__":
     threading.Thread(target=ssh_pool_gc_loop, daemon=True).start()
     threading.Thread(target=backup_loop, daemon=True).start()
     threading.Thread(target=mount_health_loop, daemon=True).start()
+    threading.Thread(target=wds_snapshot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=APP_PORT, debug=False)

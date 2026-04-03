@@ -42,6 +42,7 @@ TEAM_MEMBERS = _CONFIG.get("team_members", [])
 AIHUB_OPENSEARCH_URL = _CONFIG.get("aihub_opensearch_url", "")
 DASHBOARD_URL = _CONFIG.get("dashboard_url", "")
 AIHUB_CACHE_TTL = _CONFIG.get("aihub_cache_ttl_sec", 300)
+WDS_SNAPSHOT_INTERVAL = _CONFIG.get("wds_snapshot_interval_sec", 900)
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])
 NEMO_RUN_BASES = _CONFIG.get("nemo_run_bases", [])
 MOUNT_LUSTRE_PREFIXES = _CONFIG.get("mount_lustre_prefixes", [])
@@ -351,6 +352,7 @@ def reload_config(new_cfg):
     AIHUB_OPENSEARCH_URL = new_cfg.get("aihub_opensearch_url", "")
     DASHBOARD_URL = new_cfg.get("dashboard_url", "")
     AIHUB_CACHE_TTL = new_cfg.get("aihub_cache_ttl_sec", 300)
+    WDS_SNAPSHOT_INTERVAL = new_cfg.get("wds_snapshot_interval_sec", 900)
 
     from .ssh import close_cluster_client
 
