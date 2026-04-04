@@ -308,6 +308,16 @@ async function openLogbookEntry(entryId, opts = {}) {
         <div class="lb-detail-body">${bodyHtml}</div>
       </div>`;
     _resolveEntryRefs();
+    if (opts.anchor) {
+      requestAnimationFrame(() => {
+        const target = document.getElementById(opts.anchor);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.classList.add('lb-anchor-highlight');
+          setTimeout(() => target.classList.remove('lb-anchor-highlight'), 2500);
+        }
+      });
+    }
   } catch (e) {
     toast('Failed to load entry', 'error');
   }
@@ -516,12 +526,23 @@ function _formatDate(iso) {
 
 function _renderLogbookMarkdown(raw) {
   let html = markdownToHtml(raw);
-  html = html.replace(/@([\w_-]+)/g, (match, name) =>
+  html = html.replace(/(?<!\w)@([\w_-]+)/g, (match, name) =>
     `<span class="run-ref" onclick="openLogByName('${name}')">${match}</span>`
   );
-  html = html.replace(/#(\d+)/g, (match, id) =>
+  const anchorRefs = [];
+  html = html.replace(/(?<!\w)#(\d+):(fig|tbl)-(\d+)/g, (match, id, kind, num) => {
+    const anchor = `${kind}-${num}`;
+    const label = kind === 'fig' ? `Figure ${num}` : `Table ${num}`;
+    const placeholder = `\x00ANCHOR${anchorRefs.length}\x00`;
+    anchorRefs.push(`<span class="anchor-ref" onclick="openLogbookEntry(${id},{anchor:'${anchor}'})" title="${label} in entry #${id}">${match}</span>`);
+    return placeholder;
+  });
+  html = html.replace(/(?<!\w)#(\d+)/g, (match, id) =>
     `<span class="entry-ref" data-entry-ref="${id}" onclick="openLogbookEntry(${id})" title="Open entry #${id}">${match}</span>`
   );
+  anchorRefs.forEach((span, i) => {
+    html = html.replace(`\x00ANCHOR${i}\x00`, span);
+  });
   return html;
 }
 

@@ -532,13 +532,14 @@ function _isTableSep(line) {
   return /^\|[\s:|-]+\|$/.test(line.trim());
 }
 
-function _renderTableRows(tableLines) {
+function _renderTableRows(tableLines, tblNum) {
   if (tableLines.length < 2) return tableLines.map(l => `<p>${_mdInline(l)}</p>`).join('');
   const parseRow = (line, tag) => {
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
     return `<tr>${cells.map(c => `<${tag}>${_mdInline(c)}</${tag}>`).join('')}</tr>`;
   };
-  let html = '<table class="md-table"><thead>' + parseRow(tableLines[0], 'th') + '</thead><tbody>';
+  const tblId = tblNum ? ` id="tbl-${tblNum}"` : '';
+  let html = `<table class="md-table"${tblId}><thead>` + parseRow(tableLines[0], 'th') + '</thead><tbody>';
   const start = _isTableSep(tableLines[1]) ? 2 : 1;
   for (let i = start; i < tableLines.length; i++) {
     html += parseRow(tableLines[i], 'td');
@@ -547,23 +548,48 @@ function _renderTableRows(tableLines) {
   return html;
 }
 
+function _isFigureCaption(text) {
+  return /^\*{0,3}\*?Figure\s+\d+/i.test(text.trim());
+}
+
 function markdownToHtml(raw) {
   const lines = String(raw || '').split('\n');
   let html = '';
   let inCode = false;
   let inList = false;
   let inQuote = false;
+  let lastWasFigure = false;
+  let captionBuf = [];
   let tableBuffer = [];
+  let figCounter = 0;
+  let tblCounter = 0;
+
+  function flushCaption() {
+    if (!lastWasFigure) return;
+    if (captionBuf.length) {
+      const captionText = captionBuf.join(' ');
+      const figNum = captionText.match(/Figure\s+(\d+)/i);
+      const figId = figNum ? `fig-${figNum[1]}` : `fig-${figCounter}`;
+      html = html.replace(/<figure class="lb-figure">((?:(?!<figure).)*)$/, `<figure class="lb-figure" id="${figId}">$1`);
+      html += `<figcaption class="lb-figure-caption">${_mdInline(captionText)}</figcaption></figure>`;
+      captionBuf = [];
+    } else {
+      html += '</figure>';
+    }
+    lastWasFigure = false;
+  }
 
   function flushTable() {
     if (tableBuffer.length) {
-      html += _renderTableRows(tableBuffer);
+      tblCounter++;
+      html += _renderTableRows(tableBuffer, tblCounter);
       tableBuffer = [];
     }
   }
 
   for (const line of lines) {
     if (line.trim().startsWith('```')) {
+      flushCaption();
       flushTable();
       if (inQuote) { html += '</blockquote>'; inQuote = false; }
       if (!inCode) {
@@ -574,6 +600,7 @@ function markdownToHtml(raw) {
         html += '</code></pre>';
         inCode = false;
       }
+      lastWasFigure = false;
       continue;
     }
     if (inCode) {
@@ -582,14 +609,28 @@ function markdownToHtml(raw) {
     }
     const quoteMatch = line.match(/^>\s?(.*)$/);
     if (quoteMatch) {
+      const content = quoteMatch[1];
+      if (lastWasFigure && (captionBuf.length > 0 || _isFigureCaption(content))) {
+        captionBuf.push(content);
+        continue;
+      }
+      flushCaption();
       flushTable();
       if (inList) { html += '</ul>'; inList = false; }
       if (!inQuote) { html += '<blockquote>'; inQuote = true; }
-      const content = quoteMatch[1];
       html += content.trim() ? `<p>${_mdInline(content)}</p>` : '<p></p>';
+      lastWasFigure = false;
       continue;
     }
     if (inQuote) { html += '</blockquote>'; inQuote = false; }
+
+    if (!line.trim()) {
+      if (!lastWasFigure) html += '<p></p>';
+      continue;
+    }
+
+    flushCaption();
+
     if (_isTableRow(line)) {
       if (inList) { html += '</ul>'; inList = false; }
       tableBuffer.push(line);
@@ -610,16 +651,22 @@ function markdownToHtml(raw) {
       continue;
     }
     if (inList) { html += '</ul>'; inList = false; }
-    if (!line.trim()) html += '<p></p>';
-    else if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
+    if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
       const m = line.match(/!\[([^\]]*)\]\(([^)]+)\)/);
-      if (m) html += `<figure class="lb-figure"><img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" class="lb-inline-img" loading="lazy">${m[1] ? `<figcaption>${escapeHtml(m[1])}</figcaption>` : ''}</figure>`;
+      if (m) {
+        figCounter++;
+        lastWasFigure = true;
+        html += `<figure class="lb-figure"><img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" class="lb-inline-img" loading="lazy">`;
+      }
     }
     else if (_isHtmlEmbed(line.trim())) {
       html += _renderHtmlEmbed(line.trim());
     }
-    else html += `<p>${_mdInline(line)}</p>`;
+    else {
+      html += `<p>${_mdInline(line)}</p>`;
+    }
   }
+  flushCaption();
   flushTable();
   if (inQuote) html += '</blockquote>';
   if (inList) html += '</ul>';

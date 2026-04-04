@@ -1137,12 +1137,15 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   border: 1px solid var(--border); display: block;
 }
 .lb-figure {
-  margin: 12px 0; text-align: center;
+  margin: 16px 0 20px; text-align: center;
 }
-.lb-figure figcaption {
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
-  margin-top: 4px;
+.lb-figure-caption {
+  font-family: var(--sans); font-size: 11px; line-height: 1.5;
+  color: var(--muted); margin-top: 6px; text-align: left;
+  padding: 0 4px; letter-spacing: -0.01em;
 }
+.lb-figure-caption strong { color: var(--text); font-weight: 600; }
+.lb-figure-caption em { font-style: italic; }
 .lb-detail-body img {
   max-width: 100%; border-radius: 6px;
 }
@@ -1154,9 +1157,9 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   width: 100%; height: 500px; border: none; display: block;
 }
 .lb-html-embed-caption {
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  font-family: var(--sans); font-size: 11px; color: var(--muted);
   padding: 6px 12px; border-top: 1px solid var(--border);
-  background: var(--surface); text-align: center;
+  background: var(--surface); text-align: center; letter-spacing: -0.01em;
 }
 
 .logbook-entry { position: relative; padding: 8px 0; }
@@ -1211,6 +1214,19 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   font-weight: 500; cursor: pointer; font-size: 10px;
 }
 .entry-ref:hover { text-decoration: underline; }
+.anchor-ref {
+  display: inline; padding: 1px 5px; border-radius: 3px;
+  background: var(--amber-bg); color: var(--amber);
+  font-weight: 500; cursor: pointer; font-size: 10px;
+}
+.anchor-ref:hover { text-decoration: underline; }
+@keyframes lb-anchor-flash {
+  0%   { outline: 3px solid var(--accent); outline-offset: 4px; }
+  100% { outline: 3px solid transparent; outline-offset: 4px; }
+}
+.lb-anchor-highlight {
+  animation: lb-anchor-flash 2.5s ease-out;
+}
 
 /* ── Logbook semantic map ── */
 .lb-map { max-width: 800px; margin: 0 auto; padding: 16px 0; }
