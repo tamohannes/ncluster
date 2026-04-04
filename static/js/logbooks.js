@@ -8,11 +8,11 @@ let _lbHistory = [];
 let _lbRunNames = [];
 let _lbSuggestTarget = null;
 let _lbSuggestStart = -1;
-const LB_SIDEBAR_WIDTH_KEY = 'ncluster.lbSidebarWidth';
+const LB_SIDEBAR_WIDTH_KEY = 'clausius.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
-const LB_MAP_VIEW_KEY = 'ncluster.lbMapView';
-const LB_PINS_KEY = 'ncluster.lbPinnedEntries';
+const LB_MAP_VIEW_KEY = 'clausius.lbMapView';
+const LB_PINS_KEY = 'clausius.lbPinnedEntries';
 
 function _getPinnedIds() {
   try {

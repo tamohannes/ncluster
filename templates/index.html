@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ncluster</title>
+<title>clausius</title>
 <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <script>
-(function(){var t=localStorage.getItem('ncluster.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
+(function(){var t=localStorage.getItem('clausius.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
 </script>
 </head>
 <body>
@@ -21,7 +21,7 @@
       </svg>
     </button>
     <div class="topbar-sep"></div>
-    <div class="topbar-title"><img class="topbar-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="n" width="20" height="20">cluster</div>
+    <div class="topbar-title"><img class="topbar-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="clausius" width="20" height="20">clausius</div>
   </div>
   <div class="topbar-sep"></div>
   <div class="topbar-tabs" id="topbar-tabs"></div>
@@ -404,7 +404,7 @@
             <img id="set-avatar" src="/api/user_avatar" alt="" style="width:52px;height:52px;border-radius:50%;border:2px solid var(--border);object-fit:cover;background:var(--bg)">
             <div>
               <div style="font-family:var(--mono);font-size:13px;font-weight:600">{{ username }}</div>
-              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">ncluster</div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">clausius</div>
             </div>
           </div>
           <div class="settings-sub-label">Team</div>

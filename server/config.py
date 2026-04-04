@@ -1,4 +1,4 @@
-"""Shared configuration, constants, and mutable globals for ncluster."""
+"""Shared configuration, constants, and mutable globals for clausius."""
 
 import json
 import os
@@ -7,9 +7,9 @@ import time
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 APP_ROOT = PROJECT_ROOT
-DEFAULT_USER = os.environ.get("NCLUSTER_SSH_USER") or os.environ.get("USER") or "user"
+DEFAULT_USER = os.environ.get("CLAUSIUS_SSH_USER") or os.environ.get("USER") or "user"
 DEFAULT_SSH_KEY = os.path.expanduser(
-    os.environ.get("NCLUSTER_SSH_KEY", "~/.ssh/id_ed25519")
+    os.environ.get("CLAUSIUS_SSH_KEY", "~/.ssh/id_ed25519")
 )
 DB_PATH = os.path.join(PROJECT_ROOT, "data", "history.db")
 SSH_TIMEOUT = 8
@@ -72,13 +72,13 @@ def _load_mount_map():
     """Build MOUNT_MAP: cluster -> list of local mount roots.
 
     With mount_paths config, each cluster has indexed subdirs:
-      ~/.ncluster/mounts/<cluster>/0/
-      ~/.ncluster/mounts/<cluster>/1/
+      ~/.clausius/mounts/<cluster>/0/
+      ~/.clausius/mounts/<cluster>/1/
       ...
     """
     home = os.path.expanduser("~")
-    base = os.path.join(home, ".ncluster", "mounts")
-    raw = os.environ.get("NCLUSTER_MOUNT_MAP", "").strip()
+    base = os.path.join(home, ".clausius", "mounts")
+    raw = os.environ.get("CLAUSIUS_MOUNT_MAP", "").strip()
     if raw:
         try:
             parsed = json.loads(raw)

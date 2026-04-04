@@ -1,7 +1,7 @@
-"""Live read-path tests against the running ncluster app.
+"""Live read-path tests against the running clausius app.
 
 Run with: pytest tests/live/test_app_live_read_paths.py -m live -v
-Requires: ncluster running at localhost:7272, SSH access to a configured cluster.
+Requires: clausius running at localhost:7272, SSH access to a configured cluster.
 Set TEST_CLUSTER to override which cluster is tested (default: first in config.json).
 """
 

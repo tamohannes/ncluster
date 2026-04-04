@@ -9,7 +9,7 @@ let _projRefreshTimer = null;
 const PROJ_GROUPS_PER_PAGE = 50;
 
 function _projSearchStorageKey(projectName) {
-  return `ncluster.projectSearch.${projectName || ''}`;
+  return `clausius.projectSearch.${projectName || ''}`;
 }
 
 function _restoreProjectSearch(projectName) {
@@ -59,7 +59,7 @@ async function openProject(projectName, fromTab) {
   if (archWrap) archWrap.style.display = 'none';
   _projData = [];
   _projGroups = [];
-  try { sessionStorage.setItem('ncluster.activeProject', projectName); } catch (_) {}
+  try { sessionStorage.setItem('clausius.activeProject', projectName); } catch (_) {}
   if (!fromTab) {
     const at = _appTabs.find(t => t.id === _activeTabId);
     if (at) {

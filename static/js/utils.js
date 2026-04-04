@@ -20,11 +20,11 @@ const sectionCollapsed = {
   unreachable: false,
 };
 try {
-  const saved = JSON.parse(localStorage.getItem('ncluster.sectionCollapsed') || '{}');
+  const saved = JSON.parse(localStorage.getItem('clausius.sectionCollapsed') || '{}');
   Object.assign(sectionCollapsed, saved);
 } catch (_) {}
 try {
-  navCollapsed = localStorage.getItem('ncluster.navCollapsed') === '1';
+  navCollapsed = localStorage.getItem('clausius.navCollapsed') === '1';
 } catch (_) {}
 
 const STATE_ORDER = { RUNNING: 0, COMPLETING: 1, PENDING: 2, FAILED: 3, CANCELLED: 4 };
@@ -61,18 +61,18 @@ function toggleRunGroup(groupId) {
 
 const _progressCache = (() => {
   try {
-    return JSON.parse(sessionStorage.getItem('ncluster.progress') || '{}');
+    return JSON.parse(sessionStorage.getItem('clausius.progress') || '{}');
   } catch (_) { return {}; }
 })();
 const _progressSourceCache = (() => {
   try {
-    return JSON.parse(sessionStorage.getItem('ncluster.progressSrc') || '{}');
+    return JSON.parse(sessionStorage.getItem('clausius.progressSrc') || '{}');
   } catch (_) { return {}; }
 })();
 
 function _saveProgressCache() {
-  try { sessionStorage.setItem('ncluster.progress', JSON.stringify(_progressCache)); } catch (_) {}
-  try { sessionStorage.setItem('ncluster.progressSrc', JSON.stringify(_progressSourceCache)); } catch (_) {}
+  try { sessionStorage.setItem('clausius.progress', JSON.stringify(_progressCache)); } catch (_) {}
+  try { sessionStorage.setItem('clausius.progressSrc', JSON.stringify(_progressSourceCache)); } catch (_) {}
 }
 
 function resolveProgress(cluster, jobid, apiProgress, state, apiSource) {
@@ -796,7 +796,7 @@ async function openClusterAvail() {
 
 function closeClusterAvail() {}
 
-const _TEAM_CACHE_KEY = 'ncluster.teamUsageCache';
+const _TEAM_CACHE_KEY = 'clausius.teamUsageCache';
 
 function _saveTeamCache() {
   try {
@@ -850,7 +850,7 @@ function _shortAcct(acct) {
 
 const _PPP_COLORS = ['ppp-c0', 'ppp-c1', 'ppp-c2'];
 
-const _COMPUTE_CACHE_KEY = 'ncluster.computeCache';
+const _COMPUTE_CACHE_KEY = 'clausius.computeCache';
 
 function _saveComputeCache() {
   try {

@@ -1,12 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
   <style>
     rect { fill: #0d1117; }
-    text { fill: #E95378; }
+    text, path { fill: #E95378; }
     @media (prefers-color-scheme: light) {
       rect { fill: #ffffff; }
-      text { fill: #2BA298; }
+      text, path { fill: #2BA298; }
     }
   </style>
   <rect width="128" height="128" rx="28"/>
-  <text x="64" y="96" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="96">n</text>
+  <!-- Δ as a path -->
+  <path d="M28 88 L44 48 L60 88 Z M38 82 L44 58 L50 82 Z" fill-rule="evenodd"/>
+  <!-- S -->
+  <text x="78" y="88" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="62">S</text>
+  <!-- <0 subscript -->
+  <text x="108" y="106" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="700" font-size="24">&lt;0</text>
 </svg>

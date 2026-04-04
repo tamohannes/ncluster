@@ -1,16 +1,16 @@
 ---
-description: Restart the ncluster service after making changes
+description: Restart the clausius service after making changes
 alwaysApply: true
 ---
 
 # Restart Server After Changes
 
-After making any code changes to the ncluster app (Python backend, JS frontend, CSS, HTML templates), restart the service so the user can see the changes immediately.
+After making any code changes to the clausius app (Python backend, JS frontend, CSS, HTML templates), restart the service so the user can see the changes immediately.
 
 ## How to restart
 
 ```bash
-systemctl --user restart ncluster.service
+systemctl --user restart clausius.service
 ```
 
 ## When to restart
@@ -23,5 +23,5 @@ systemctl --user restart ncluster.service
 After restarting, briefly check the service is healthy:
 
 ```bash
-systemctl --user is-active ncluster.service
+systemctl --user is-active clausius.service
 ```

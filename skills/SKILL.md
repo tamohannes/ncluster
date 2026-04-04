@@ -1,16 +1,16 @@
 ---
-name: ncluster
+name: clausius
 description: Multi-cluster Slurm dashboard and MCP server for monitoring, managing, and exploring GPU jobs across HPC clusters. Use when the user asks about job status, logs, stats, history, cancellation, cluster availability, partitions, submission recommendations, mounts, running scripts on clusters, or anything related to Slurm jobs and GPU compute.
 ---
 
-# ncluster — Multi-Cluster Slurm Dashboard + MCP Agent API
+# clausius — Multi-Cluster Slurm Dashboard + MCP Agent API
 
-> MCP server name: **`user-ncluster`**
+> MCP server name: **`user-clausius`**
 > Backend: Flask at `http://localhost:7272`
-> Service: `systemctl --user status ncluster.service`
+> Service: `systemctl --user status clausius.service`
 > Source: `~/ncluster`
 
-All cluster interactions MUST go through the ncluster MCP server. Do NOT write ad-hoc `ssh`, `squeue`, `sacct`, `scontrol`, or `scancel` commands.
+All cluster interactions MUST go through the clausius MCP server. Do NOT write ad-hoc `ssh`, `squeue`, `sacct`, `scontrol`, or `scancel` commands.
 
 ---
 
@@ -211,7 +211,7 @@ Use blockquotes for model outputs or external sources. Titles must be descriptiv
 - Attempt to fetch logs/stats for PENDING jobs
 - Cancel jobs without explicit user request
 
-Only fall back to SSH if debugging the ncluster app itself or the user explicitly requests raw output.
+Only fall back to SSH if debugging the clausius app itself or the user explicitly requests raw output.
 
 ---
 
@@ -220,8 +220,8 @@ Only fall back to SSH if debugging the ncluster app itself or the user explicitl
 Source lives at `~/ncluster`. After changes to `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`:
 
 ```bash
-systemctl --user restart ncluster.service
-systemctl --user is-active ncluster.service
+systemctl --user restart clausius.service
+systemctl --user is-active clausius.service
 ```
 
 Key architecture constraints when modifying:

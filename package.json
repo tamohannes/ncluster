@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "ncluster-tests",
+  "name": "clausius-tests",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

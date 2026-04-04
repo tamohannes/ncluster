@@ -1,4 +1,4 @@
-"""Shared fixtures for the ncluster test suite.
+"""Shared fixtures for the clausius test suite.
 
 Two test modes:
   - CI / GitHub:  No config.json, falls back to config.example.json.

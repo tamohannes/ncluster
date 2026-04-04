@@ -1,10 +1,11 @@
 <p align="center">
-  <img src="docs/icon.png" width="80" alt="ncluster logo">
+  <img src="docs/icon.png" width="80" alt="clausius logo">
 </p>
 
-<h1 align="center">ncluster</h1>
+<h1 align="center">clausius</h1>
 
 <p align="center">
+  <em>Research clusters are chaotic. We are here to reverse the entropy.</em><br><br>
   Multi-cluster Slurm dashboard with AI agent integration via MCP.<br>
   Monitor, explore, and manage GPU jobs across HPC clusters from a single browser tab —<br>
   or let your AI coding agent do it through the built-in MCP server.
@@ -13,8 +14,8 @@
 ## Quick Start
 
 ```bash
-git clone https://github.com/tamohannes/ncluster.git
-cd ncluster
+git clone https://github.com/tamohannes/clausius.git
+cd clausius
 pip install flask paramiko
 cp conf/config.example.json conf/config.json  # edit with your cluster details
 python app.py
@@ -24,7 +25,7 @@ Open [http://localhost:7272](http://localhost:7272)
 
 ## Architecture
 
-![ncluster architecture](docs/architecture.png)
+![clausius architecture](docs/architecture.png)
 
 Three-lane SSH connection pool: **primary** (Slurm control), **background** (metadata), **data** (file I/O routed to data-copier nodes with automatic login-node fallback). AI Hub OpenSearch integration for formal GPU allocations and fairshare data.
 
@@ -156,9 +157,9 @@ Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "ncluster": {
+    "clausius": {
       "command": "python3",
-      "args": ["/path/to/ncluster/mcp_server.py"]
+      "args": ["/path/to/clausius/mcp_server.py"]
     }
   }
 }
@@ -168,14 +169,14 @@ Reload Cursor to activate. Requires the Flask app to be running.
 
 ### Cursor Agent Skill
 
-Install the ncluster skill so Cursor's agent knows how to use the MCP tools across all your projects:
+Install the clausius skill so Cursor's agent knows how to use the MCP tools across all your projects:
 
 ```bash
-mkdir -p ~/.cursor/skills/ncluster
-cp skills/SKILL.md ~/.cursor/skills/ncluster/SKILL.md
+mkdir -p ~/.cursor/skills/clausius
+cp skills/SKILL.md ~/.cursor/skills/clausius/SKILL.md
 ```
 
-This registers ncluster as a user-level skill. The agent will automatically discover it and use the MCP tools instead of raw SSH commands when you ask about jobs, logs, cluster availability, or submission recommendations.
+This registers clausius as a user-level skill. The agent will automatically discover it and use the MCP tools instead of raw SSH commands when you ask about jobs, logs, cluster availability, or submission recommendations.
 
 ## Configuration
 
@@ -232,9 +233,9 @@ The optional `data_host` routes file-explorer I/O to a data-copier node, reducin
 
 ### Environment Variables
 
-- `NCLUSTER_SSH_USER` (default: `$USER`)
-- `NCLUSTER_SSH_KEY` (default: `~/.ssh/id_ed25519`)
-- `NCLUSTER_MOUNT_MAP` (JSON map of cluster -> mount roots)
+- `CLAUSIUS_SSH_USER` (default: `$USER`)
+- `CLAUSIUS_SSH_KEY` (default: `~/.ssh/id_ed25519`)
+- `CLAUSIUS_MOUNT_MAP` (JSON map of cluster -> mount roots)
 
 ## Job Name Prefix Protocol
 
@@ -348,7 +349,7 @@ Dependency chain auto-detection from run name suffixes:
 
 ```ini
 [Unit]
-Description=ncluster
+Description=clausius — Research clusters are chaotic. We are here to reverse the entropy.
 After=network.target
 
 [Service]
@@ -366,7 +367,7 @@ WantedBy=default.target
 
 ```bash
 systemctl --user daemon-reload
-systemctl --user enable --now ncluster.service
+systemctl --user enable --now clausius.service
 ```
 
 ## Testing

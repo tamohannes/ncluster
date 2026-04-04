@@ -1,7 +1,7 @@
 """Live MCP read-path tests against running app.
 
 Run with: pytest tests/live/test_mcp_live_read_paths.py -m live -v
-Requires: ncluster running at localhost:7272.
+Requires: clausius running at localhost:7272.
 """
 
 import pytest

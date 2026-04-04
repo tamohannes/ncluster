@@ -56,7 +56,7 @@ declare const _restoreLogbookState: () => void;
 
 describe('sidebar width persistence', () => {
   it('restores the left sidebar width from localStorage', () => {
-    localStorage.setItem('ncluster.navWidth', '410');
+    localStorage.setItem('clausius.navWidth', '410');
 
     applySidebarState();
 
@@ -64,8 +64,8 @@ describe('sidebar width persistence', () => {
   });
 
   it('restores the right sidebar width from localStorage', () => {
-    localStorage.setItem('ncluster.logbookWidth', '560');
-    sessionStorage.setItem('ncluster.logbookOpen', '1');
+    localStorage.setItem('clausius.logbookWidth', '560');
+    sessionStorage.setItem('clausius.logbookOpen', '1');
 
     _restoreLogbookState();
 
@@ -83,6 +83,6 @@ describe('sidebar width persistence', () => {
     document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
 
     expect(panel.style.width).toBe('440px');
-    expect(localStorage.getItem('ncluster.logbookWidth')).toBe('440');
+    expect(localStorage.getItem('clausius.logbookWidth')).toBe('440');
   });
 });

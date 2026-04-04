@@ -1,9 +1,9 @@
-"""MCP server for ncluster.
+"""MCP server for clausius.
 
 Exposes cluster job status, log reading, stats, and history as MCP tools
 so AI agents can inspect experiment runs without SSH or manual curl.
 
-Requires the ncluster Flask app to be running at http://localhost:7272.
+Requires the clausius Flask app to be running at http://localhost:7272.
 """
 
 import json
@@ -14,7 +14,7 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("ncluster")
+mcp = FastMCP("clausius")
 
 API_BASE = "http://localhost:7272"
 
@@ -27,7 +27,7 @@ def _api_get(path: str) -> dict:
         with urllib.request.urlopen(url, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason}). Is the service running?"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason}). Is the service running?"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -39,7 +39,7 @@ def _api_post(path: str) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -53,7 +53,7 @@ def _api_post_json(path: str, data: dict) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -700,7 +700,7 @@ def update_logbook_entry(
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -714,7 +714,7 @@ def delete_logbook_entry(project: str, entry_id: int) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -888,7 +888,7 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
     with open(image_path, "rb") as f:
         data = f.read()
 
-    boundary = "----ncluster_upload_boundary"
+    boundary = "----clausius_upload_boundary"
     body = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
@@ -904,7 +904,7 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.URLError as exc:
-        return {"status": "error", "error": f"ncluster unreachable ({exc.reason})"}
+        return {"status": "error", "error": f"clausius unreachable ({exc.reason})"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 

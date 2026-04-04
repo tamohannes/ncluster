@@ -1,4 +1,4 @@
-"""ncluster — entry point."""
+"""clausius — entry point."""
 
 import threading
 

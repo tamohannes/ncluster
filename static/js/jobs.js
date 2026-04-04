@@ -129,21 +129,21 @@ function _renderAppTabs() {
 
 function _persistTabs() {
   try {
-    localStorage.setItem('ncluster.appTabs', JSON.stringify(_appTabs));
-    localStorage.setItem('ncluster.activeTabId', String(_activeTabId));
-    localStorage.setItem('ncluster.nextTabId', String(_nextTabId));
+    localStorage.setItem('clausius.appTabs', JSON.stringify(_appTabs));
+    localStorage.setItem('clausius.activeTabId', String(_activeTabId));
+    localStorage.setItem('clausius.nextTabId', String(_nextTabId));
   } catch (_) {}
 }
 
 function _restoreTabs() {
   try {
-    const raw = localStorage.getItem('ncluster.appTabs');
+    const raw = localStorage.getItem('clausius.appTabs');
     if (raw) {
       const tabs = JSON.parse(raw);
       if (Array.isArray(tabs) && tabs.length) {
         _appTabs = tabs;
-        _activeTabId = parseInt(localStorage.getItem('ncluster.activeTabId') || '1', 10);
-        _nextTabId = parseInt(localStorage.getItem('ncluster.nextTabId') || '2', 10);
+        _activeTabId = parseInt(localStorage.getItem('clausius.activeTabId') || '1', 10);
+        _nextTabId = parseInt(localStorage.getItem('clausius.nextTabId') || '2', 10);
         const at = _appTabs.find(t => t.id === _activeTabId) || _appTabs[0];
         _activeTabId = at.id;
         switchAppTab(at.id);
@@ -164,7 +164,7 @@ function applySidebarState() {
     nav.style.width = '0px';
   } else {
     try {
-      const saved = parseInt(localStorage.getItem('ncluster.navWidth') || '', 10);
+      const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
       const minW = 230;
       const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
       const w = Number.isNaN(saved) ? 280 : Math.min(maxW, Math.max(minW, saved));
@@ -179,7 +179,7 @@ function applySidebarState() {
 
 function toggleSidebar() {
   navCollapsed = !navCollapsed;
-  try { localStorage.setItem('ncluster.navCollapsed', navCollapsed ? '1' : '0'); } catch (_) {}
+  try { localStorage.setItem('clausius.navCollapsed', navCollapsed ? '1' : '0'); } catch (_) {}
   applySidebarState();
 }
 
@@ -227,7 +227,7 @@ function setupSidebarResizer() {
     if (next < minW) next = minW;
     if (next > maxW) next = maxW;
     nav.style.width = `${next}px`;
-    try { localStorage.setItem('ncluster.navWidth', String(next)); } catch (_) {}
+    try { localStorage.setItem('clausius.navWidth', String(next)); } catch (_) {}
   });
 
   window.addEventListener('mouseup', () => {
@@ -236,7 +236,7 @@ function setupSidebarResizer() {
   });
 
   try {
-    const saved = parseInt(localStorage.getItem('ncluster.navWidth') || '', 10);
+    const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
     if (!Number.isNaN(saved)) {
       const minW = 230;
       const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
@@ -248,7 +248,7 @@ function setupSidebarResizer() {
   window.addEventListener('resize', () => {
     if (!navCollapsed) {
       try {
-        const saved = parseInt(localStorage.getItem('ncluster.navWidth') || '', 10);
+        const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
         const minW = 230;
         const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
         const w = Number.isNaN(saved) ? 320 : Math.min(maxW, Math.max(minW, saved));
@@ -579,7 +579,7 @@ function groupClusters(data) {
 
 function toggleSection(name) {
   sectionCollapsed[name] = !sectionCollapsed[name];
-  localStorage.setItem('ncluster.sectionCollapsed', JSON.stringify(sectionCollapsed));
+  localStorage.setItem('clausius.sectionCollapsed', JSON.stringify(sectionCollapsed));
   renderGrid(allData);
 }
 

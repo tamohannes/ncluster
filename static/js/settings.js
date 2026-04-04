@@ -2,7 +2,7 @@
 const _themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
 function getThemePreference() {
-  return localStorage.getItem('ncluster.theme') || 'system';
+  return localStorage.getItem('clausius.theme') || 'system';
 }
 
 function resolveTheme(pref) {
@@ -26,7 +26,7 @@ function updateThemeUI(pref) {
 }
 
 function setTheme(mode) {
-  localStorage.setItem('ncluster.theme', mode);
+  localStorage.setItem('clausius.theme', mode);
   applyTheme(mode);
 }
 
@@ -57,7 +57,7 @@ let _shortcuts = {};
 
 function loadShortcuts() {
   try {
-    const raw = localStorage.getItem('ncluster.shortcuts');
+    const raw = localStorage.getItem('clausius.shortcuts');
     if (raw) {
       const saved = JSON.parse(raw);
       _shortcuts = {};
@@ -74,7 +74,7 @@ function loadShortcuts() {
 }
 
 function saveShortcuts() {
-  try { localStorage.setItem('ncluster.shortcuts', JSON.stringify(_shortcuts)); } catch (_) {}
+  try { localStorage.setItem('clausius.shortcuts', JSON.stringify(_shortcuts)); } catch (_) {}
 }
 
 function getShortcut(id) {
@@ -1009,7 +1009,7 @@ let bgSuffixes = [...BG_SUFFIXES_DEFAULT];
 
 function loadBgSuffixes() {
   try {
-    const raw = localStorage.getItem('ncluster.bgSuffixes');
+    const raw = localStorage.getItem('clausius.bgSuffixes');
     if (raw) bgSuffixes = JSON.parse(raw);
     else bgSuffixes = [...BG_SUFFIXES_DEFAULT];
   } catch (_) {
@@ -1023,7 +1023,7 @@ function saveBgSuffixes() {
   const el = document.getElementById('set-bg-suffixes');
   if (!el) return;
   bgSuffixes = el.value.split(',').map(s => s.trim()).filter(Boolean);
-  try { localStorage.setItem('ncluster.bgSuffixes', JSON.stringify(bgSuffixes)); } catch (_) {}
+  try { localStorage.setItem('clausius.bgSuffixes', JSON.stringify(bgSuffixes)); } catch (_) {}
   if (typeof _renderAll === 'function' && Object.keys(allData || {}).length) _renderAll();
   toast('Background suffixes saved');
 }
@@ -1040,11 +1040,11 @@ let jsonlMode = 'first';
 
 function loadLocalSettings() {
   try {
-    const autoRefresh = localStorage.getItem('ncluster.autoRefresh') === '1';
-    const interval = parseInt(localStorage.getItem('ncluster.refreshInterval') || '30');
-    const pageSize = parseInt(localStorage.getItem('ncluster.histPageSize') || '50');
-    jsonlLimit = parseInt(localStorage.getItem('ncluster.jsonlLimit') || '50');
-    jsonlMode = localStorage.getItem('ncluster.jsonlMode') || 'first';
+    const autoRefresh = localStorage.getItem('clausius.autoRefresh') === '1';
+    const interval = parseInt(localStorage.getItem('clausius.refreshInterval') || '30');
+    const pageSize = parseInt(localStorage.getItem('clausius.histPageSize') || '50');
+    jsonlLimit = parseInt(localStorage.getItem('clausius.jsonlLimit') || '50');
+    jsonlMode = localStorage.getItem('clausius.jsonlMode') || 'first';
     document.getElementById('set-autorefresh').checked = autoRefresh;
     document.getElementById('set-refresh-interval').value = interval;
     document.getElementById('set-hist-pagesize').value = pageSize;
@@ -1063,11 +1063,11 @@ function saveLocalSettings() {
   jsonlLimit = parseInt(document.getElementById('set-jsonl-limit').value) || 100;
   jsonlMode = document.getElementById('set-jsonl-mode').value || 'last';
   try {
-    localStorage.setItem('ncluster.autoRefresh', autoRefresh ? '1' : '0');
-    localStorage.setItem('ncluster.refreshInterval', String(interval));
-    localStorage.setItem('ncluster.histPageSize', String(pageSize));
-    localStorage.setItem('ncluster.jsonlLimit', String(jsonlLimit));
-    localStorage.setItem('ncluster.jsonlMode', jsonlMode);
+    localStorage.setItem('clausius.autoRefresh', autoRefresh ? '1' : '0');
+    localStorage.setItem('clausius.refreshInterval', String(interval));
+    localStorage.setItem('clausius.histPageSize', String(pageSize));
+    localStorage.setItem('clausius.jsonlLimit', String(jsonlLimit));
+    localStorage.setItem('clausius.jsonlMode', jsonlMode);
   } catch (_) {}
   applyLocalSettings();
 }
