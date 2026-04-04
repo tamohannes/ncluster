@@ -77,27 +77,44 @@ function initLogbookPage() {
   const sel = document.getElementById('lb-project-select');
   if (!sel) return;
 
-  fetch('/api/projects')
-    .then(r => r.json())
-    .then(projects => {
-      if (!Array.isArray(projects)) projects = [];
-      sel.innerHTML = projects.length
-        ? projects.map(p => `<option value="${p.project}">${p.emoji || ''} ${p.project}</option>`).join('')
-        : '<option value="">no projects</option>';
+  Promise.all([
+    fetch('/api/projects').then(r => r.json()).catch(() => []),
+    fetch('/api/logbook_projects').then(r => r.json()).catch(() => []),
+  ]).then(([jobProjects, lbProjects]) => {
+    if (!Array.isArray(jobProjects)) jobProjects = [];
+    if (!Array.isArray(lbProjects)) lbProjects = [];
 
-      if (projects.length) {
-        if (_lbProject && projects.some(p => p.project === _lbProject)) {
-          sel.value = _lbProject;
-        } else {
-          _lbProject = projects[0].project;
-        }
-        _loadEntries(_lbProject);
-        _loadRunNames(_lbProject);
+    const jobNames = new Set(jobProjects.map(p => p.project));
+    const extraLb = lbProjects.filter(name => !jobNames.has(name));
+
+    let html = '';
+    if (jobProjects.length) {
+      html += jobProjects.map(p =>
+        `<option value="${p.project}">${p.emoji || ''} ${p.project}</option>`
+      ).join('');
+    }
+    if (extraLb.length) {
+      html += '<option disabled>──────────</option>';
+      html += extraLb.map(name =>
+        `<option value="${name}">📒 ${name}</option>`
+      ).join('');
+    }
+    if (!html) html = '<option value="">no projects</option>';
+    sel.innerHTML = html;
+
+    const allNames = [...jobProjects.map(p => p.project), ...extraLb];
+    if (allNames.length) {
+      if (_lbProject && allNames.includes(_lbProject)) {
+        sel.value = _lbProject;
+      } else {
+        _lbProject = allNames[0];
       }
-    })
-    .catch(() => {
-      sel.innerHTML = '<option value="">failed to load</option>';
-    });
+      _loadEntries(_lbProject);
+      _loadRunNames(_lbProject);
+    }
+  }).catch(() => {
+    sel.innerHTML = '<option value="">failed to load</option>';
+  });
 }
 
 function openProjectLogbook() {

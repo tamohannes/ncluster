@@ -680,6 +680,12 @@ def api_projects():
     return jsonify(projects)
 
 
+@api.route("/api/logbook_projects")
+def api_logbook_projects():
+    from .logbooks import list_logbook_projects
+    return jsonify(list_logbook_projects())
+
+
 @api.route("/api/log_files/<cluster>/<job_id>")
 def api_log_files(cluster, job_id):
     if cluster not in CLUSTERS:

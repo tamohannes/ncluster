@@ -23,6 +23,16 @@ IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "logbook_images")
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".html", ".htm"}
 
 
+def list_logbook_projects():
+    """Return all distinct project names that have logbook entries."""
+    con = get_db()
+    rows = con.execute(
+        "SELECT DISTINCT project FROM logbook_entries WHERE project != '' ORDER BY project"
+    ).fetchall()
+    con.close()
+    return [r[0] for r in rows]
+
+
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
 
