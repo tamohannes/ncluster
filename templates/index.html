@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>clausius</title>
-<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icon.svg') }}">
+<link rel="icon" type="image/svg+xml" id="favicon" href="{{ url_for('static', filename='icon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 <script>
 (function(){var t=localStorage.getItem('clausius.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
@@ -21,7 +21,7 @@
       </svg>
     </button>
     <div class="topbar-sep"></div>
-    <div class="topbar-title"><img class="topbar-logo" src="{{ url_for('static', filename='icon.svg') }}" alt="clausius" width="20" height="20">clausius</div>
+    <div class="topbar-title"><svg class="topbar-logo" width="20" height="20" viewBox="0 0 128 128" aria-label="clausius"><rect width="128" height="128" rx="28" fill="var(--surface)"/><path d="M28 88 L44 48 L60 88 Z M38 82 L44 58 L50 82 Z" fill="var(--accent)" fill-rule="evenodd"/><text x="78" y="88" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="62" fill="var(--accent)">S</text><text x="108" y="106" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="700" font-size="24" fill="var(--accent)">&lt;0</text></svg>clausius</div>
   </div>
   <div class="topbar-sep"></div>
   <div class="topbar-tabs" id="topbar-tabs"></div>

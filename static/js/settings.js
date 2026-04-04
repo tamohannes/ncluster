@@ -15,8 +15,17 @@ function applyTheme(pref) {
   const resolved = resolveTheme(pref || getThemePreference());
   document.documentElement.setAttribute('data-theme', resolved);
   updateThemeUI(pref || getThemePreference());
+  _updateFavicon(resolved);
   if (typeof _renderAll === 'function' && Object.keys(allData || {}).length) _renderAll();
   if (typeof loadProjectButtons === 'function') loadProjectButtons();
+}
+
+function _updateFavicon(resolved) {
+  const fg = resolved === 'dark' ? '%23E95378' : '%232BA298';
+  const bg = resolved === 'dark' ? '%230d1117' : '%23ffffff';
+  const svg = `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'><rect width='128' height='128' rx='28' fill='${bg}'/><path d='M28 88 L44 48 L60 88 Z M38 82 L44 58 L50 82 Z' fill='${fg}' fill-rule='evenodd'/><text x='78' y='88' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-weight='800' font-size='62' fill='${fg}'>S</text><text x='108' y='106' text-anchor='middle' font-family='Helvetica Neue,Arial,sans-serif' font-weight='700' font-size='24' fill='${fg}'>&lt;0</text></svg>`;
+  const el = document.getElementById('favicon');
+  if (el) el.href = svg;
 }
 
 function updateThemeUI(pref) {
