@@ -245,11 +245,17 @@ def init_db():
             my_running      INTEGER,
             my_pending      INTEGER,
             req_nodes       INTEGER DEFAULT 1,
-            req_gpus_per_node INTEGER DEFAULT 8
+            req_gpus_per_node INTEGER DEFAULT 8,
+            occupancy_factor REAL
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_wds_ts ON wds_history(ts)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_wds_cluster ON wds_history(cluster, account, ts)")
+
+    try:
+        con.execute("ALTER TABLE wds_history ADD COLUMN occupancy_factor REAL")
+    except Exception:
+        pass
 
     con.commit()
     con.close()

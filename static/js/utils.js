@@ -977,6 +977,11 @@ function computeWds(cn, acct, ad, curGpuType) {
   const prefGpu = (curGpuType || '').toLowerCase();
   const machineScore = (!prefGpu || clusterGpu === prefGpu) ? 1.0 : 0.85;
 
+  const cd = _pppAllocData?.clusters?.[cn] || {};
+  const clOcc = cd.cluster_occupied_gpus || 0;
+  const clTot = cd.cluster_total_gpus || 0;
+  const occPct = clTot > 0 ? Math.round(clOcc / clTot * 100) : 100;
+
   const hardCapacity = Math.max(pppHeadroom, freeForTeam);
   const resourceGate = Math.min(
     1,
@@ -986,19 +991,21 @@ function computeWds(cn, acct, ad, curGpuType) {
 
   const teamPenalty = (teamNum && teamNum > 0 && freeForTeam <= 0) ? 0.7 : 1.0;
 
-  const myFsScore = Math.min(myLevelFs / 1.5, 1);
+  const effectiveMyFs = myLevelFs > 0 ? myLevelFs : pppLevelFs;
+  const myFsScore = Math.min(effectiveMyFs / 1.5, 1);
   const pppFsScore = Math.min(pppLevelFs / 1.5, 1);
   const queueScore = 1 - Math.min(Math.log1p(pendingQueue / Math.max(idleNodes, 1)) / Math.log1p(50), 1);
+  const occupancyFactor = 1.15 - 0.30 * Math.min(occPct / 100, 1);
 
   const priorityBlend = 0.55 * myFsScore + 0.20 * pppFsScore + 0.25 * queueScore;
-  const wds = Math.round(100 * resourceGate * priorityBlend * machineScore * teamPenalty);
+  const wds = Math.round(100 * resourceGate * priorityBlend * machineScore * teamPenalty * occupancyFactor);
 
   return {
     wds: Math.max(0, Math.min(100, wds)),
     resourceGate: Math.round(resourceGate * 100) / 100,
     myLevelFs, pppLevelFs,
     queueScore: Math.round(queueScore * 100) / 100,
-    machineScore,
+    machineScore, occupancyFactor: Math.round(occupancyFactor * 1000) / 1000,
     idleNodes, pendingQueue, freeForTeam, pppHeadroom,
   };
 }

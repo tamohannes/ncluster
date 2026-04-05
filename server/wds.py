@@ -19,7 +19,8 @@ log = logging.getLogger(__name__)
 
 
 def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
-                 my_level_fs, ppp_level_fs, team_num, req_nodes=1, req_gpn=8):
+                 my_level_fs, ppp_level_fs, team_num,
+                 occ_pct=100, req_nodes=1, req_gpn=8):
     """Compute WDS score using the same equation as the frontend."""
     req_gpus = req_nodes * req_gpn
 
@@ -32,19 +33,24 @@ def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
 
     team_penalty = 0.7 if (team_num is not None and team_num > 0 and free_for_team <= 0) else 1.0
 
-    my_fs_score = min(my_level_fs / 1.5, 1)
+    effective_my_fs = my_level_fs if my_level_fs > 0 else ppp_level_fs
+    my_fs_score = min(effective_my_fs / 1.5, 1)
     ppp_fs_score = min(ppp_level_fs / 1.5, 1)
     queue_score = 1 - min(
         math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1
     )
+    occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
 
     priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
-    wds = max(0, min(100, round(100 * resource_gate * priority_blend * team_penalty)))
+    wds = max(0, min(100, round(
+        100 * resource_gate * priority_blend * team_penalty * occupancy_factor
+    )))
 
     return {
         "wds": wds,
         "resource_gate": round(resource_gate, 3),
         "queue_score": round(queue_score, 3),
+        "occupancy_factor": round(occupancy_factor, 3),
     }
 
 
@@ -82,6 +88,10 @@ def compute_wds_snapshot():
         ps = part_data.get(cn, {})
         idle_nodes = ps.get("idle_nodes", 0)
         pending_queue = ps.get("pending_jobs", 0)
+
+        cl_occ = cd.get("cluster_occupied_gpus", 0)
+        cl_tot = cd.get("cluster_total_gpus", 0)
+        occ_pct = round(cl_occ / cl_tot * 100) if cl_tot > 0 else 100
 
         ta = TEAM_GPU_ALLOC.get(cn)
         team_num = None
@@ -122,7 +132,7 @@ def compute_wds_snapshot():
 
             result = _compute_wds(
                 free_for_team, ppp_headroom, idle_nodes, pending_queue,
-                my_level_fs, ppp_level_fs, team_num,
+                my_level_fs, ppp_level_fs, team_num, occ_pct=occ_pct,
             )
 
             rows.append((
@@ -131,6 +141,7 @@ def compute_wds_snapshot():
                 result["queue_score"], idle_nodes, pending_queue,
                 ppp_headroom, free_for_team, consumed, allocated,
                 team_running, my_running, my_pending, 1, 8,
+                result["occupancy_factor"],
             ))
 
     if not rows:
@@ -144,8 +155,9 @@ def compute_wds_snapshot():
             resource_gate, my_level_fs, ppp_level_fs,
             queue_score, idle_nodes, pending_queue,
             ppp_headroom, free_for_team, gpus_consumed, gpus_allocated,
-            team_running, my_running, my_pending, req_nodes, req_gpus_per_node
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            team_running, my_running, my_pending, req_nodes, req_gpus_per_node,
+            occupancy_factor
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, rows)
     con.commit()
     con.close()

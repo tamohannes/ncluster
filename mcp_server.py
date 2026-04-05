@@ -1147,12 +1147,14 @@ def where_to_submit(
         hard_capacity = max(ppp_headroom, free)
         resource_gate = min(1, hard_capacity / max(job_gpus, 1), idle_nodes / max(nodes, 1))
         team_penalty = 0.7 if (team_num is not None and free <= 0) else 1.0
-        my_fs_score = min(my_level_fs / 1.5, 1)
+        effective_my_fs = my_level_fs if my_level_fs > 0 else level_fs
+        my_fs_score = min(effective_my_fs / 1.5, 1)
         ppp_fs_score = min(level_fs / 1.5, 1)
         queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
+        occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
         machine_score = 1.0 if same_gpu else 0.85
         priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
-        wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty)))
+        wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty * occupancy_factor)))
 
         if free >= job_gpus or wds > 0:
             recommendations.append({
@@ -1169,6 +1171,7 @@ def where_to_submit(
                 "resource_gate": round(resource_gate, 2),
                 "queue_score": round(queue_score, 2),
                 "machine_score": machine_score,
+                "occupancy_factor": round(occupancy_factor, 3),
                 "cluster_occupancy_pct": occ_pct,
                 "team_running": team_running,
                 "team_pending": team_pending,
