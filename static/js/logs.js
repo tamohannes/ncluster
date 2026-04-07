@@ -550,47 +550,77 @@ function _fitHtmlEmbed(iframe) {
     retryTimer = setTimeout(tryFit, delay);
   }
 
-  function fitPlotly(win, doc) {
-    const plotDiv = doc.querySelector('.js-plotly-plot, .plotly-graph-div');
-    if (!plotDiv || !win.Plotly || !plotDiv._fullLayout) return false;
-
-    const width = Math.max(iframe.clientWidth, 320);
-    const height = Math.max(iframe.clientHeight, 240);
+  function fitContent(win, doc) {
     const root = doc.documentElement;
-    const wrapper = plotDiv.parentElement && plotDiv.parentElement !== doc.body ? plotDiv.parentElement : null;
-
+    const body = doc.body || root;
     root.style.margin = '0';
-    root.style.width = '100%';
-    root.style.height = '100%';
-    root.style.overflow = 'hidden';
-    doc.body.style.margin = '0';
-    doc.body.style.width = '100%';
-    doc.body.style.height = '100%';
-    doc.body.style.overflow = 'hidden';
+    body.style.margin = '0';
 
-    if (wrapper) {
-      wrapper.style.width = '100%';
-      wrapper.style.height = '100%';
-      wrapper.style.margin = '0';
-    }
+    const plotDiv = doc.querySelector('.js-plotly-plot, .plotly-graph-div');
+    const iw = Math.max(iframe.clientWidth, 320);
+    const ih = Math.max(iframe.clientHeight, 240);
 
-    plotDiv.style.width = `${width}px`;
-    plotDiv.style.height = `${height}px`;
-    plotDiv.style.maxWidth = '100%';
-    plotDiv.style.maxHeight = '100%';
+    if (plotDiv && win.Plotly) {
+      if (!plotDiv._fullLayout) return false;
 
-    if (typeof win.Plotly.relayout === 'function') {
-      win.Plotly.relayout(plotDiv, { autosize: false, width, height })
-        .then(() => {
-          if (win.Plotly.Plots && typeof win.Plotly.Plots.resize === 'function') {
-            win.Plotly.Plots.resize(plotDiv);
-          }
+      const mainSvg = plotDiv.querySelector('svg.main-svg');
+      const origW = mainSvg ? (parseInt(mainSvg.getAttribute('width')) || 1400) : 1400;
+      const origH = mainSvg ? (parseInt(mainSvg.getAttribute('height')) || 700) : 700;
+      const isLightbox = iframe.closest('.lb-lightbox-html');
+
+      root.style.cssText = 'margin:0;width:100%;height:100%';
+      body.style.cssText = 'margin:0;width:100%;height:100%';
+      const wrapper = plotDiv.parentElement;
+      if (wrapper && wrapper !== body) wrapper.style.cssText = 'width:100%;height:100%';
+
+      if (isLightbox) {
+        plotDiv.style.width = '100%';
+        plotDiv.style.height = '100%';
+        plotDiv.querySelectorAll('svg.main-svg').forEach(svg => {
+          svg.setAttribute('width', '100%');
+          svg.setAttribute('height', '100%');
+        });
+        const pc = plotDiv.querySelector('.plot-container');
+        if (pc) pc.style.cssText = 'width:100%;height:100%';
+        const sc = plotDiv.querySelector('.svg-container');
+        if (sc) sc.style.cssText = 'width:100%!important;height:100%!important';
+        win.Plotly.Plots.resize(plotDiv);
+      } else if (origW > iw) {
+        plotDiv.style.width = origW + 'px';
+        plotDiv.style.height = origH + 'px';
+        win.Plotly.relayout(plotDiv, {
+          width: origW, height: origH, autosize: false,
+          paper_bgcolor: '#fff', plot_bgcolor: '#fff',
         })
-        .catch(() => {});
-    } else if (win.Plotly.Plots && typeof win.Plotly.Plots.resize === 'function') {
-      win.Plotly.Plots.resize(plotDiv);
+          .then(() => win.Plotly.toImage(plotDiv, { format: 'svg', width: origW, height: origH }))
+          .then(svgUrl => {
+            iframe.style.cssText = 'display:none!important';
+            const container = iframe.parentElement;
+            if (container.querySelector('img.plotly-static')) return;
+            const img = document.createElement('img');
+            img.className = 'plotly-static';
+            img.src = svgUrl;
+            img.style.cssText = 'width:100%;height:auto;display:block;border-radius:8px;background:#fff;cursor:zoom-in';
+            img.onclick = () => openHtmlLightbox(iframe.src);
+            container.insertBefore(img, iframe);
+            container.style.height = 'auto';
+          })
+          .catch(() => {});
+      }
+      return true;
     }
-    return true;
+
+    const cw = root.scrollWidth;
+    const ch = root.scrollHeight;
+    if (cw > iw * 1.05 || ch > ih * 1.05) {
+      const scale = Math.min(iw / cw, ih / ch, 1);
+      root.style.overflow = 'hidden';
+      body.style.transformOrigin = 'top left';
+      body.style.transform = `scale(${scale})`;
+      body.style.width = `${100 / scale}%`;
+      body.style.height = `${100 / scale}%`;
+    }
+    return cw > 10 && ch > 10;
   }
 
   function tryFit() {
@@ -603,7 +633,7 @@ function _fitHtmlEmbed(iframe) {
         return;
       }
 
-      if (fitPlotly(win, doc)) {
+      if (fitContent(win, doc)) {
         fitted = true;
         return;
       }
@@ -612,21 +642,7 @@ function _fitHtmlEmbed(iframe) {
         scheduleFit();
         return;
       }
-
       fitted = true;
-      const cw = doc.documentElement.scrollWidth;
-      const ch = doc.documentElement.scrollHeight;
-      const iw = iframe.clientWidth;
-      const ih = iframe.clientHeight;
-      if (cw < 10 || ch < 10) return;
-      const scale = Math.min(iw / cw, ih / ch, 1);
-      if (scale < 1) {
-        const body = doc.body || doc.documentElement;
-        body.style.transformOrigin = 'top left';
-        body.style.transform = `scale(${scale})`;
-        body.style.width = `${100 / scale}%`;
-        body.style.height = `${100 / scale}%`;
-      }
     } catch (_) {
       if (attempts < maxAttempts) scheduleFit();
     }
@@ -650,10 +666,16 @@ function _renderHtmlEmbed(text) {
   const m = text.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
   if (m) { caption = m[1]; url = m[2]; }
   const safeSrc = url.replace(/"/g, '&quot;');
+  const previewSrcBase = safeSrc.replace(/(\.html?)(\?[^"]*)?$/i, '.png$2');
+  const previewSrc = previewSrcBase + (previewSrcBase.includes('?') ? '&' : '?') + 'preview=1';
+  const safeAlt = escapeHtml(caption || 'Interactive figure preview');
   return `<div class="lb-html-embed">
-    <button class="lb-html-embed-zoom" onclick="openHtmlLightbox('${safeSrc}')" title="Open fullscreen">⛶</button>
-    <iframe src="${safeSrc}" sandbox="allow-scripts allow-same-origin" loading="lazy" onload="_fitHtmlEmbed(this)"></iframe>
-    ${caption ? `<div class="lb-html-embed-caption">${escapeHtml(caption)}</div>` : ''}
+    <img class="lb-html-embed-preview" src="${previewSrc}" alt="${safeAlt}" loading="lazy"
+         onclick="event.stopPropagation();openHtmlLightbox('${safeSrc}')"
+         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+    <div class="lb-html-embed-fallback" onclick="event.stopPropagation();openHtmlLightbox('${safeSrc}')" style="display:none">
+      Open interactive figure
+    </div>
   </div>`;
 }
 

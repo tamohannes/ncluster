@@ -659,8 +659,9 @@ def create_logbook_entry(project: str, title: str, body: str = "", entry_type: s
 
     Rich content:
     - Images: upload with upload_logbook_image, embed with ![caption](url)
-    - Interactive HTML figures (plotly, bokeh, etc.): upload .html files with
-      upload_logbook_image, then embed using ONE of these two formats:
+    - Interactive HTML figures (plotly, bokeh, sankey, etc.): upload .html
+      files with upload_logbook_image, then embed using ONE of these two
+      formats:
 
       Format 1 — bare URL on its own line:
         /api/logbook/project/images/plot.html
@@ -670,6 +671,24 @@ def create_logbook_entry(project: str, title: str, body: str = "", entry_type: s
 
       IMPORTANT: Do NOT use raw <iframe> tags — they will be escaped and
       rendered as literal text. Only the two formats above are supported.
+
+      STRICT REQUIREMENTS FOR HTML FIGURES:
+      1. Every uploaded .html figure MUST also have a same-basename .png
+         preview uploaded to the same project image store:
+           plot.html  <->  plot.png
+      2. Inline logbook rendering uses the .png preview for stability and
+         opens the .html only in fullscreen / interactive mode.
+      3. If the .png preview is missing, inline rendering degrades to a plain
+         "Open interactive figure" fallback.
+      4. The .png preview MUST show the full figure content without cropping.
+         Prefer a white background and a 2:1-ish aspect ratio such as
+         1400x700 (or equivalent at 2x scale).
+      5. The .html and .png MUST represent the same figure state. Do not
+         upload a stale preview for a newer .html.
+      6. Do NOT rely on inline interactivity to reveal hidden content. The
+         .png preview must already be legible and complete on its own.
+      7. For Plotly/Bokeh HTML, prefer responsive output and white
+         backgrounds so fullscreen rendering is predictable.
 
     - Figure captions: place a blockquote starting with **Figure N.** on the
       line immediately after an image/HTML embed for a styled caption.
@@ -906,13 +925,24 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
     IMPORTANT: Do NOT use raw <iframe> or other HTML tags. The logbook
     renderer only supports the two formats above for HTML embeds.
 
-    Requirements for interactive HTML figures (Plotly, Bokeh, etc.):
-    - NEVER set fixed width/height in the layout. Use autosize instead:
-        fig.update_layout(autosize=True)  # NOT width=1400, height=700
-    - For Plotly, write with responsive config:
+    STRICT REQUIREMENTS FOR HTML FIGURES:
+    - Upload a same-basename .png preview alongside every .html:
+        plot.html  <->  plot.png
+    - The inline renderer uses the .png preview. The .html is opened only for
+      interactive/fullscreen viewing.
+    - If no .png exists, users only get a fallback button instead of an inline
+      preview.
+    - The .png preview MUST show the full chart/figure, not a cropped region.
+      Prefer white background and 1400x700 (or similar 2:1 ratio) so inline
+      previews fit cleanly.
+    - The .html and .png must match exactly in content/state.
+    - For Plotly/Bokeh HTML, prefer responsive config and white backgrounds:
+        fig.update_layout(autosize=True, paper_bgcolor="white", plot_bgcolor="white")
         fig.write_html("plot.html", config={"responsive": True})
-    - The logbook embeds these in iframes that vary in size (320px inline,
-      90vh fullscreen). Fixed dimensions prevent proper scaling.
+    - For the preview PNG, prefer an explicit export:
+        fig.write_image("plot.png", width=1400, height=700, scale=2)
+    - Do NOT depend on inline interactivity to reveal hidden labels or nodes;
+      the preview must already be readable on its own.
 
     Args:
         project:    Project name.

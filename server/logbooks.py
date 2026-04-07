@@ -61,7 +61,7 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         rows = con.execute(
-            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type
+            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type, e.pinned
                 FROM logbook_entries e
                 JOIN logbook_fts f ON e.id = f.rowid
                 WHERE {where}
@@ -78,10 +78,10 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         rows = con.execute(
-            f"""SELECT id, project, title, body, created_at, edited_at, entry_type
+            f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned
                 FROM logbook_entries
                 WHERE {where}
-                ORDER BY {sort_col} {sort_dir}
+                ORDER BY pinned DESC, {sort_col} {sort_dir}
                 LIMIT ? OFFSET ?""",
             params,
         ).fetchall()
@@ -92,7 +92,7 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
 def get_entry(project, entry_id):
     con = get_db()
     row = con.execute(
-        "SELECT id, project, title, body, created_at, edited_at, entry_type FROM logbook_entries WHERE id = ? AND project = ?",
+        "SELECT id, project, title, body, created_at, edited_at, entry_type, pinned FROM logbook_entries WHERE id = ? AND project = ?",
         (entry_id, project),
     ).fetchone()
     con.close()

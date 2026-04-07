@@ -13,31 +13,25 @@ const LB_SIDEBAR_WIDTH_KEY = 'clausius.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
 const LB_MAP_VIEW_KEY = 'clausius.lbMapView';
-const LB_PINS_KEY = 'clausius.lbPinnedEntries';
+let _pinnedEntryIds = new Set();
 
-function _getPinnedIds() {
+async function togglePinEntry(entryId, project) {
+  const wasPinned = _pinnedEntryIds.has(entryId);
+  const newPinned = !wasPinned;
   try {
-    const raw = localStorage.getItem(LB_PINS_KEY);
-    return raw ? JSON.parse(raw) : {};
-  } catch (_) { return {}; }
-}
-
-function _savePinnedIds(pins) {
-  try { localStorage.setItem(LB_PINS_KEY, JSON.stringify(pins)); } catch (_) {}
-}
-
-function togglePinEntry(entryId, project) {
-  const pins = _getPinnedIds();
-  const key = `${project || _lbProject}:${entryId}`;
-  if (pins[key]) delete pins[key];
-  else pins[key] = true;
-  _savePinnedIds(pins);
+    await fetch(`/api/logbook/${encodeURIComponent(project || _lbProject)}/entries/${entryId}/pin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pinned: newPinned }),
+    });
+    if (newPinned) _pinnedEntryIds.add(entryId);
+    else _pinnedEntryIds.delete(entryId);
+  } catch (_) {}
   if (_lbProject) _loadEntries(_lbProject);
 }
 
-function _isEntryPinned(entryId, project) {
-  const pins = _getPinnedIds();
-  return !!pins[`${project || _lbProject}:${entryId}`];
+function _isEntryPinned(entryId) {
+  return _pinnedEntryIds.has(entryId);
 }
 
 (function setupLbSplitter() {
@@ -169,8 +163,9 @@ function _renderSidebarList(entries) {
     return;
   }
 
-  const pinned = entries.filter(e => _isEntryPinned(e.id));
-  const unpinned = entries.filter(e => !_isEntryPinned(e.id));
+  _pinnedEntryIds = new Set(entries.filter(e => e.pinned).map(e => e.id));
+  const pinned = entries.filter(e => e.pinned);
+  const unpinned = entries.filter(e => !e.pinned);
   const sorted = [...pinned, ...unpinned];
 
   let html = '';
@@ -364,6 +359,7 @@ function _dismissLightbox(overlay) {
 
 document.addEventListener('click', e => {
   if (e.target.closest('.lb-html-embed-zoom')) return;
+  if (e.target.closest('.lb-html-embed-preview, .lb-html-embed-fallback')) return;
   const img = e.target.closest('.lb-detail-body img, .logbook-entry-content img');
   if (!img) return;
   e.stopPropagation();

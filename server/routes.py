@@ -1537,6 +1537,17 @@ def api_logbook_update(project, entry_id):
     return jsonify(result)
 
 
+@api.route("/api/logbook/<project>/entries/<int:entry_id>/pin", methods=["POST"])
+def api_logbook_pin(project, entry_id):
+    pinned = (request.get_json(silent=True) or {}).get("pinned", True)
+    con = get_db()
+    con.execute("UPDATE logbook_entries SET pinned=? WHERE id=? AND project=?",
+                (1 if pinned else 0, entry_id, project))
+    con.commit()
+    con.close()
+    return jsonify({"status": "ok"})
+
+
 @api.route("/api/logbook/<project>/entries/<int:entry_id>", methods=["DELETE"])
 def api_logbook_delete(project, entry_id):
     result = _lb_delete(project, entry_id)

@@ -167,10 +167,14 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_created ON logbook_entries(project, created_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_edited ON logbook_entries(project, edited_at)")
 
-    try:
-        con.execute("ALTER TABLE logbook_entries ADD COLUMN entry_type TEXT NOT NULL DEFAULT 'note'")
-    except Exception:
-        pass
+    for col, default in [
+        ("entry_type", "TEXT NOT NULL DEFAULT 'note'"),
+        ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE logbook_entries ADD COLUMN {col} {default}")
+        except Exception:
+            pass
     con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_type ON logbook_entries(project, entry_type)")
 
     con.execute("""
