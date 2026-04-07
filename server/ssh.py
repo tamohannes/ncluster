@@ -233,6 +233,7 @@ def _ssh_exec_data(cluster_name, command, timeout_sec):
                     "bash", timeout=timeout_sec,
                 )
                 try:
+                    stdout.channel.settimeout(timeout_sec)
                     stdin_ch.write(command + "\nexit\n")
                     stdin_ch.flush()
                     stdin_ch.channel.shutdown_write()
@@ -274,6 +275,7 @@ def _ssh_exec(cluster_name, command, timeout_sec):
                     "bash", timeout=timeout_sec,
                 )
                 try:
+                    stdout.channel.settimeout(timeout_sec)
                     stdin_ch.write(command + "\nexit\n")
                     stdin_ch.flush()
                     stdin_ch.channel.shutdown_write()

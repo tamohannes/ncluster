@@ -355,7 +355,9 @@ def api_jobs_cluster(cluster):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if request.args.get("force") == "1":
         _last_polled[cluster] = 0.0
-    refresh_cluster(cluster)
+        refresh_cluster(cluster)
+    elif not _is_cache_fresh(cluster):
+        threading.Thread(target=refresh_cluster, args=(cluster,), daemon=True).start()
     with _cache_lock:
         data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
     if data.get("status") == "ok":
