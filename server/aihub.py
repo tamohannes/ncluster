@@ -141,16 +141,17 @@ def _fetch_cluster_occupancy_snapshot(os_clusters=None):
     return result
 
 
-def get_ppp_allocations(accounts=None, clusters=None):
+def get_ppp_allocations(accounts=None, clusters=None, force=False):
     """Get current PPP allocation snapshot across clusters.
 
     Returns per-cluster, per-account allocation and consumption data
     from the last 24 hours of account_gpus_hourly documents.
     """
     cache_key = "ppp_alloc"
-    cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        if cached is not None:
+            return cached
 
     accts = accounts or PPP_ACCOUNTS
     if not accts:
@@ -513,16 +514,17 @@ def _get_team_members():
         return []
 
 
-def get_user_overlay(users=None, accounts=None, clusters=None):
+def get_user_overlay(users=None, accounts=None, clusters=None, force=False):
     """Get per-user GPU consumption grouped by cluster and account.
 
     Used to overlay 'my usage' and 'team usage' on the PPP allocation bars.
     Returns {cluster: {account: {user: gpus_consumed}}}.
     """
     cache_key = f"user_overlay_{','.join(sorted(users or []))}"
-    cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        if cached is not None:
+            return cached
 
     accts = accounts or PPP_ACCOUNTS
     if not accts or not users:
@@ -614,7 +616,7 @@ def get_team_overlay():
     return data
 
 
-def get_my_fairshare(user=None, accounts=None, clusters=None):
+def get_my_fairshare(user=None, accounts=None, clusters=None, force=False):
     """Get per-user fairshare priority across all PPP accounts and clusters.
 
     Returns the user's personal level_fs and consumption per account per cluster.
@@ -627,9 +629,10 @@ def get_my_fairshare(user=None, accounts=None, clusters=None):
         return {"user": user, "clusters": {}}
 
     cache_key = f"my_fs_{user}"
-    cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
-    if cached is not None:
-        return cached
+    if not force:
+        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        if cached is not None:
+            return cached
 
     os_clusters = _os_cluster_names(clusters)
 

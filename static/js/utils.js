@@ -870,7 +870,7 @@ function _showComputeLoadBar(show) {
   bar.classList.toggle('active', show);
 }
 
-async function refreshPppAllocations() {
+async function refreshPppAllocations(force) {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
 
@@ -882,11 +882,12 @@ async function refreshPppAllocations() {
   try {
     _myFairshareData = null;
     _teamJobsData = null;
+    const q = force ? '?force=1' : '';
     const [allocRes] = await Promise.all([
-      fetch('/api/aihub/allocations'),
-      _ensureOverlayData(true),
+      fetch('/api/aihub/allocations' + q),
+      _ensureOverlayData(true, force),
       fetchPartitions(),
-      _fetchMyFairshare(),
+      _fetchMyFairshare(force),
       _fetchTeamJobs(),
       _fetchProjectColors(),
       _ensureLiveJobData(),
@@ -903,8 +904,9 @@ async function refreshPppAllocations() {
     if (!_pppAllocData) {
       el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
     }
+  } finally {
+    _showComputeLoadBar(false);
   }
-  _showComputeLoadBar(false);
 }
 
 let _teamJobsData = null;
@@ -1397,11 +1399,12 @@ function _getProjectColor(proj) {
 }
 let _pppOverlayFetching = false;
 
-async function _ensureOverlayData(force) {
-  if (!force && (_pppOverlayData || _pppOverlayFetching)) return _pppOverlayData;
+async function _ensureOverlayData(refetch, force) {
+  if (!refetch && (_pppOverlayData || _pppOverlayFetching)) return _pppOverlayData;
   _pppOverlayFetching = true;
   try {
-    const res = await fetch('/api/aihub/team_overlay');
+    const url = force ? '/api/aihub/team_overlay?force=1' : '/api/aihub/team_overlay';
+    const res = await fetch(url);
     const data = await res.json();
     if (data.status === 'ok') _pppOverlayData = data;
   } catch (_) {}
@@ -1409,9 +1412,10 @@ async function _ensureOverlayData(force) {
   return _pppOverlayData;
 }
 
-async function _fetchMyFairshare() {
+async function _fetchMyFairshare(force) {
   try {
-    const res = await fetch('/api/aihub/my_fairshare');
+    const url = force ? '/api/aihub/my_fairshare?force=1' : '/api/aihub/my_fairshare';
+    const res = await fetch(url);
     const data = await res.json();
     if (data.status === 'ok') _myFairshareData = data;
   } catch (_) {}

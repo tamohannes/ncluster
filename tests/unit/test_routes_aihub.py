@@ -9,7 +9,7 @@ class TestAihubAllocationsRoute:
     def test_allocations_returns_ok(self, client, monkeypatch):
         monkeypatch.setattr(
             "server.routes._aihub_alloc",
-            lambda accounts=None, clusters=None: {"clusters": {"eos": {"accounts": {}}}}
+            lambda accounts=None, clusters=None, force=False: {"clusters": {"eos": {"accounts": {}}}}
         )
         resp = client.get("/api/aihub/allocations")
         data = resp.get_json()
@@ -19,7 +19,7 @@ class TestAihubAllocationsRoute:
     @pytest.mark.unit
     def test_allocations_with_accounts_param(self, client, monkeypatch):
         captured = {}
-        def mock_alloc(accounts=None, clusters=None):
+        def mock_alloc(accounts=None, clusters=None, force=False):
             captured["accounts"] = accounts
             return {"clusters": {}}
         monkeypatch.setattr("server.routes._aihub_alloc", mock_alloc)

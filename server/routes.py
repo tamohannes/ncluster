@@ -1383,8 +1383,9 @@ from .aihub import (
 def api_aihub_allocations():
     accounts = request.args.get("accounts", "")
     acct_list = [a.strip() for a in accounts.split(",") if a.strip()] or None
+    force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_alloc(accounts=acct_list)
+        data = _aihub_alloc(accounts=acct_list, force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
@@ -1431,8 +1432,9 @@ def api_aihub_occupancy():
 
 @api.route("/api/aihub/team_overlay")
 def api_aihub_team_overlay():
+    force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_team_overlay()
+        data = _aihub_team_overlay(force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
@@ -1440,8 +1442,9 @@ def api_aihub_team_overlay():
 
 @api.route("/api/aihub/my_fairshare")
 def api_aihub_my_fairshare():
+    force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_my_fairshare()
+        data = _aihub_my_fairshare(force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
