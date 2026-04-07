@@ -880,13 +880,16 @@ async function refreshPppAllocations() {
 
   _showComputeLoadBar(true);
   try {
+    _myFairshareData = null;
+    _teamJobsData = null;
     const [allocRes] = await Promise.all([
       fetch('/api/aihub/allocations'),
-      _ensureOverlayData(),
+      _ensureOverlayData(true),
       fetchPartitions(),
       _fetchMyFairshare(),
       _fetchTeamJobs(),
       _fetchProjectColors(),
+      _ensureLiveJobData(),
     ]);
     const data = await allocRes.json();
     if (data.status === 'ok') {
@@ -1174,19 +1177,22 @@ function _renderPppAllocations(data) {
       for (const j of acctJobs) {
         if (j.user === currentUser) myTotalSqueue += (j.gpus || 0);
       }
-      if (!hasJobSplit && typeof allData !== 'undefined' && allData[cn]) {
+      if (typeof allData !== 'undefined' && allData[cn]) {
+        let liveGpus = 0;
         const liveJobs = (allData[cn].jobs || []).filter(j => !j._pinned);
         for (const j of liveJobs) {
           const s = (j.state || '').toUpperCase();
-          if (s === 'RUNNING' || s === 'COMPLETING') {
-            const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
-            const n = parseInt(j.nodes, 10) || 0;
-            const gpn = gm ? parseInt(gm[1], 10) : 8;
-            myTotalSqueue += n * gpn;
-          }
+          if (s !== 'RUNNING' && s !== 'COMPLETING') continue;
+          const ja = j.account || '';
+          if (ja && ja !== acct) continue;
+          const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
+          const n = parseInt(j.nodes, 10) || 0;
+          const gpn = gm ? parseInt(gm[1], 10) : 8;
+          liveGpus += n * gpn;
         }
+        myTotalSqueue = Math.max(myTotalSqueue, liveGpus);
       }
-      let myTotal = (hasJobSplit || myTotalSqueue > 0) ? myTotalSqueue : myTotalAihub;
+      let myTotal = myTotalSqueue;
       myTotal = Math.min(myTotal, consumed || myTotal);
       teamOthersTotal = Math.min(teamOthersTotal, Math.max(0, (consumed || 0) - myTotal));
       const pppNonTeam = Math.max(0, consumed - myTotal - teamOthersTotal);
@@ -1391,8 +1397,8 @@ function _getProjectColor(proj) {
 }
 let _pppOverlayFetching = false;
 
-async function _ensureOverlayData() {
-  if (_pppOverlayData || _pppOverlayFetching) return _pppOverlayData;
+async function _ensureOverlayData(force) {
+  if (!force && (_pppOverlayData || _pppOverlayFetching)) return _pppOverlayData;
   _pppOverlayFetching = true;
   try {
     const res = await fetch('/api/aihub/team_overlay');
@@ -1554,6 +1560,19 @@ function _populateAccountSelect() {
       sel.appendChild(opt);
     }
   }
+}
+
+async function _ensureLiveJobData() {
+  if (typeof allData !== 'undefined' && Object.values(allData).some(d => d.updated)) return;
+  try {
+    const res = await fetch('/api/jobs');
+    const data = await res.json();
+    if (typeof allData !== 'undefined') {
+      for (const [name, d] of Object.entries(data)) {
+        if (d.updated) allData[name] = d;
+      }
+    }
+  } catch (_) {}
 }
 
 async function initClustersPage() {

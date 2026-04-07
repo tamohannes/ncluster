@@ -971,6 +971,10 @@ def api_log_files(cluster, job_id):
             resp["first_content"] = content
             resp["first_source"] = source
             resp["first_resolved_path"] = resolved
+        import hashlib
+        fc = resp.get("first_content", "")
+        if fc:
+            resp["first_hash"] = hashlib.md5(fc.encode()).hexdigest()[:12]
 
     return jsonify(resp)
 
@@ -1075,7 +1079,15 @@ def api_log(cluster, job_id):
         crash = detect_crash(content)
         if crash is not None:
             _cache_set(_crash_cache, (cluster, str(job_id)), crash)
-    return jsonify({"status": "ok", "log_path": log_path, "content": content, "source": source, "resolved_path": resolved_path})
+    resp = {"status": "ok", "log_path": log_path, "content": content, "source": source, "resolved_path": resolved_path}
+    if force and content:
+        import hashlib
+        h = hashlib.md5(content.encode()).hexdigest()[:12]
+        resp["hash"] = h
+        if_hash = request.args.get("if_hash", "")
+        if if_hash == h:
+            return jsonify({"status": "ok", "unchanged": True, "hash": h})
+    return jsonify(resp)
 
 
 @api.route("/api/log_full/<cluster>/<job_id>")

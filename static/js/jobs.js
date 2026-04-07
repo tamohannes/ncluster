@@ -791,7 +791,7 @@ async function fetchAll() {
       _renderAll();
     }
   } catch (e) {
-    toast('Failed to fetch jobs', 'error');
+    console.warn('Initial job fetch failed, will retry per-cluster', e);
   }
 
   if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
@@ -836,13 +836,11 @@ async function _refreshClusters(names) {
     fetch(`/api/jobs/${name}`)
       .then(r => r.json())
       .then(data => {
-        if (data.status !== 'ok') {
-          const prev = allData[name];
-          if (prev && prev.status === 'ok' && prev.jobs && prev.jobs.length) return;
-        }
-        if (!data.updated) return;
         const prev = allData[name];
-        if (prev && prev.updated && data.updated < prev.updated) return;
+        const prevOk = prev && prev.status === 'ok' && prev.jobs && prev.jobs.length;
+        if (data.status !== 'ok' && prevOk) return;
+        if (!data.updated && prevOk) return;
+        if (prev && prev.updated && data.updated && data.updated < prev.updated) return;
         allData[name] = data;
         _fillMissing();
         _renderAll();

@@ -39,11 +39,19 @@ def extract_progress(content):
 
 def tail_local_file(path, lines):
     try:
-        result = subprocess.run(
-            ["tail", f"-n{int(lines)}", path],
-            capture_output=True, text=True, timeout=15,
-        )
-        return result.stdout or result.stderr or "(empty file)"
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size == 0:
+                return "(empty file)"
+            chunk = min(size, lines * 4096)
+            f.seek(-chunk, 2)
+            data = f.read()
+            text = data.decode("utf-8", errors="replace")
+            tail = text.split("\n")
+            if len(tail) > lines:
+                tail = tail[-lines:]
+            return "\n".join(tail)
     except Exception as e:
         return f"Could not read local mounted file: {e}"
 

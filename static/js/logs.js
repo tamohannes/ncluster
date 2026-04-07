@@ -77,6 +77,8 @@ async function openLog(cluster, jobId, jobName, force) {
         const sourceEl = document.getElementById('content-source');
         sourceEl.textContent = `source: ${_currentSource}`;
         sourceEl.className = `source-pill ${_currentSource}`;
+        _liveLastHash = data.first_hash || null;
+        startLive();
       } else {
         await viewFile(first.path);
       }
@@ -882,6 +884,7 @@ async function viewFile(path, force) {
     el.innerHTML = rendered.html;
     _currentSource = data.source || 'ssh';
     _currentResolvedPath = data.resolved_path || path;
+    _liveLastHash = data.hash || null;
     const sourceEl = document.getElementById('content-source');
     sourceEl.textContent = `source: ${_currentSource}`;
     sourceEl.className = `source-pill ${_currentSource}`;
@@ -889,6 +892,7 @@ async function viewFile(path, force) {
       document.getElementById('content-path').textContent = `${path}  ->  ${_currentResolvedPath}`;
     }
     el.parentElement.scrollTop = el.parentElement.scrollHeight;
+    startLive();
   } catch (e) {
     const el = document.getElementById('modal-content');
     el.className = 'log-content';
@@ -1046,13 +1050,16 @@ async function _liveTick() {
   if (!overlay || !overlay.classList.contains('open')) { stopLive(); return; }
   if (document.hidden) { _scheduleLiveTick(); return; }
   try {
-    const res = await fetch(`/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(_currentFilePath)}&lines=300&force=1`);
+    let url = `/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(_currentFilePath)}&lines=300&force=1`;
+    if (_liveLastHash) url += `&if_hash=${_liveLastHash}`;
+    const res = await fetch(url);
     const data = await res.json();
     if (!_liveActive) return;
     if (data.status !== 'ok') { _scheduleLiveTick(); return; }
-    const hash = _simpleHash(data.content || '');
-    if (hash !== _liveLastHash) {
-      _liveLastHash = hash;
+    if (data.unchanged) {
+      _liveInterval = Math.min(_liveInterval + 500, LIVE_MAX_MS);
+    } else {
+      _liveLastHash = data.hash || null;
       _liveInterval = LIVE_MIN_MS;
       const el = document.getElementById('modal-content');
       const rendered = renderFileContentByType(_currentFilePath, data.content);
@@ -1064,8 +1071,6 @@ async function _liveTick() {
       const sourceEl = document.getElementById('content-source');
       sourceEl.textContent = `source: ${_currentSource}`;
       sourceEl.className = `source-pill ${_currentSource}`;
-    } else {
-      _liveInterval = Math.min(_liveInterval + 500, LIVE_MAX_MS);
     }
   } catch (_) {
     _liveInterval = Math.min(_liveInterval + 1000, LIVE_MAX_MS);
