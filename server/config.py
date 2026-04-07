@@ -402,6 +402,8 @@ def reload_config(new_cfg):
     MOUNT_MAP.update(_load_mount_map())
     MOUNT_REMOTE_MAP.clear()
     MOUNT_REMOTE_MAP.update(_load_mount_remote_map())
+    MOUNT_ALIASES.clear()
+    MOUNT_ALIASES.update(_load_mount_aliases())
 
     PROJECTS.clear()
     PROJECTS.update(new_cfg.get("projects", {}))

@@ -1217,7 +1217,15 @@ def api_settings_post():
         if key in patch:
             merged[key] = patch[key]
     if "clusters" in patch:
-        merged["clusters"] = patch["clusters"]
+        existing = merged.get("clusters", {})
+        for cname, cpatch in patch["clusters"].items():
+            if cname in existing:
+                existing[cname].update(cpatch)
+            else:
+                existing[cname] = cpatch
+        for gone in set(existing) - set(patch["clusters"]):
+            del existing[gone]
+        merged["clusters"] = existing
     if "projects" in patch:
         merged["projects"] = patch["projects"]
     if "team" in patch:
