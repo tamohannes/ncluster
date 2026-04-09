@@ -1223,11 +1223,25 @@ function _renderPppAllocations(data) {
               if (showMe && myPend > 0) segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPend)}%"></div>`;
               if (showTeamUsage && teamRun > 0) segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRun)}%"></div>`;
               if (showTeamUsage && teamPend > 0) segments += `<div class="ppp-seg ppp-seg-team-pend" style="width:${toPct(teamPend)}%"></div>`;
+              const myPopL = myRun > 0 || myPend > 0 ? `${myRun} run${myPend > 0 ? ` · ${myPend} pend` : ''}` : '0';
+              const teamPopL = teamRun > 0 || teamPend > 0 ? `${teamRun} run${teamPend > 0 ? ` · ${teamPend} pend` : ''}` : '0';
+              const teamAllocL = teamNum ? `${teamNum} GPUs` : (teamAlloc === 'any' ? 'unlimited' : '');
+              const popRows = [
+                { label: currentUser, value: myPopL, cls: 'pop-me' },
+                { label: 'team', value: teamPopL, cls: 'pop-team' },
+                ...(teamAllocL ? [{ label: 'team alloc', value: teamAllocL, detail: 'informal', cls: 'pop-team-alloc' }] : []),
+                { label: 'cluster total', value: `${usedGpus} / ${totalGpus}`, detail: totalGpus > 0 ? `${Math.round(usedGpus/totalGpus*100)}%` : '', cls: 'pop-cluster' },
+              ];
+              const popHtml = popRows.map(r =>
+                `<div class="ppp-pop-row ${r.cls}"><span class="ppp-pop-label">${r.label}</span><span class="ppp-pop-val">${r.value}</span>${r.detail ? `<span class="ppp-pop-detail">${r.detail}</span>` : ''}</div>`
+              ).join('');
+
               html += `<div class="ppp-acct-row">
                 <span class="ppp-acct-name" title="${acct}">${_shortAcct(acct)}</span>
-                <div class="ppp-bar-outer">
+                <div class="ppp-bar-outer ppp-bar-hoverable" onclick="openUserBreakdown('${cn}','${acct}')">
                   <div class="ppp-bar-wrap">${segments}</div>
                   ${teamAllocMarker}
+                  <div class="ppp-popup">${popHtml}</div>
                 </div>
                 <span class="ppp-acct-nums"><strong>${totalAcctGpus}</strong> GPUs</span>
               </div>`;
@@ -1618,13 +1632,6 @@ async function openUserBreakdown(cluster, account) {
   overlay.classList.add('open');
 
   try {
-    const res = await fetch(`/api/aihub/users?account=${encodeURIComponent(account)}&cluster=${cluster}&days=3`);
-    const data = await res.json();
-    if (data.status !== 'ok' || !data.users?.length) {
-      overlay.querySelector('.ub-body').innerHTML = '<div class="no-jobs">No user data available</div>';
-      return;
-    }
-
     const allJobs = _teamJobsData?.clusters?.[cluster]?.jobs || [];
     const acctJobsByUser = {};
     for (const j of allJobs) {
@@ -1639,56 +1646,89 @@ async function openUserBreakdown(cluster, account) {
         else d.pending += (j.gpus || 0);
       }
     }
+
+    let aihubUsers = null;
+    try {
+      const res = await fetch(`/api/aihub/users?account=${encodeURIComponent(account)}&cluster=${cluster}&days=3`);
+      const data = await res.json();
+      if (data.status === 'ok' && data.users?.length) aihubUsers = data.users;
+    } catch (_) { /* AI Hub unavailable — use squeue only */ }
+
     const allocData = _pppAllocData?.clusters?.[cluster]?.accounts?.[account] || {};
     const totalConsumed = allocData.gpus_consumed || 0;
     const totalAllocated = allocData.gpus_allocated || 0;
-    const maxUser = data.users[0]?.avg_gpus_consumed || 1;
 
-    const activeUsers = data.users.filter(u => {
-      const tj = acctJobsByUser[u.user] || {};
-      return (tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0;
-    });
-    const inactiveUsers = data.users.filter(u => {
-      const tj = acctJobsByUser[u.user] || {};
-      return !((tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0);
-    });
-
-    const renderUser = (u) => {
-      const isMe = u.user === USERNAME;
-      const isTeam = teamMembers.has(u.user);
-      const tj = acctJobsByUser[u.user] || {};
+    const renderUserRow = (user, isMe, isTeam, barPct, tj) => {
       const running = tj.running || 0;
       const pending = tj.pending || 0;
       const cpuR = tj.cpu_running || 0;
       const cpuP = tj.cpu_pending || 0;
       const hasLive = running > 0 || pending > 0 || cpuR > 0 || cpuP > 0;
-      const barPct = Math.round(u.avg_gpus_consumed / maxUser * 100);
-
       let statParts = [];
       if (hasLive) {
         if (running > 0) statParts.push(`<span class="ub-live-run">${running} run</span>`);
         if (pending > 0) statParts.push(`<span class="ub-live-pend">${pending} pend</span>`);
         if (cpuR > 0 || cpuP > 0) statParts.push(`<span class="ub-live-cpu">${cpuR + cpuP} cpu</span>`);
       } else {
-        statParts.push(`<span class="ub-live-avg">${Math.round(u.avg_gpus_consumed)} avg</span>`);
+        statParts.push(`<span class="ub-live-avg">${Math.round(barPct > 0 ? barPct : 0)} avg</span>`);
       }
-
       return `<div class="ub-user-row${isMe ? ' ub-me' : ''}">
-        <span class="ub-user-name${isMe ? ' ub-name-me' : isTeam ? ' ub-name-team' : ''}">${u.user}</span>
-        <span class="ub-bar-wrap"><span class="ub-bar ${isMe ? 'ub-bar-me' : isTeam ? 'ub-bar-team' : 'ub-bar-other'}" style="width:${barPct}%"></span></span>
+        <span class="ub-user-name${isMe ? ' ub-name-me' : isTeam ? ' ub-name-team' : ''}">${user}</span>
+        <span class="ub-bar-wrap"><span class="ub-bar ${isMe ? 'ub-bar-me' : isTeam ? 'ub-bar-team' : 'ub-bar-other'}" style="width:${Math.max(2, barPct)}%"></span></span>
         <span class="ub-stats">${statParts.join('<span class="ub-sep">·</span>')}</span>
       </div>`;
     };
 
-    let rows = activeUsers.map(renderUser).join('');
-    if (inactiveUsers.length) {
-      rows += `<div class="ub-divider"><span>recent (no active jobs)</span></div>`;
-      rows += inactiveUsers.map(renderUser).join('');
+    let rows = '';
+    let userCount = 0;
+    let totalGpusLive = 0;
+
+    if (aihubUsers) {
+      const maxUser = aihubUsers[0]?.avg_gpus_consumed || 1;
+      const activeUsers = aihubUsers.filter(u => {
+        const tj = acctJobsByUser[u.user] || {};
+        return (tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0;
+      });
+      const inactiveUsers = aihubUsers.filter(u => {
+        const tj = acctJobsByUser[u.user] || {};
+        return !((tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0);
+      });
+      rows = activeUsers.map(u => renderUserRow(u.user, u.user === USERNAME, teamMembers.has(u.user),
+        Math.round(u.avg_gpus_consumed / maxUser * 100), acctJobsByUser[u.user] || {})).join('');
+      if (inactiveUsers.length) {
+        rows += `<div class="ub-divider"><span>recent (no active jobs)</span></div>`;
+        rows += inactiveUsers.map(u => renderUserRow(u.user, u.user === USERNAME, teamMembers.has(u.user),
+          Math.round(u.avg_gpus_consumed / maxUser * 100), acctJobsByUser[u.user] || {})).join('');
+      }
+      userCount = aihubUsers.length;
+    } else {
+      const squeueUsers = Object.keys(acctJobsByUser).sort((a, b) => {
+        if (a === USERNAME) return -1;
+        if (b === USERNAME) return 1;
+        return ((acctJobsByUser[b].running || 0) + (acctJobsByUser[b].pending || 0)) -
+               ((acctJobsByUser[a].running || 0) + (acctJobsByUser[a].pending || 0));
+      });
+      if (!squeueUsers.length) {
+        overlay.querySelector('.ub-body').innerHTML = '<div class="no-jobs">No active jobs on this account</div>';
+        return;
+      }
+      const maxGpus = Math.max(1, ...squeueUsers.map(u => (acctJobsByUser[u].running || 0) + (acctJobsByUser[u].pending || 0)));
+      rows = squeueUsers.map(u => {
+        const tj = acctJobsByUser[u];
+        const total = (tj.running || 0) + (tj.pending || 0);
+        totalGpusLive += total;
+        return renderUserRow(u, u === USERNAME, teamMembers.has(u),
+          Math.round(total / maxGpus * 100), tj);
+      }).join('');
+      userCount = squeueUsers.length;
     }
 
+    const summaryConsumed = totalConsumed || totalGpusLive;
+    const summaryAlloc = totalAllocated ? ` / ${totalAllocated}` : '';
+    const sourceLabel = aihubUsers ? '' : ' <span style="opacity:0.5">(live squeue data)</span>';
     const header = `<div class="ub-summary">
-      <span>Total: <strong>${totalConsumed}</strong> / ${totalAllocated} GPUs</span>
-      <span>${data.users.length} users</span>
+      <span>Total: <strong>${summaryConsumed}</strong>${summaryAlloc} GPUs${sourceLabel}</span>
+      <span>${userCount} user${userCount !== 1 ? 's' : ''}</span>
     </div>`;
 
     overlay.querySelector('.ub-body').innerHTML = header + '<div class="ub-users">' + rows + '</div>';
