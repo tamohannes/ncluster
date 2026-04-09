@@ -378,15 +378,17 @@ def where_to_submit(
     my_total_pending = 0
     me = os.environ.get("USER", "")
 
-    for cn, cd in alloc.get("clusters", {}).items():
-        bp = cd.get("best_priority", {})
-        bc = cd.get("best_capacity", {})
-        ppp_headroom = bc.get("headroom", 0)
-        level_fs = bp.get("level_fs", 0)
-        best_acct = bc.get("account", "") if ppp_headroom > 50 else bp.get("account", "")
-        cluster_gpu = (cd.get("gpu_type") or "").lower()
+    all_cluster_names = set(alloc.get("clusters", {}).keys())
+    for cn in CLUSTERS:
+        if cn != "local":
+            all_cluster_names.add(cn)
+
+    for cn in all_cluster_names:
+        cd = alloc.get("clusters", {}).get(cn, {})
+        has_ppp = bool(cd.get("accounts"))
+        cluster_gpu = (cd.get("gpu_type") or CLUSTERS.get(cn, {}).get("gpu_type") or "").lower()
         ta = team_allocs.get(cn)
-        team_num = int(ta) if isinstance(ta, (int, float)) and ta > 0 else (None if ta != "any" else None)
+        team_num = int(ta) if isinstance(ta, (int, float)) and ta > 0 else (None if ta == "any" else None)
         tj = (tj_clusters.get(cn) or {}).get("summary", {})
         tj_users = tj.get("by_user", {})
         team_running = tj.get("total_running", 0)
@@ -396,39 +398,78 @@ def where_to_submit(
         my_p = my_data.get("pending", 0) + my_data.get("dependent", 0)
         my_total_running += my_r
         my_total_pending += my_p
-        free = min(ppp_headroom, max(0, team_num - team_running)) if team_num is not None else ppp_headroom
         same_gpu = (pref_gpu == cluster_gpu) if pref_gpu else True
-        occ = cd.get("cluster_occupied_gpus", 0)
-        tot = cd.get("cluster_total_gpus", 0)
-        occ_pct = round(occ / tot * 100) if tot > 0 else 0
         ps = part_clusters.get(cn, {})
         idle_nodes = ps.get("idle_nodes", 0)
         pending_queue = ps.get("pending_jobs", 0)
-        my_acct_fs = my_fs_clusters.get(cn, {}).get(best_acct, {})
-        my_level_fs = round(my_acct_fs.get("level_fs", 0), 2) if my_acct_fs else 0
-        hard_capacity = max(ppp_headroom, free)
-        resource_gate = min(1, hard_capacity / max(job_gpus, 1), idle_nodes / max(nodes, 1))
-        team_penalty = 0.7 if (team_num is not None and free <= 0) else 1.0
-        effective_my_fs = my_level_fs if my_level_fs > 0 else level_fs
-        my_fs_score = min(effective_my_fs / 1.5, 1)
-        ppp_fs_score = min(level_fs / 1.5, 1)
-        queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
-        occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
-        machine_score = 1.0 if same_gpu else 0.85
-        priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
-        wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty * occupancy_factor)))
-        if free >= job_gpus or wds > 0:
-            recommendations.append({
-                "cluster": cn, "gpu_type": cd.get("gpu_type", ""), "same_gpu_type": same_gpu,
-                "wds": wds, "free_for_team": free, "idle_nodes": idle_nodes,
-                "pending_queue": pending_queue, "best_account": best_acct,
-                "ppp_level_fs": round(level_fs, 2), "my_level_fs": my_level_fs,
-                "resource_gate": round(resource_gate, 2), "queue_score": round(queue_score, 2),
-                "machine_score": machine_score, "occupancy_factor": round(occupancy_factor, 3),
-                "cluster_occupancy_pct": occ_pct, "team_running": team_running,
-                "team_pending": team_pending, "team_alloc": ta if ta is not None else "not set",
-                "my_running": my_r, "my_pending": my_p,
-            })
+        gpn = ps.get("partitions", [{}])[0].get("gpus_per_node", 0) if ps.get("partitions") else CLUSTERS.get(cn, {}).get("gpus_per_node", 8) or 8
+        idle_gpus = idle_nodes * gpn
+
+        notes = []
+        if not has_ppp:
+            notes.append("No PPP allocation data — fairshare unknown")
+        if ta is None or ta == 0:
+            notes.append(f"No informal team allocation set for {cn}")
+        elif team_num is not None and team_running >= team_num:
+            notes.append(f"Team over informal quota ({team_running}/{team_num} GPUs)")
+
+        accounts = []
+        if has_ppp:
+            for acct_name, ad in cd.get("accounts", {}).items():
+                ppp_headroom = ad.get("headroom", 0)
+                level_fs = ad.get("level_fs", 0)
+                my_acct_fs = my_fs_clusters.get(cn, {}).get(acct_name, {})
+                my_level_fs = round(my_acct_fs.get("level_fs", 0), 2) if my_acct_fs else 0
+                free = min(ppp_headroom, max(0, team_num - team_running)) if team_num is not None else ppp_headroom
+                hard_capacity = max(ppp_headroom, free)
+                resource_gate = min(1, hard_capacity / max(job_gpus, 1), idle_nodes / max(nodes, 1))
+                team_penalty = 0.7 if (team_num is not None and free <= 0) else 1.0
+                effective_my_fs = my_level_fs if my_level_fs > 0 else level_fs
+                my_fs_score = min(effective_my_fs / 1.5, 1)
+                ppp_fs_score = min(level_fs / 1.5, 1)
+                queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
+                occ = cd.get("cluster_occupied_gpus", 0)
+                tot = cd.get("cluster_total_gpus", 0)
+                occ_pct = round(occ / tot * 100) if tot > 0 else 0
+                occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
+                machine_score = 1.0 if same_gpu else 0.85
+                priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
+                wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty * occupancy_factor)))
+                accounts.append({
+                    "account": acct_name, "account_short": acct_name.split("_")[-1] if "_" in acct_name else acct_name,
+                    "wds": wds, "ppp_level_fs": round(level_fs, 2), "my_level_fs": my_level_fs,
+                    "headroom": ppp_headroom, "free_for_team": free,
+                    "gpus_consumed": ad.get("gpus_consumed", 0), "gpus_allocated": ad.get("gpus_allocated", 0),
+                })
+            accounts.sort(key=lambda a: -a["wds"])
+        else:
+            resource_gate = min(1, idle_nodes / max(nodes, 1))
+            queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
+            machine_score = 1.0 if same_gpu else 0.85
+            wds = max(0, min(100, round(100 * resource_gate * 0.5 * machine_score)))
+
+        best_wds = accounts[0]["wds"] if accounts else wds
+        best_acct = accounts[0]["account"] if accounts else ""
+
+        recommendations.append({
+            "cluster": cn,
+            "gpu_type": (cd.get("gpu_type") or CLUSTERS.get(cn, {}).get("gpu_type") or "").upper(),
+            "same_gpu_type": same_gpu,
+            "wds": best_wds,
+            "best_account": best_acct,
+            "accounts": accounts,
+            "idle_gpus": idle_gpus,
+            "idle_nodes": idle_nodes,
+            "pending_queue": pending_queue,
+            "cluster_occupancy_pct": cd.get("cluster_occupied_gpus", 0) * 100 // max(cd.get("cluster_total_gpus", 1), 1) if cd else 0,
+            "team_running": team_running,
+            "team_pending": team_pending,
+            "team_alloc": ta if ta is not None else "not set",
+            "my_running": my_r,
+            "my_pending": my_p,
+            "notes": notes,
+        })
+
     recommendations.sort(key=lambda r: -r["wds"])
     return {"status": "ok", "recommendations": recommendations,
             "my_total_running": my_total_running, "my_total_pending": my_total_pending,
