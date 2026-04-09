@@ -90,6 +90,8 @@ def normalize_job_times_local(job):
 def get_db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     return con
 
 
@@ -219,6 +221,11 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job ON job_stats_snapshots(cluster, job_id)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job_ts ON job_stats_snapshots(cluster, job_id, ts)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_state ON job_history(cluster, state)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_jobname ON job_history(cluster, job_name)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_ended ON job_history(ended_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_runid ON job_history(cluster, run_id)")
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS logbook_links (
@@ -336,14 +343,122 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     ))
     con.commit()
     con.close()
+    if terminal:
+        invalidate_pinned_cache(cluster)
+
+
+def upsert_jobs_batch(cluster, jobs, terminal=False):
+    """Batch-upsert multiple live jobs in a single transaction."""
+    if not jobs:
+        return
+    from .config import extract_project
+
+    con = get_db()
+    jids = [j["jobid"] for j in jobs]
+    placeholders = ",".join("?" for _ in jids)
+    rows = con.execute(
+        f"SELECT job_id, board_visible FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
+        (cluster, *jids),
+    ).fetchall()
+    existing_bv = {r["job_id"]: r["board_visible"] for r in rows}
+
+    params = []
+    for job in jobs:
+        jid = job["jobid"]
+        current_visible = existing_bv.get(jid)
+        if cluster == "local":
+            bv = 0
+        elif terminal:
+            bv = 1
+        else:
+            bv = current_visible if current_visible is not None else 0
+
+        dep_raw = job.get("dependency", "")
+        if dep_raw in ("(null)", "None", None):
+            dep_raw = ""
+        job_name = job.get("name") or job.get("job_name") or ""
+        project = job.get("project") or extract_project(job_name)
+        node_list_raw = job.get("node_list", "")
+        if node_list_raw in ("(null)", "None", None):
+            node_list_raw = ""
+        account_raw = job.get("account", "")
+        if account_raw in ("(null)", "None", None):
+            account_raw = ""
+
+        params.append((
+            cluster, jid, job_name,
+            job.get("state"),
+            job.get("exit_code"), job.get("reason"), job.get("elapsed"),
+            job.get("nodes"), job.get("gres"), job.get("partition"),
+            job.get("submitted"), job.get("started"),
+            job.get("ended_at"), job.get("log_path"),
+            bv, dep_raw, project, node_list_raw, account_raw,
+        ))
+
+    con.executemany("""
+        INSERT INTO job_history
+            (cluster, job_id, job_name, state, exit_code, reason, elapsed,
+             nodes, gres, partition, submitted, started, ended_at, log_path,
+             board_visible, dependency, project, node_list, account)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(cluster, job_id) DO UPDATE SET
+            job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
+            state       = excluded.state,
+            exit_code   = COALESCE(excluded.exit_code, exit_code),
+            reason      = COALESCE(excluded.reason, reason),
+            elapsed     = COALESCE(excluded.elapsed, elapsed),
+            nodes       = COALESCE(excluded.nodes, nodes),
+            gres        = COALESCE(excluded.gres, gres),
+            partition   = COALESCE(excluded.partition, partition),
+            submitted   = COALESCE(excluded.submitted, submitted),
+            started     = COALESCE(excluded.started, started),
+            ended_at    = COALESCE(excluded.ended_at, ended_at),
+            log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
+            board_visible = excluded.board_visible,
+            dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
+            project     = COALESCE(NULLIF(excluded.project, ''), project),
+            node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
+            account     = COALESCE(NULLIF(excluded.account, ''), account)
+    """, params)
+    con.commit()
+    con.close()
 
 
 def upsert_history(cluster, job):
     upsert_job(cluster, job)
 
 
+import threading as _th_db
+_pinned_cache = {}
+_pinned_cache_ts = {}
+_pinned_cache_lock = _th_db.Lock()
+_PINNED_CACHE_TTL = 12
+
+
+def invalidate_pinned_cache(cluster=None):
+    """Clear the pinned-jobs cache. Call after dismiss/upsert changes."""
+    with _pinned_cache_lock:
+        if cluster:
+            _pinned_cache.pop(cluster, None)
+            _pinned_cache_ts.pop(cluster, None)
+        else:
+            _pinned_cache.clear()
+            _pinned_cache_ts.clear()
+        _pinned_cache.pop("__all__", None)
+        _pinned_cache_ts.pop("__all__", None)
+
+
 def get_board_pinned(cluster=None):
     from .jobs import parse_dependency
+    cache_key = cluster or "__all__"
+    now = _th_db.monotonic_ns if hasattr(_th_db, 'monotonic_ns') else None
+
+    import time as _time
+    now = _time.monotonic()
+    with _pinned_cache_lock:
+        if cache_key in _pinned_cache and (now - _pinned_cache_ts.get(cache_key, 0)) < _PINNED_CACHE_TTL:
+            return _pinned_cache[cache_key]
+
     con = get_db()
     if cluster:
         rows = con.execute(
@@ -357,6 +472,11 @@ def get_board_pinned(cluster=None):
     con.close()
     jobs = [normalize_job_times_local(dict(r)) for r in rows]
     _restore_dependency_fields(jobs, parse_dependency)
+
+    with _pinned_cache_lock:
+        _pinned_cache[cache_key] = jobs
+        _pinned_cache_ts[cache_key] = now
+
     return jobs
 
 
@@ -430,6 +550,7 @@ def dismiss_job(cluster, job_id):
     con.execute("UPDATE job_history SET board_visible=0 WHERE cluster=? AND job_id=?", (cluster, job_id))
     con.commit()
     con.close()
+    invalidate_pinned_cache(cluster)
 
 
 def dismiss_all(cluster):
@@ -449,6 +570,7 @@ def dismiss_by_state_prefix(cluster, prefixes):
     con.execute(f"UPDATE job_history SET board_visible=0 WHERE cluster=? AND ({where})", args)
     con.commit()
     con.close()
+    invalidate_pinned_cache(cluster)
 
 
 def get_history(cluster=None, limit=200, project=None, search=None):

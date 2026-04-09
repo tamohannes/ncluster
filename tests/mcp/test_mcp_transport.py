@@ -1,57 +1,23 @@
-"""MCP transport error handling tests."""
+"""MCP server import and health check smoke tests.
 
-import json
+The old HTTP transport layer (_api_get, _api_post) no longer exists.
+This file verifies the MCP server module loads and the health_check tool works.
+"""
+
 import pytest
-from unittest.mock import patch, MagicMock
-import urllib.error
 
-from mcp_server import _api_get, _api_post
+from mcp_server import health_check
 
 
 @pytest.mark.mcp
-class TestApiGetErrors:
-    def test_url_error(self):
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
-            result = _api_get("/api/jobs")
-        assert result["status"] == "error"
-        assert "unreachable" in result["error"]
+class TestMcpImport:
+    def test_module_imports(self):
+        import mcp_server
+        assert hasattr(mcp_server, "mcp")
+        assert hasattr(mcp_server, "health_check")
 
-    def test_timeout(self):
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
-            result = _api_get("/api/jobs")
-        assert result["status"] == "error"
-
-    def test_malformed_json(self):
-        resp_mock = MagicMock()
-        resp_mock.read.return_value = b"not json{{{"
-        resp_mock.__enter__ = lambda s: s
-        resp_mock.__exit__ = MagicMock(return_value=False)
-        with patch("urllib.request.urlopen", return_value=resp_mock):
-            result = _api_get("/api/jobs")
-        assert result["status"] == "error"
-
-    def test_http_error(self):
-        err = urllib.error.HTTPError("/api/jobs", 500, "Internal", {}, None)
-        with patch("urllib.request.urlopen", side_effect=err):
-            result = _api_get("/api/jobs")
-        assert result["status"] == "error"
-
-    def test_generic_exception(self):
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
-            result = _api_get("/api/jobs")
-        assert result["status"] == "error"
-        assert "boom" in result["error"]
-
-
-@pytest.mark.mcp
-class TestApiPostErrors:
-    def test_url_error(self):
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
-            result = _api_post("/api/cancel/c1/123")
-        assert result["status"] == "error"
-        assert "unreachable" in result["error"]
-
-    def test_generic_exception(self):
-        with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
-            result = _api_post("/api/cancel/c1/123")
-        assert result["status"] == "error"
+    def test_health_check_returns_ok(self):
+        result = health_check()
+        assert result["status"] == "ok"
+        assert isinstance(result["clusters"], list)
+        assert isinstance(result["db"], bool)

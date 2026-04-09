@@ -32,7 +32,8 @@ def _run_backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
     try:
-        src = sqlite3.connect(DB_PATH)
+        from .db import get_db
+        src = get_db()
         dst = sqlite3.connect(dest_path)
         src.backup(dst)
         dst.close()

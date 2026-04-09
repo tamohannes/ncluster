@@ -15,8 +15,9 @@ systemctl --user restart clausius.service
 
 ## When to restart
 
-- After every turn that modifies files in `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`
+- After every turn that modifies files in `server/`, `static/`, `templates/`, or `app.py`
 - Do NOT restart if only test files, docs, rules, or config files changed
+- Do NOT restart for changes to `mcp_server.py` — the MCP server is a separate process and picks up changes on next Cursor restart
 
 ## Verify
 

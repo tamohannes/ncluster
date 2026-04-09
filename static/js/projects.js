@@ -356,7 +356,7 @@ function _renderProjPage() {
       const chevronCls = isGroupExpanded ? ' expanded' : '';
       const chevronHtml = hasMultiple ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
-      const summaryHtml = statusSummaryHtml(groupJobs);
+      const summaryHtml = statusSummaryHtml(groupJobs, cluster);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
       html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 

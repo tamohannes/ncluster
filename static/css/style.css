@@ -689,6 +689,14 @@ tr.bg-job:hover td { opacity: 0.7; }
 .ss-run  { color: var(--green); }
 .ss-comp { color: var(--cyan); }
 .ss-pend { color: var(--yellow); }
+.ss-wait {
+  font-size: 0.85em; font-weight: 600; padding: 1px 5px;
+  border-radius: 3px; margin-left: 3px; white-space: nowrap;
+}
+.ss-wait.fast     { background: var(--green-bg); color: var(--green); }
+.ss-wait.moderate { background: var(--amber-bg); color: var(--amber); }
+.ss-wait.slow     { background: var(--amber-bg); color: var(--amber); }
+.ss-wait.long     { background: var(--red-bg);   color: var(--red); }
 .ss-fail { color: var(--red); }
 .ss-canc { color: var(--muted); }
 .ss-done { color: var(--done); }
@@ -2650,11 +2658,6 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   text-transform: uppercase; letter-spacing: 0.3px;
   vertical-align: middle;
 }
-.avail-wait-fast     { color: var(--green); font-weight: 600; }
-.avail-wait-moderate { color: var(--amber); font-weight: 600; }
-.avail-wait-slow     { color: var(--red); }
-.avail-wait-long     { color: var(--red); font-weight: 700; }
-
 /* ── Advisor overlay + modal ── */
 .advisor-overlay {
   display: none; position: fixed; inset: 0; z-index: 2200;

@@ -1,96 +1,73 @@
-"""MCP-to-Flask boundary integration tests.
+"""MCP direct-import integration tests.
 
-Starts the Flask app in a background thread, patches mcp_server.API_BASE
-to point at it, and calls MCP tool functions directly to validate that
-MCP outputs match route contracts.
+Verifies MCP tools work end-to-end with the real DB fixture and mocked SSH,
+without any HTTP layer. Replaces the old MCP-to-Flask boundary tests.
 """
 
-import json
-import threading
-import time
 import pytest
 
-import mcp_server
 from mcp_server import (
-    list_jobs, list_log_files, get_job_log,
-    get_job_stats, get_history, cancel_job,
-    cleanup_history, jobs_summary,
+    health_check, list_jobs, get_history,
+    cancel_job, jobs_summary,
+    list_logbook_entries, create_logbook_entry,
+    read_logbook_entry, delete_logbook_entry,
 )
-
-
-@pytest.fixture()
-def live_app(app, mock_ssh, db_path, monkeypatch):
-    """Start Flask on a random port and point MCP at it."""
-    import socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-
-    server_thread = threading.Thread(
-        target=lambda: app.run(host="127.0.0.1", port=port, use_reloader=False),
-        daemon=True,
-    )
-    server_thread.start()
-
-    base = f"http://127.0.0.1:{port}"
-    monkeypatch.setattr(mcp_server, "API_BASE", base)
-
-    # Wait for server to be ready
-    import urllib.request
-    for _ in range(50):
-        try:
-            urllib.request.urlopen(f"{base}/api/mounts", timeout=1)
-            break
-        except Exception:
-            time.sleep(0.1)
-
-    yield base
 
 
 @pytest.mark.integration
 @pytest.mark.mcp
-class TestMcpFlaskBoundary:
-    def test_list_jobs_returns_list(self, live_app):
+class TestMcpDirectImport:
+    def test_health_check(self, db_path):
+        result = health_check()
+        assert result["status"] == "ok"
+
+    def test_list_jobs_returns_list(self, db_path, mock_ssh):
+        mock_ssh.set("mock-cluster", "squeue", ("", ""))
         result = list_jobs()
         assert isinstance(result, list)
 
-    def test_list_jobs_single_cluster(self, live_app):
-        result = list_jobs(cluster="local")
-        assert isinstance(result, list)
-
-    def test_list_jobs_unknown_cluster_error(self, live_app):
+    def test_list_jobs_unknown_cluster_error(self, db_path):
         result = list_jobs(cluster="nonexistent")
         assert len(result) == 1
         assert "error" in result[0]
 
-    def test_get_history_returns_list(self, live_app):
+    def test_get_history_returns_list(self, db_path):
         result = get_history(limit=5)
         assert isinstance(result, list)
 
-    def test_get_job_stats_local_error(self, live_app):
-        result = get_job_stats("local", "999")
-        assert result["status"] == "error"
-
-    def test_get_job_log_no_files(self, live_app):
-        result = get_job_log("local", "999999")
-        assert isinstance(result, str)
-
-    def test_list_log_files_local(self, live_app):
-        result = list_log_files("local", "999999")
-        assert "files" in result or "error" in result
-
-    def test_jobs_summary_string(self, live_app):
+    def test_jobs_summary_string(self, db_path, mock_ssh):
+        mock_ssh.set("mock-cluster", "squeue", ("", ""))
         result = jobs_summary()
         assert isinstance(result, str)
         assert "Total:" in result
 
-    def test_cancel_job_bad_pid(self, live_app):
+    def test_cancel_local_bad_pid(self, db_path):
         result = cancel_job("local", "99999999")
         assert result["status"] == "error"
 
-    def test_cleanup_dry_run(self, live_app):
-        result = cleanup_history(days=365, dry_run=True)
-        assert result.get("status") == "ok"
-        # When no records match, response omits dry_run field
-        assert result.get("dry_run") is True or result.get("deleted_records") == 0
+
+@pytest.mark.integration
+@pytest.mark.mcp
+class TestMcpLogbookIntegration:
+    def test_create_and_read(self, db_path):
+        created = create_logbook_entry("test-proj", "Integration note", "body text")
+        assert created["status"] == "ok"
+        entry_id = created["id"]
+
+        full = read_logbook_entry("test-proj", entry_id)
+        assert full["title"] == "Integration note"
+        assert full["body"] == "body text"
+
+    def test_list_entries(self, db_path):
+        create_logbook_entry("test-proj", "Entry A", "a")
+        create_logbook_entry("test-proj", "Entry B", "b")
+        result = list_logbook_entries("test-proj")
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_delete_entry(self, db_path):
+        created = create_logbook_entry("test-proj", "To delete", "x")
+        result = delete_logbook_entry("test-proj", created["id"])
+        assert result["status"] == "ok"
+        remaining = list_logbook_entries("test-proj")
+        assert len(remaining) == 0

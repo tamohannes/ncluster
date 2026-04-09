@@ -1,12 +1,15 @@
-"""Live MCP destructive tests: cancel_job on throwaway, cleanup_history dry_run.
+"""Live MCP destructive tests: cancel_job on throwaway job.
 
 Run with: pytest tests/live/test_mcp_live_cancel_cleanup.py -m "live and destructive" -v
 """
 
-import time
+import subprocess
+import os
+import signal
+
 import pytest
 
-from mcp_server import cancel_job, cleanup_history
+from mcp_server import cancel_job
 from tests.live.helpers.slurm_fixture import (
     LIVE_CLUSTER,
     submit_throwaway_job, cancel_throwaway_job, wait_for_job_state,
@@ -36,12 +39,7 @@ class TestMcpLiveDestructive:
         finally:
             cancel_throwaway_job(LIVE_CLUSTER, job_id)
 
-    def test_cleanup_history_dry_run_via_mcp(self):
-        result = cleanup_history(days=365, dry_run=True)
-        assert result.get("status") == "ok"
-
     def test_cancel_local_pid_smoke(self):
-        import subprocess, os, signal
         proc = subprocess.Popen(["sleep", "300"])
         try:
             result = cancel_job("local", str(proc.pid))

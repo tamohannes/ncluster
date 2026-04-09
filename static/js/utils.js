@@ -1,6 +1,10 @@
 const CLUSTERS = JSON.parse(document.getElementById('cluster-data').textContent || '{}');
 const USERNAME = (document.getElementById('username-data')?.textContent || '').trim();
 const TEAM = (document.getElementById('team-data')?.textContent || '').trim();
+
+function fetchWithTimeout(url, opts = {}, ms = 15000) {
+  return fetch(url, { signal: AbortSignal.timeout(ms), ...opts });
+}
 let allData = {};
 let historyData = [];
 let countdown = 20;
@@ -264,12 +268,19 @@ function statusDonut(jobs) {
   return `<svg class="status-donut" width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}"><title>${tip.join(', ')}</title><circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${sw}"/>${arcs}</svg>`;
 }
 
-function statusSummaryHtml(jobs) {
+function statusSummaryHtml(jobs, clusterName) {
   const cnt = _countJobStates(jobs);
   const parts = [];
   if (cnt.run)  parts.push(`<span class="ss-run">${cnt.run} running</span>`);
   if (cnt.comp) parts.push(`<span class="ss-comp">${cnt.comp} completing</span>`);
-  if (cnt.pend) parts.push(`<span class="ss-pend">${cnt.pend} pending</span>`);
+  if (cnt.pend) {
+    let waitHint = '';
+    if (clusterName) {
+      const badge = _wdsWaitBadge(clusterName);
+      if (badge) waitHint = ` <span class="ss-wait ${badge.cls}">${badge.label}</span>`;
+    }
+    parts.push(`<span class="ss-pend">${cnt.pend} pending${waitHint}</span>`);
+  }
   if (cnt.fail) parts.push(`<span class="ss-fail">${cnt.fail} failed</span>`);
   if (cnt.canc) parts.push(`<span class="ss-canc">${cnt.canc} cancelled</span>`);
   if (cnt.done) parts.push(`<span class="ss-done">${cnt.done} done</span>`);
@@ -737,27 +748,35 @@ function _resolveGpuAlloc(clusterName) {
 }
 let _partitionFetching = false;
 
-async function fetchClusterUtilization() {
+let _clusterUtilLastFetched = 0;
+let _partitionLastFetched = 0;
+const _AUX_TTL_MS = 90000;
+
+async function fetchClusterUtilization(force) {
   if (_clusterUtilFetching) return;
+  if (!force && _clusterUtil && Date.now() - _clusterUtilLastFetched < _AUX_TTL_MS) return;
   _clusterUtilFetching = true;
   try {
-    const res = await fetch('/api/cluster_utilization');
+    const res = await fetchWithTimeout('/api/cluster_utilization');
     const data = await res.json();
     if (data.status === 'ok') {
       _clusterUtil = data;
+      _clusterUtilLastFetched = Date.now();
     }
   } catch (_) {}
   _clusterUtilFetching = false;
 }
 
-async function fetchPartitions() {
+async function fetchPartitions(force) {
   if (_partitionFetching) return;
+  if (!force && _partitionData && Date.now() - _partitionLastFetched < _AUX_TTL_MS) return;
   _partitionFetching = true;
   try {
-    const res = await fetch('/api/partition_summary');
+    const res = await fetchWithTimeout('/api/partition_summary');
     const data = await res.json();
     if (data.status === 'ok') {
       _partitionData = data.clusters;
+      _partitionLastFetched = Date.now();
     }
   } catch (_) {}
   _partitionFetching = false;
@@ -780,12 +799,12 @@ function _fmtTime(timeStr) {
   return s;
 }
 
-function _bestWaitCls(partitions) {
-  const order = { fast: 0, moderate: 1, slow: 2, long: 3 };
-  let best = 'long';
+function _bestIdleRatio(partitions) {
+  let best = 0;
   for (const p of partitions) {
-    const cls = p.est_wait_cls || 'long';
-    if ((order[cls] ?? 3) < (order[best] ?? 3)) best = cls;
+    const total = p.total_nodes || 1;
+    const idle = p.idle_nodes || 0;
+    best = Math.max(best, idle / total);
   }
   return best;
 }
@@ -891,6 +910,7 @@ async function refreshPppAllocations(force) {
       _fetchTeamJobs(),
       _fetchProjectColors(),
       _ensureLiveJobData(),
+      fetchWaitCalibration(),
     ]);
     const data = await allocRes.json();
     if (data.status === 'ok') {
@@ -1569,7 +1589,7 @@ function _populateAccountSelect() {
 async function _ensureLiveJobData() {
   if (typeof allData !== 'undefined' && Object.values(allData).some(d => d.updated)) return;
   try {
-    const res = await fetch('/api/jobs');
+    const res = await fetchWithTimeout('/api/jobs');
     const data = await res.json();
     if (typeof allData !== 'undefined') {
       for (const [name, d] of Object.entries(data)) {
@@ -1684,13 +1704,10 @@ function _renderAvailTable() {
       name,
       gpu: ps.gpu_type || '',
       parts: (ps.partitions || []).filter(p => p.total_nodes > 0),
-      bestWait: _bestWaitCls(ps.partitions || []),
+      bestIdle: _bestIdleRatio(ps.partitions || []),
     }))
     .filter(e => e.parts.length > 0)
-    .sort((a, b) => {
-      const order = { fast: 0, moderate: 1, slow: 2, long: 3 };
-      return (order[a.bestWait] ?? 3) - (order[b.bestWait] ?? 3);
-    });
+    .sort((a, b) => b.bestIdle - a.bestIdle);
 
   if (!entries.length) {
     el.innerHTML = '<div class="no-jobs">No partition data available</div>';
@@ -1707,14 +1724,14 @@ function _renderAvailTable() {
       const totalGpus = p.total_nodes * gpuPer;
       const idleStr = gpuPer > 0 ? idleGpus.toLocaleString() : `${p.idle_nodes}n`;
       const totalStr = gpuPer > 0 ? totalGpus.toLocaleString() : `${p.total_nodes}n`;
-      const waitCls = `avail-wait-${p.est_wait_cls || 'long'}`;
+      const pendStr = (p.pending_jobs || 0).toLocaleString();
       rows += `<tr>
         <td>${p.name}</td>
         <td>${_fmtTime(p.max_time)}</td>
         <td>${p.preemptable ? 'yes' : ''}</td>
         <td>${idleStr}</td>
         <td>${totalStr}</td>
-        <td class="${waitCls}">${p.est_wait || '—'}</td>
+        <td class="dim">${pendStr}</td>
       </tr>`;
     }
   }
@@ -1726,7 +1743,7 @@ function _renderAvailTable() {
       <th>Preempt</th>
       <th>Idle GPUs</th>
       <th>Total GPUs</th>
-      <th>Est. Wait</th>
+      <th>Queue</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -1825,7 +1842,6 @@ function _renderAdvisorResults(recs) {
       <td><span class="adv-cluster">${r.cluster}</span></td>
       ${acctCell}
       <td><span class="adv-part">${r.partition}</span> ${defaultBadge}${preemptBadge}</td>
-      <td><span class="tt-wait-badge ${r.est_wait_cls}">${r.est_wait}</span></td>
       ${fsCell}
       <td class="dim">${d.idle_nodes}</td>
       <td class="dim">${d.pending_jobs}</td>
@@ -1843,7 +1859,7 @@ function _renderAdvisorResults(recs) {
   const fsHdr = hasAcct ? '<th>Fairshare</th>' : '';
   el.innerHTML = `<table class="adv-table">
     <thead><tr>
-      <th></th><th>Cluster</th>${acctHdr}<th>Partition</th><th>Est. Wait</th>
+      <th></th><th>Cluster</th>${acctHdr}<th>Partition</th>
       ${fsHdr}<th>Idle</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
     </tr></thead>
     <tbody>${rows}</tbody>
@@ -1854,7 +1870,7 @@ async function fetchStorageQuotas() {
   const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
   const promises = clusters.map(async c => {
     try {
-      const res = await fetch(`/api/storage_quota/${c}`);
+      const res = await fetchWithTimeout(`/api/storage_quota/${c}`, {}, 20000);
       const data = await res.json();
       if (data.status === 'ok') _storageQuota[c] = data;
     } catch (_) {}
@@ -1984,112 +2000,88 @@ function _translateReason(reason, jobNodes, jobGpuStr, freeNodes, freeGpus) {
   };
 }
 
-/* ── Wait-time estimation for pending jobs ── */
+/* ── Wait-time estimation: Slurm est_start > WDS-calibrated > fallback ── */
 
-function _estimateWait(occupancyPct, pendingNodes, totalNodes, t, reason, clusterName) {
-  const queueRatio = totalNodes > 0 ? pendingNodes / totalNodes : 0;
-  const hasPriority = t.alloc > 0;
+let _waitCalibration = null;
+
+async function fetchWaitCalibration() {
+  try {
+    const res = await fetchWithTimeout('/api/wait_calibration');
+    const data = await res.json();
+    if (!data.error) _waitCalibration = data;
+  } catch (_) {}
+}
+
+function _fmtWaitSec(sec) {
+  if (sec < 60) return '<\u20091m';
+  if (sec < 3600) return `~${Math.round(sec / 60)}m`;
+  const h = sec / 3600;
+  if (h < 24) return `~${h < 10 ? h.toFixed(1) : Math.round(h)}h`;
+  return `~${Math.round(h / 24)}d`;
+}
+
+function _clsFromSec(sec) {
+  if (sec < 600) return 'fast';
+  if (sec < 3600) return 'moderate';
+  if (sec < 14400) return 'slow';
+  return 'long';
+}
+
+function _wdsWaitBadge(clusterName) {
+  const cal = _waitCalibration?.[clusterName];
+  if (!cal || !cal.length) return null;
+
+  const cd = _pppAllocData?.clusters?.[clusterName];
+  if (!cd) return null;
+
+  const bc = cd.best_capacity || {};
+  const bp = cd.best_priority || {};
+  const pppHeadroom = bc.headroom || 0;
+  const bestAcct = pppHeadroom > 50 ? (bc.account || '') : (bp.account || '');
+  const bestAd = cd.accounts?.[bestAcct] || {};
+  const wdsResult = computeWds(clusterName, bestAcct, bestAd, '');
+  const wds = wdsResult.wds;
+
+  let bucket = cal[0];
+  for (const b of cal) {
+    if (wds >= b.wds_min) bucket = b;
+  }
+
+  const p50 = bucket.p50_s;
+  const p75 = bucket.p75_s;
+  const label = _fmtWaitSec(p50);
+  return { label, cls: _clsFromSec(p50), p50, p75, wds, n: bucket.n };
+}
+
+function _pendingWaitBadge(estStart, reason, clusterName) {
   const r = (reason || '').trim();
-  const tu = clusterName ? (_teamUsageData[clusterName] || null) : null;
 
-  const aihub = _pppAllocData?.clusters?.[clusterName];
-  const bestFs = aihub?.best_priority?.level_fs || 0;
-  const clOcc = aihub?.cluster_occupied_gpus || 0;
-  const clTot = aihub?.cluster_total_gpus || 1;
-  const clPct = aihub ? Math.round(clOcc / clTot * 100) : occupancyPct;
-  if (aihub) occupancyPct = clPct;
+  if (r === 'DependencyNeverSatisfied')
+    return { label: 'won\u2019t run', cls: 'long' };
+  if (r.includes('Dependency') && r !== 'None')
+    return { label: 'blocked', cls: 'moderate' };
+  if (r.includes('QOS') || r.includes('Assoc') || r.includes('MaxGres') || r.includes('GrpGRES') || r.includes('GrpCpu'))
+    return { label: 'quota-limited', cls: 'slow' };
+  if (r === 'BeginTime')
+    return { label: 'scheduled', cls: 'moderate' };
+  if (r.includes('requeued') || r.includes('held') || r.includes('Held'))
+    return { label: 'held', cls: 'long' };
 
-  if (r === 'DependencyNeverSatisfied') {
-    return { label: 'won\u2019t run', cls: 'long',
-      reason: 'Parent job failed. This job is stuck unless manually released.' };
-  }
-  if (r.includes('Dependency') && r !== 'None') {
-    return { label: 'blocked', cls: 'moderate',
-      reason: 'Waiting for a parent job to finish. Start time depends on the parent.' };
-  }
-  if (r.includes('QOS') || r.includes('Assoc') || r.includes('MaxGres') || r.includes('GrpGRES') || r.includes('GrpCpu')) {
-    return { label: 'quota-limited', cls: 'slow',
-      reason: 'Blocked by a scheduler quota. Will start when your other jobs finish and free up your allowance.' };
-  }
-  if (r === 'BeginTime') {
-    return { label: 'scheduled', cls: 'moderate',
-      reason: 'Job has a deferred start time. Will begin at the scheduled time if resources are available.' };
-  }
-  if (r.includes('requeued') || r.includes('held') || r.includes('Held')) {
-    return { label: 'held', cls: 'long',
-      reason: 'Job is held after a failed launch. Needs manual intervention to release.' };
+  if (estStart) {
+    const d = new Date(estStart.replace('T', ' '));
+    if (!isNaN(d)) {
+      const sec = Math.round((d - new Date()) / 1000);
+      if (sec <= 0) return { label: 'soon', cls: 'fast' };
+      return { label: _fmtWaitSec(sec), cls: _clsFromSec(sec), source: 'slurm' };
+    }
   }
 
-  if (r === 'Priority') {
-    if (bestFs >= 1.5 && occupancyPct < 80)
-      return { label: '~5 \u2013 15 min', cls: 'fast',
-        reason: `Strong fairshare (FS ${bestFs.toFixed(1)}). Your PPP has scheduling credit \u2014 should start soon.` };
-    if (bestFs >= 1.2 && occupancyPct < 90)
-      return { label: '~15 \u2013 45 min', cls: 'fast',
-        reason: `Good fairshare (FS ${bestFs.toFixed(1)}). PPP is underutilizing its allocation \u2014 moderate wait.` };
-    if (bestFs >= 0.8)
-      return { label: '~30 min \u2013 2h', cls: 'moderate',
-        reason: `Neutral fairshare (FS ${bestFs.toFixed(1)}). PPP near its allocation \u2014 normal scheduling priority.` };
-    if (bestFs > 0)
-      return { label: '~1 \u2013 4h', cls: 'slow',
-        reason: `Low fairshare (FS ${bestFs.toFixed(1)}). PPP is overdrawn \u2014 other teams get priority.` };
-    return { label: '~1 \u2013 4h', cls: 'slow',
-      reason: 'Waiting for priority. Other pending jobs have higher fair-share priority.' };
+  if (r === 'Priority' || r === 'Resources' || !r || r === 'None') {
+    const wdsBadge = _wdsWaitBadge(clusterName);
+    if (wdsBadge) return { ...wdsBadge, source: 'calibrated' };
   }
 
-  if (pendingNodes === 0 && occupancyPct < 90) {
-    return { label: 'starts immediately', cls: 'fast',
-      reason: 'Cluster has free capacity and no queue.' };
-  }
-  if (occupancyPct < 70) {
-    if (hasPriority && t.pct < 50)
-      return { label: 'minutes', cls: 'fast',
-        reason: 'Cluster has significant free capacity and your team has high priority.' };
-    return { label: '< 30 min', cls: 'fast',
-      reason: 'Cluster has significant free capacity.' };
-  }
-
-  if (hasPriority && t.pct < 50) {
-    if (occupancyPct < 90)
-      return { label: '< 30 min', cls: 'fast',
-        reason: 'Team well under quota \u2014 scheduler gives you top priority.' };
-    if (queueRatio < 0.5)
-      return { label: '~30 min \u2013 2h', cls: 'moderate',
-        reason: 'Cluster saturated but team has strong priority (well under quota).' };
-    return { label: '~1 \u2013 3h', cls: 'moderate',
-      reason: 'Deep queue, but team priority should pull you ahead.' };
-  }
-
-  if (hasPriority && t.pct < 90) {
-    if (occupancyPct < 90)
-      return { label: '~30 min \u2013 1h', cls: 'moderate',
-        reason: 'Some capacity available, team near quota \u2014 normal priority.' };
-    if (queueRatio < 0.5)
-      return { label: '~1 \u2013 4h', cls: 'slow',
-        reason: 'Cluster saturated, team near quota \u2014 moderate priority.' };
-    return { label: '~2 \u2013 6h', cls: 'slow',
-      reason: 'Saturated cluster with deep queue and diminishing fair-share.' };
-  }
-
-  if (hasPriority) {
-    if (queueRatio < 0.3)
-      return { label: '~2 \u2013 6h', cls: 'slow',
-        reason: 'Team over quota \u2014 scheduler deprioritizes. Wait for capacity to free up.' };
-    if (queueRatio < 0.7)
-      return { label: '~4 \u2013 12h', cls: 'long',
-        reason: 'Over quota with deep queue. Consider a less loaded cluster.' };
-    return { label: '12h+', cls: 'long',
-      reason: 'Severely oversubscribed and over quota. Try a different cluster or off-peak hours.' };
-  }
-
-  if (occupancyPct < 80)
-    return { label: '< 1h', cls: 'moderate',
-      reason: 'Cluster has available capacity.' };
-  if (queueRatio < 0.5)
-    return { label: '~1 \u2013 4h', cls: 'slow',
-      reason: 'Cluster busy with moderate queue pressure.' };
-  return { label: '4h+', cls: 'long',
-    reason: 'High demand. Consider a less loaded cluster.' };
+  return { label: 'queued', cls: 'moderate' };
 }
 
 /* ── Tooltip for pending jobs ── */
@@ -2130,9 +2122,8 @@ const _tooltip = (() => {
     const jobGpuStr = parseGpus(ji.nodes, ji.gres);
     const reasonInfo = _translateReason(jobReason, ji.nodes, ji.gres, freeNodes, freeGpus);
 
-    const est = _estimateWait(occupancyPct, pendingJobs, totalNodes, t, jobReason, clusterName);
+    const est = _pendingWaitBadge(ji.estStart, jobReason, clusterName);
 
-    // ── Header: cluster name + wait estimate badge ──
     let html = `<div class="tt-head">
       <span class="tt-head-name">${clusterName}</span>
       <span class="tt-wait-badge ${est.cls}">${est.label}</span>
@@ -2161,8 +2152,11 @@ const _tooltip = (() => {
     if (ji.estStart) {
       const d = new Date(ji.estStart.replace('T', ' '));
       if (!isNaN(d)) {
-        html += `<div class="tt-job-resources">Slurm estimate: ${d.toLocaleString()}</div>`;
+        html += `<div class="tt-job-resources">Slurm start: ${d.toLocaleString()}</div>`;
       }
+    }
+    if (est.source === 'calibrated' && est.p75 != null) {
+      html += `<div class="tt-job-resources dim">p50 ${_fmtWaitSec(est.p50)} · p75 ${_fmtWaitSec(est.p75)} <span class="dim">(${est.n} jobs, WDS ${est.wds})</span></div>`;
     }
 
     // ── Cluster load (from AI Hub) ──
@@ -2198,10 +2192,6 @@ const _tooltip = (() => {
       </div>`;
       html += `<div class="tt-detail">${allocNodes} of ${totalNodes} nodes in use</div>`;
     }
-
-    // ── Actionable insight ──
-    html += `<div class="tt-sep"></div>`;
-    html += `<div class="tt-insight">${est.reason}</div>`;
 
     // ── Where to submit instead ──
     if (_pppAllocData?.clusters) {

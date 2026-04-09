@@ -8,7 +8,7 @@ with estimated wait times and actionable tips.
 import logging
 
 from .config import CLUSTERS, PPP_ACCOUNTS, _cache_get, _team_usage_cache, TEAM_USAGE_TTL_SEC
-from .partitions import get_all_partitions, _parse_timelimit, _estimate_partition_wait
+from .partitions import get_all_partitions, _parse_timelimit
 
 log = logging.getLogger(__name__)
 
@@ -233,8 +233,6 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
                 + _W_TEAM * team_score
             )
 
-            wait_label, wait_cls = _estimate_partition_wait(part)
-
             tip = _generate_tip(part, cluster_name, parts, 0)
 
             cluster_gpus_fallback = CLUSTERS.get(cluster_name, {}).get("gpus_per_node", 0)
@@ -246,8 +244,6 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
                 "cluster": cluster_name,
                 "partition": part["name"],
                 "score": round(score, 4),
-                "est_wait": wait_label,
-                "est_wait_cls": wait_cls,
                 "team_status": team_status,
                 "recommended_account": best_acct or "",
                 "level_fs": round(best_level_fs, 3) if best_level_fs else 0,

@@ -1,4 +1,4 @@
-"""MCP edge case tests for parameter encoding and boundary inputs."""
+"""MCP edge case tests for boundary inputs and error handling."""
 
 import pytest
 from unittest.mock import patch
@@ -8,64 +8,42 @@ from mcp_server import list_jobs, get_job_log, get_history, jobs_summary, mount_
 
 
 @pytest.mark.mcp
-class TestUrlEncoding:
-    def test_cluster_with_slash(self):
-        with patch.object(mcp_server, "_api_get") as mock:
-            mock.return_value = {"status": "ok", "jobs": []}
-            list_jobs(cluster="cluster/name")
-            url = mock.call_args[0][0]
-            # urllib.parse.quote encodes / to %2F
-            assert "cluster%2Fname" in url or "cluster/name" in url
-
-    def test_job_id_with_special_chars(self):
-        with patch.object(mcp_server, "_api_get") as mock:
-            mock.return_value = {"status": "ok", "content": "x"}
-            get_job_log("c1", "job 123", path="/path with spaces/file.log")
-            url = mock.call_args[0][0]
-            assert "job%20123" in url
-            assert "path+with+spaces" in url or "path%20with%20spaces" in url
-
-
-@pytest.mark.mcp
 class TestBoundaryParameters:
-    def test_zero_lines(self):
-        with patch.object(mcp_server, "_api_get") as mock:
-            mock.return_value = {"status": "ok", "content": ""}
-            get_job_log("c1", "1", lines=0)
-            url = mock.call_args[0][0]
-            assert "lines=0" in url
+    def test_zero_lines_log(self):
+        with patch.object(mcp_server, "get_job_log_files_cached",
+                          return_value={"files": [{"label": "main", "path": "/a.log"}]}), \
+             patch.object(mcp_server, "resolve_mounted_path", return_value=None), \
+             patch.object(mcp_server, "fetch_log_tail", return_value=""):
+            result = get_job_log("dfw", "1", lines=0)
+        assert isinstance(result, str)
 
-    def test_negative_limit(self):
-        with patch.object(mcp_server, "_api_get") as mock:
-            mock.return_value = []
-            get_history(limit=-1)
-            url = mock.call_args[0][0]
-            assert "limit=-1" in url
+    def test_negative_history_limit(self):
+        with patch("server.db.get_history", return_value=[]):
+            result = get_history(limit=-1)
+        assert isinstance(result, list)
 
-    def test_very_large_limit(self):
-        with patch.object(mcp_server, "_api_get") as mock:
-            mock.return_value = []
-            get_history(limit=999999)
-            url = mock.call_args[0][0]
-            assert "limit=999999" in url
+    def test_large_history_limit(self):
+        with patch("server.db.get_history", return_value=[]):
+            result = get_history(limit=999999)
+        assert isinstance(result, list)
 
 
 @pytest.mark.mcp
 class TestEmptyData:
     def test_list_jobs_empty_cluster(self):
-        with patch.object(mcp_server, "_api_get",
+        with patch.object(mcp_server, "_get_cluster_jobs",
                           return_value={"status": "ok", "jobs": []}):
-            result = list_jobs(cluster="c1")
+            result = list_jobs(cluster="dfw")
         assert result == []
 
     def test_list_jobs_all_empty(self):
-        with patch.object(mcp_server, "_api_get",
-                          return_value={"c1": {"status": "ok", "jobs": []}}):
+        with patch.object(mcp_server, "_get_all_jobs_snapshot",
+                          return_value={"dfw": {"status": "ok", "jobs": []}}):
             result = list_jobs()
         assert result == []
 
     def test_summary_with_unreachable_only(self):
-        with patch.object(mcp_server, "_api_get",
+        with patch.object(mcp_server, "_get_all_jobs_snapshot",
                           return_value={"c1": {"status": "error"}}):
             result = jobs_summary()
         assert "unreachable" in result
@@ -74,25 +52,28 @@ class TestEmptyData:
 
 @pytest.mark.mcp
 class TestMountEdgeCases:
-    def test_cluster_with_special_chars(self):
-        with patch.object(mcp_server, "_api_post") as mock:
-            mock.return_value = {"status": "ok"}
-            mount_cluster("cluster/name", "mount")
-            url = mock.call_args[0][0]
-            assert "cluster%2Fname" in url or "cluster/name" in url
-
     def test_invalid_action_no_api_call(self):
-        with patch.object(mcp_server, "_api_post") as mock:
-            result = mount_cluster("c1", "bad")
-            mock.assert_not_called()
-            assert result["status"] == "error"
+        result = mount_cluster("c1", "bad")
+        assert result["status"] == "error"
+
+    def test_valid_mount_calls_script(self):
+        with patch.object(mcp_server, "run_mount_script", return_value=(True, "OK")), \
+             patch.object(mcp_server, "all_mount_status", return_value={}):
+            result = mount_cluster("c1", "mount")
+        assert result["status"] == "ok"
 
 
 @pytest.mark.mcp
 class TestClearEdgeCases:
-    def test_clear_failed_special_cluster(self):
-        with patch.object(mcp_server, "_api_post") as mock:
-            mock.return_value = {"status": "ok"}
-            clear_failed("cluster/name")
-            url = mock.call_args[0][0]
-            assert "cluster%2Fname" in url or "cluster/name" in url
+    def test_clear_failed_calls_dismiss(self):
+        with patch.object(mcp_server, "dismiss_by_state_prefix") as mock:
+            result = clear_failed("c1")
+        assert result["status"] == "ok"
+        mock.assert_called_once()
+
+    def test_clear_completed_calls_dismiss(self):
+        from mcp_server import clear_completed
+        with patch.object(mcp_server, "dismiss_by_state_prefix") as mock:
+            result = clear_completed("c1")
+        assert result["status"] == "ok"
+        mock.assert_called_once()

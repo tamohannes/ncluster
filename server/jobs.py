@@ -26,6 +26,7 @@ from .ssh import ssh_run, ssh_run_with_timeout, enable_standalone_ssh
 from .db import (
     upsert_job, get_db, get_board_pinned,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
+    upsert_jobs_batch,
 )
 from .logs import (
     get_job_log_files, fetch_log_tail, extract_progress, detect_crash,
@@ -163,25 +164,66 @@ def fetch_cluster_data(cluster_name):
         return {"status": "error", "error": str(e), "jobs": [], "updated": datetime.now().isoformat()}
 
 
+_SACCT_FMT = "JobID,JobName,State,ExitCode,Elapsed,Start,End"
+_SACCT_KEYS = ["jobid", "name", "state", "exit_code", "elapsed", "started", "ended_at"]
+
+
 def sacct_final(cluster_name, job_id):
     try:
-        fmt = "JobID,JobName,State,ExitCode,Elapsed,Start,End"
         if cluster_name == "local":
             user = os.environ.get("USER", DEFAULT_USER)
             result = subprocess.run(
-                ["sacct", "-u", user, "-j", job_id, f"--format={fmt}", "--noheader", "-P"],
+                ["sacct", "-u", user, "-j", job_id, f"--format={_SACCT_FMT}", "--noheader", "-P"],
                 capture_output=True, text=True, timeout=5
             )
             out = result.stdout.strip()
         else:
-            out, _ = ssh_run(cluster_name, f"sacct -u $USER -j {job_id} --format={fmt} --noheader -P 2>/dev/null | head -1")
+            out, _ = ssh_run(cluster_name, f"sacct -u $USER -j {job_id} --format={_SACCT_FMT} --noheader -P 2>/dev/null | head -1")
         if not out:
             return {}
         parts = out.split("|")
-        keys = ["jobid", "name", "state", "exit_code", "elapsed", "started", "ended_at"]
-        return dict(zip(keys, parts + [""] * len(keys)))
+        return dict(zip(_SACCT_KEYS, parts + [""] * len(_SACCT_KEYS)))
     except Exception:
         return {}
+
+
+def sacct_final_batch(cluster_name, job_ids):
+    """Fetch sacct data for multiple jobs in a single SSH call.
+
+    Returns a dict mapping job_id -> parsed record (same format as sacct_final).
+    """
+    if not job_ids:
+        return {}
+    ids_str = ",".join(str(j) for j in job_ids)
+    try:
+        if cluster_name == "local":
+            user = os.environ.get("USER", DEFAULT_USER)
+            result = subprocess.run(
+                ["sacct", "-u", user, "-j", ids_str, f"--format={_SACCT_FMT}", "--noheader", "-P"],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = result.stdout.strip()
+        else:
+            out, _ = ssh_run_with_timeout(
+                cluster_name,
+                f"sacct -u $USER -j {ids_str} --format={_SACCT_FMT} --noheader -P 2>/dev/null",
+                timeout_sec=15,
+            )
+    except Exception:
+        return {}
+
+    results = {}
+    for line in (out or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|")
+        record = dict(zip(_SACCT_KEYS, parts + [""] * len(_SACCT_KEYS)))
+        jid = record.get("jobid", "")
+        if "." in jid:
+            continue
+        if jid and jid not in results:
+            results[jid] = record
+    return results
 
 
 def _try_get_stdout_path(cluster_name, job_id):
@@ -233,11 +275,40 @@ def get_job_stats(cluster, job_id):
         else:
             state, nodes, cpus, gres, node_list, elapsed = (sq.split("|") + [""] * 6)[:6]
 
-        sstat_out, _ = ssh_run_with_timeout(cluster, f"sstat -j {job_id}.batch --noheader -P --format=AveCPU,AveRSS,MaxRSS,MaxVMSize 2>/dev/null | head -1", timeout_sec=10)
-        ave_cpu, ave_rss, max_rss, max_vms = (sstat_out.split("|") + ["", "", "", ""])[:4] if sstat_out else ("", "", "", "")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        tres_ave, _ = ssh_run_with_timeout(cluster, f"sstat -j {job_id}.batch --noheader -P --format=TresUsageInAve,TresUsageInMax 2>/dev/null | head -1", timeout_sec=10)
-        tres_usage_text = tres_ave.strip()
+        def _fetch_sstat_cpu():
+            out, _ = ssh_run_with_timeout(cluster, f"sstat -j {job_id}.batch --noheader -P --format=AveCPU,AveRSS,MaxRSS,MaxVMSize 2>/dev/null | head -1", timeout_sec=10)
+            return (out.split("|") + ["", "", "", ""])[:4] if out else ("", "", "", "")
+
+        def _fetch_sstat_tres():
+            out, _ = ssh_run_with_timeout(cluster, f"sstat -j {job_id}.batch --noheader -P --format=TresUsageInAve,TresUsageInMax 2>/dev/null | head -1", timeout_sec=10)
+            return out.strip()
+
+        def _fetch_gpu_probe():
+            cluster_has_gpus = bool(CLUSTERS.get(cluster, {}).get("gpu_type"))
+            gres_mentions_gpu = "gpu" in (gres or "").lower()
+            if not ((gres_mentions_gpu or cluster_has_gpus) and state in ("RUNNING", "COMPLETING")):
+                return [], "", gres_mentions_gpu, cluster_has_gpus
+            gpu_cmd = (f"srun --jobid {job_id} -N1 -n1 --overlap "
+                       "bash -lc \"nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total "
+                       "--format=csv,noheader,nounits\" 2>/dev/null | head -16")
+            gpu_out, gpu_err = ssh_run_with_timeout(cluster, gpu_cmd, timeout_sec=20)
+            rows = []
+            for line in gpu_out.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 5:
+                    rows.append({"index": parts[0], "name": parts[1], "util": parts[2] + "%", "mem": f"{parts[3]}/{parts[4]} MiB"})
+            return rows, gpu_err if not rows else "", gres_mentions_gpu, cluster_has_gpus
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_cpu = pool.submit(_fetch_sstat_cpu)
+            f_tres = pool.submit(_fetch_sstat_tres)
+            f_gpu = pool.submit(_fetch_gpu_probe)
+
+        ave_cpu, ave_rss, max_rss, max_vms = f_cpu.result()
+        tres_usage_text = f_tres.result()
+        gpu_rows, gpu_probe_error, gres_mentions_gpu, cluster_has_gpus = f_gpu.result()
 
         def _extract_tres_value(text, key):
             if not text:
@@ -249,22 +320,6 @@ def get_job_stats(cluster, job_id):
 
         gpuutil_ave = _extract_tres_value(tres_usage_text, "gres/gpuutil")
         gpumem_ave = _extract_tres_value(tres_usage_text, "gres/gpumem")
-
-        gpu_rows = []
-        gpu_probe_error = ""
-        cluster_has_gpus = bool(CLUSTERS.get(cluster, {}).get("gpu_type"))
-        gres_mentions_gpu = "gpu" in (gres or "").lower()
-        if (gres_mentions_gpu or cluster_has_gpus) and state in ("RUNNING", "COMPLETING"):
-            gpu_cmd = (f"srun --jobid {job_id} -N1 -n1 --overlap "
-                       "bash -lc \"nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total "
-                       "--format=csv,noheader,nounits\" 2>/dev/null | head -16")
-            gpu_out, gpu_err = ssh_run_with_timeout(cluster, gpu_cmd, timeout_sec=20)
-            for line in gpu_out.splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 5:
-                    gpu_rows.append({"index": parts[0], "name": parts[1], "util": parts[2] + "%", "mem": f"{parts[3]}/{parts[4]} MiB"})
-            if not gpu_rows and gpu_err:
-                gpu_probe_error = gpu_err
 
         gpu_summary = ""
         if not gpu_rows:
@@ -625,25 +680,55 @@ def _is_cache_fresh(cluster_name):
     return (time.monotonic() - ts) < CACHE_FRESH_SEC
 
 
+_poll_inflight = set()
+_poll_inflight_lock = threading.Lock()
+
+
+def _start_poll(name):
+    """Start a poll thread for *name* if one isn't already running."""
+    with _poll_inflight_lock:
+        if name in _poll_inflight:
+            return
+        _poll_inflight.add(name)
+    _last_polled[name] = time.monotonic()
+
+    def _run():
+        try:
+            poll_cluster(name)
+        finally:
+            with _poll_inflight_lock:
+                _poll_inflight.discard(name)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def refresh_all_clusters():
-    stale = [n for n in CLUSTERS if not _is_cache_fresh(n)]
-    if not stale:
-        return
-    threads = []
-    for name in stale:
-        _last_polled[name] = time.monotonic()
-        t = threading.Thread(target=poll_cluster, args=(name,), daemon=True)
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join(timeout=SSH_TIMEOUT + 5)
+    """Kick off background refreshes for stale clusters.  Never blocks."""
+    for name in CLUSTERS:
+        if not _is_cache_fresh(name):
+            _start_poll(name)
 
 
 def refresh_cluster(cluster_name):
-    if _is_cache_fresh(cluster_name):
-        return
-    _last_polled[cluster_name] = time.monotonic()
-    poll_cluster(cluster_name)
+    """Kick off a background refresh for one cluster.  Never blocks."""
+    if not _is_cache_fresh(cluster_name):
+        _start_poll(cluster_name)
+
+
+def prune_job_sets():
+    """Remove entries from unbounded sets for jobs no longer tracked."""
+    active = set()
+    for ids in _seen_jobs.values():
+        for jid in ids:
+            active.add(jid)
+    stale_captured = {k for k in _stdout_captured if k[1] not in active}
+    _stdout_captured.difference_update(stale_captured)
+    stale_prefetch = {k for k in _prefetch_last if k[1] not in active}
+    for k in stale_prefetch:
+        _prefetch_last.pop(k, None)
+    stale_meta = {k for k in _run_meta_fetched if k[1] not in active}
+    for k in stale_meta:
+        _run_meta_fetched.pop(k, None)
 
 
 def poll_cluster(name):
@@ -658,12 +743,14 @@ def poll_cluster(name):
         _seen_jobs[name] = current_ids
 
     gone_ids = prev_ids - current_ids
-    for job_id in gone_ids:
-        _finalize_gone_job(name, job_id, prev_jobs.get(job_id, {}))
+    if gone_ids:
+        sacct_batch = sacct_final_batch(name, list(gone_ids)) if name != "local" else {}
+        for job_id in gone_ids:
+            _finalize_gone_job(name, job_id, prev_jobs.get(job_id, {}),
+                               sacct_record=sacct_batch.get(job_id))
 
     if name != "local":
-        for job in data.get("jobs", []):
-            upsert_job(name, job, terminal=False)
+        upsert_jobs_batch(name, data.get("jobs", []), terminal=False)
 
         running_ids = [j["jobid"] for j in data.get("jobs", [])
                        if j.get("state", "").upper() in ("RUNNING", "COMPLETING")]
@@ -779,10 +866,10 @@ def _read_finalize_log(cluster, job_id, log_path=""):
         return None
 
 
-def _finalize_gone_job(cluster, job_id, prev_job):
+def _finalize_gone_job(cluster, job_id, prev_job, sacct_record=None):
     prev_state = prev_job.get("state", "").upper()
     prev_reason = prev_job.get("reason", "")
-    final = sacct_final(cluster, job_id)
+    final = sacct_record if sacct_record is not None else sacct_final(cluster, job_id)
     sacct_state = final.get("state", "").upper().split()[0] if final.get("state") else ""
 
     if sacct_state:

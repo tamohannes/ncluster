@@ -22,6 +22,7 @@ QUOTA_CACHE_TTL_SEC = 3600
 
 _lock = threading.Lock()
 _cache = {}
+_refreshing_clusters = set()
 
 CLUSTER_FS_MAP = {
     # Add your cluster-to-Lustre-path mappings here.
@@ -109,6 +110,21 @@ def _add_pct(q):
     return q
 
 
+def _fetch_one_quota(cluster, fs_path, flag, identifier):
+    """Fetch a single lfs quota (user or project) and parse it."""
+    out = _run_quota_cmd(cluster, f"lfs quota -h {flag} {identifier} {fs_path} 2>&1")
+    if not out:
+        return None
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(fs_path) or stripped.startswith("/lustre"):
+            q = _parse_quota_line(stripped)
+            if q:
+                _add_pct(q)
+            return q
+    return None
+
+
 def fetch_storage_quota(cluster):
     """Fetch user and project quotas for a cluster. Returns structured dict."""
     if cluster not in CLUSTERS or cluster == "local":
@@ -121,38 +137,39 @@ def fetch_storage_quota(cluster):
     with _lock:
         cached = _cache.get(cluster)
         if cached and (time.monotonic() - cached["_ts"]) < QUOTA_CACHE_TTL_SEC:
-            return cached
+            return {k: v for k, v in cached.items() if k != "_ts"}
+        if cluster in _refreshing_clusters:
+            return {k: v for k, v in cached.items() if k != "_ts"} if cached else {"status": "error", "error": "Refresh in progress"}
+        _refreshing_clusters.add(cluster)
 
+    try:
+        return _fetch_quota_uncached(cluster)
+    finally:
+        with _lock:
+            _refreshing_clusters.discard(cluster)
+
+
+def _fetch_quota_uncached(cluster):
     user = CLUSTERS[cluster].get("user", DEFAULT_USER)
+    fs_path = CLUSTER_FS_MAP.get(cluster)
 
-    user_out = _run_quota_cmd(cluster, f"lfs quota -h -u {user} {fs_path} 2>&1")
-    user_quota = None
-    if user_out:
-        for line in user_out.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(fs_path) or stripped.startswith("/lustre"):
-                user_quota = _parse_quota_line(stripped)
-                if user_quota:
-                    _add_pct(user_quota)
-                break
+    from concurrent.futures import ThreadPoolExecutor
 
-    fs_suffix = fs_path.split("/lustre/")[-1] if "/lustre/" in fs_path else "fsw"
+    futures = {}
+    with ThreadPoolExecutor(max_workers=max(1, 1 + len(PPPS))) as pool:
+        futures["__user__"] = pool.submit(_fetch_one_quota, cluster, fs_path, "-u", user)
+        for ppp_name, pid in PPPS.items():
+            futures[ppp_name] = pool.submit(_fetch_one_quota, cluster, fs_path, "-p", str(pid))
+
+    user_quota = futures.pop("__user__").result()
 
     projects = {}
-    for ppp_name, pid in PPPS.items():
-        out = _run_quota_cmd(cluster, f"lfs quota -h -p {pid} {fs_path} 2>&1")
-        if not out:
-            continue
-        for line in out.splitlines():
-            stripped = line.strip()
-            if stripped.startswith(fs_path) or stripped.startswith("/lustre"):
-                pq = _parse_quota_line(stripped)
-                if pq:
-                    _add_pct(pq)
-                    pq["project_name"] = ppp_name
-                    pq["project_id"] = pid
-                    projects[ppp_name] = pq
-                break
+    for ppp_name, fut in futures.items():
+        pq = fut.result()
+        if pq:
+            pq["project_name"] = ppp_name
+            pq["project_id"] = PPPS[ppp_name]
+            projects[ppp_name] = pq
 
     result = {
         "status": "ok",

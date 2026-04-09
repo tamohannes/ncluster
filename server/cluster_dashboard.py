@@ -25,6 +25,7 @@ CACHE_TTL_SEC = 120
 _lock = threading.Lock()
 _cached_data = None
 _cached_at = 0.0
+_refreshing = False
 
 
 def _fetch_json(path, timeout=10):
@@ -41,9 +42,13 @@ def _fetch_json(path, timeout=10):
 
 
 def _build_utilization():
-    """Fetch /api/config and /api/status and merge into a compact structure."""
-    config = _fetch_json("/api/config")
-    status = _fetch_json("/api/status")
+    """Fetch /api/config and /api/status in parallel, merge into a compact structure."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_config = pool.submit(_fetch_json, "/api/config")
+        f_status = pool.submit(_fetch_json, "/api/status")
+    config = f_config.result()
+    status = f_status.result()
     if not config or not status:
         return None
 
@@ -112,20 +117,28 @@ def get_cluster_utilization(force=False):
     """Return cached cluster utilization or refresh if stale.
 
     Returns None if the external dashboard is unreachable.
+    Uses single-flight: only one thread fetches at a time; others
+    serve stale data rather than stampeding the upstream.
     """
-    global _cached_data, _cached_at
+    global _cached_data, _cached_at, _refreshing
 
     now = time.monotonic()
     with _lock:
         if not force and _cached_data and (now - _cached_at) < CACHE_TTL_SEC:
             return _cached_data
+        if _refreshing:
+            return _cached_data
+        _refreshing = True
 
-    result = _build_utilization()
-    if result:
+    try:
+        result = _build_utilization()
+        if result:
+            with _lock:
+                _cached_data = result
+                _cached_at = time.monotonic()
+            return result
         with _lock:
-            _cached_data = result
-            _cached_at = time.monotonic()
-        return result
-
-    with _lock:
-        return _cached_data
+            return _cached_data
+    finally:
+        with _lock:
+            _refreshing = False

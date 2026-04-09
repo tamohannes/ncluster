@@ -233,11 +233,13 @@ function setupSidebarResizer() {
     if (next < minW) next = minW;
     if (next > maxW) next = maxW;
     nav.style.width = `${next}px`;
-    try { localStorage.setItem('clausius.navWidth', String(next)); } catch (_) {}
   });
 
   window.addEventListener('mouseup', () => {
-    if (_isResizingNav) nav.style.transition = '';
+    if (_isResizingNav) {
+      nav.style.transition = '';
+      try { localStorage.setItem('clausius.navWidth', nav.style.width.replace('px', '')); } catch (_) {}
+    }
     _isResizingNav = false;
   });
 
@@ -415,7 +417,7 @@ function renderCard(name, data) {
       const chevronCls = isGroupExpanded ? ' expanded' : '';
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
-      const summaryHtml = statusSummaryHtml(groupJobs);
+      const summaryHtml = statusSummaryHtml(groupJobs, name);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${summaryHtml}</span>`;
 
       const jobNames = groupJobs.map(j => j.name || '');
@@ -565,11 +567,22 @@ function renderCard(name, data) {
 }
 
 // ── Grouping ──
+
+let _lastActiveSet = new Set();
+try {
+  const saved = JSON.parse(localStorage.getItem('clausius.activeClusters') || '[]');
+  if (Array.isArray(saved)) _lastActiveSet = new Set(saved);
+} catch (_) {}
+
+function _persistActiveSet() {
+  try { localStorage.setItem('clausius.activeClusters', JSON.stringify([..._lastActiveSet])); } catch (_) {}
+}
+
 function groupClusters(data) {
   const local   = [];
-  const active  = [];  // reachable + has any live jobs (incl. pending)
-  const idle    = [];  // reachable + no live jobs at all
-  const failed  = [];  // unreachable
+  const active  = [];
+  const idle    = [];
+  const failed  = [];
 
   for (const name of Object.keys(CLUSTERS)) {
     const d = data[name];
@@ -577,10 +590,19 @@ function groupClusters(data) {
     if (name === 'local') { local.push(name); continue; }
     if (d.status === 'error') { failed.push(name); continue; }
     const liveJobs = (d.jobs || []).filter(j => !j._pinned);
-    if (liveJobs.length > 0) active.push(name);
-    else idle.push(name);
+    const hasFreshData = !!d.updated;
+    if (liveJobs.length > 0) {
+      active.push(name);
+      _lastActiveSet.add(name);
+    } else if (!hasFreshData && _lastActiveSet.has(name)) {
+      active.push(name);
+    } else {
+      idle.push(name);
+      _lastActiveSet.delete(name);
+    }
   }
 
+  _persistActiveSet();
   return { local, active, idle, failed };
 }
 
@@ -677,12 +699,16 @@ async function prefetchAndUpdateProgress(data) {
   if (document.hidden) return;
   const batch = _collectVisibleJobs(data);
   if (!batch.length) { _saveProgressCache(); return; }
+  const hasPending = batch.some(j => (j.state || '').toUpperCase() === 'PENDING');
   try {
-    await fetch('/api/prefetch_visible', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobs: batch }),
-    });
+    await Promise.all([
+      fetchWithTimeout('/api/prefetch_visible', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobs: batch }),
+      }),
+      hasPending && !_waitCalibration ? fetchWaitCalibration() : Promise.resolve(),
+    ]);
   } catch (_) {}
   setTimeout(() => _fetchProgressUpdate(batch), 4000);
 }
@@ -690,7 +716,7 @@ async function prefetchAndUpdateProgress(data) {
 async function _fetchProgressUpdate(batch) {
   if (document.hidden) return;
   try {
-    const res = await fetch('/api/progress', {
+    const res = await fetchWithTimeout('/api/progress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jobs: batch }),
@@ -733,7 +759,7 @@ async function _fetchProgressUpdate(batch) {
       }
     }
     _saveProgressCache();
-    if (changed) _renderAll();
+    if (changed) _scheduleRender();
   } catch (_) {}
 }
 
@@ -769,20 +795,20 @@ async function fetchAll() {
   if (!grid.children.length) _showLoadingSkeleton();
 
   fetchClusterUtilization().then(() => {
-    if (_clusterUtil && Object.keys(allData).length) _renderAll();
+    if (_clusterUtil && Object.keys(allData).length) _scheduleRender();
   });
   fetchPartitions().then(() => {
-    if (_partitionData && Object.keys(allData).length) _renderAll();
+    if (_partitionData && Object.keys(allData).length) _scheduleRender();
   });
   if (!Object.keys(_storageQuota).length) {
     fetchStorageQuotas().then(() => {
-      if (Object.keys(allData).length) _renderAll();
+      if (Object.keys(allData).length) _scheduleRender();
     });
   }
 
   // 1) Always render cached data immediately (even if stale — better than empty).
   try {
-    const res = await fetch('/api/jobs');
+    const res = await fetchWithTimeout('/api/jobs');
     const cached = await res.json();
     const hasData = Object.values(cached).some(d => d.updated);
     if (hasData) {
@@ -816,12 +842,12 @@ async function _forceRefreshAll() {
   const grid = document.getElementById('grid');
   grid.classList.add('grid-loading');
   const promises = Object.keys(CLUSTERS).map(name =>
-    fetch(`/api/jobs/${name}?force=1`)
+    fetchWithTimeout(`/api/jobs/${name}?force=1`)
       .then(r => r.json())
       .then(data => {
         if (data.status === 'ok') allData[name] = data;
         _fillMissing();
-        _renderAll();
+        _scheduleRender();
       })
       .catch(() => {})
   );
@@ -833,7 +859,7 @@ async function _forceRefreshAll() {
 
 async function _refreshClusters(names) {
   const promises = names.map(name =>
-    fetch(`/api/jobs/${name}`)
+    fetchWithTimeout(`/api/jobs/${name}`)
       .then(r => r.json())
       .then(data => {
         const prev = allData[name];
@@ -843,7 +869,7 @@ async function _refreshClusters(names) {
         if (prev && prev.updated && data.updated && data.updated < prev.updated) return;
         allData[name] = data;
         _fillMissing();
-        _renderAll();
+        _scheduleRender();
       })
       .catch(err => { console.warn('Cluster refresh failed:', name, err); })
   );
@@ -860,6 +886,16 @@ function _renderAll() {
   renderGrid(allData);
   updateSummary(allData);
   _attachPendingTooltips();
+}
+
+let _renderScheduled = false;
+function _scheduleRender() {
+  if (_renderScheduled) return;
+  _renderScheduled = true;
+  requestAnimationFrame(() => {
+    _renderScheduled = false;
+    _renderAll();
+  });
 }
 
 function _attachPendingTooltips() {
@@ -893,12 +929,12 @@ async function refreshCluster(name, force) {
   grid.classList.add('grid-loading');
   try {
     const url = force ? `/api/jobs/${name}?force=1` : `/api/jobs/${name}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
     if (force || data.status === 'ok') {
       allData[name] = data;
     }
-    _renderAll();
+    _scheduleRender();
     prefetchAndUpdateProgress({ [name]: data });
   } catch (e) {
     toast(`Failed to refresh ${name}`, 'error');

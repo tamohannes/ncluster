@@ -382,7 +382,9 @@ function renderJsonlLazyViewer(data, filePath) {
     </details>`;
   }).join('');
 
-  // Attach click handler via event delegation
+  if (window._jsonlToggleAbort) window._jsonlToggleAbort.abort();
+  window._jsonlToggleAbort = new AbortController();
+
   setTimeout(() => {
     const container = document.getElementById('modal-content');
     if (!container) return;
@@ -414,7 +416,7 @@ function renderJsonlLazyViewer(data, filePath) {
       } catch (err) {
         body.innerHTML = `<div class="log-line error">Fetch error: ${err}</div>`;
       }
-    }, true);
+    }, { capture: true, signal: window._jsonlToggleAbort.signal });
   }, 0);
 
   const total = data.total;

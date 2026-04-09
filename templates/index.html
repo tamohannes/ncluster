@@ -490,8 +490,8 @@
 <script id="cluster-data" type="application/json">{{ clusters | tojson }}</script>
 <script id="username-data" type="text/plain">{{ username }}</script>
 <script id="team-data" type="text/plain">{{ team }}</script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>

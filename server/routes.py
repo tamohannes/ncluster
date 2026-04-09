@@ -8,12 +8,14 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request, render_template, make_response
 
 _log = logging.getLogger(__name__)
 _SLOW_REQUEST_MS = 2000
+_shared_pool = ThreadPoolExecutor(max_workers=4)
 
 from .config import (
     CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
@@ -119,16 +121,24 @@ def _fill_run_ids(cluster, jobs):
     need = [j for j in jobs if not j.get("run_id") and not j.get("_pinned")]
     if not need:
         return
-    con = get_db()
+    jid_map = {}
     for j in need:
         jid = j.get("jobid") or j.get("job_id", "")
-        row = con.execute(
-            "SELECT run_id FROM job_history WHERE cluster=? AND job_id=?",
-            (cluster, jid),
-        ).fetchone()
-        if row and row["run_id"]:
-            j["run_id"] = row["run_id"]
+        if jid:
+            jid_map.setdefault(jid, []).append(j)
+    if not jid_map:
+        return
+    con = get_db()
+    placeholders = ",".join("?" for _ in jid_map)
+    rows = con.execute(
+        f"SELECT job_id, run_id FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
+        (cluster, *jid_map.keys()),
+    ).fetchall()
     con.close()
+    for row in rows:
+        if row["run_id"]:
+            for j in jid_map.get(row["job_id"], []):
+                j["run_id"] = row["run_id"]
 
 
 @api.route("/")
@@ -141,12 +151,7 @@ def index():
 
 @api.route("/api/jobs")
 def api_jobs():
-    if request.args.get("refresh", "0") == "1":
-        refresh_all_clusters()
-    else:
-        stale = [n for n in CLUSTERS if not _is_cache_fresh(n)]
-        if stale:
-            threading.Thread(target=refresh_all_clusters, daemon=True).start()
+    refresh_all_clusters()
 
     with _cache_lock:
         snapshot = {k: dict(v) for k, v in _cache.items()}
@@ -355,9 +360,7 @@ def api_jobs_cluster(cluster):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if request.args.get("force") == "1":
         _last_polled[cluster] = 0.0
-        refresh_cluster(cluster)
-    elif not _is_cache_fresh(cluster):
-        threading.Thread(target=refresh_cluster, args=(cluster,), daemon=True).start()
+    refresh_cluster(cluster)
     with _cache_lock:
         data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
     if data.get("status") == "ok":
@@ -1450,6 +1453,15 @@ def api_aihub_my_fairshare():
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 
+@api.route("/api/wait_calibration")
+def api_wait_calibration():
+    from .wds import get_wait_calibration
+    try:
+        return jsonify(get_wait_calibration())
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @api.route("/api/wds_history")
 def api_wds_history():
     from .wds import get_wds_history
@@ -1660,26 +1672,35 @@ def api_spotlight():
         return jsonify({"projects": [], "logbook": [], "history": []})
 
     ql = q.lower()
-    all_projects = get_projects()
-    projects = [
-        {"project": p["project"], "emoji": get_project_emoji(p["project"]),
-         "color": get_project_color(p["project"]), "job_count": p["job_count"]}
-        for p in all_projects if ql in p["project"].lower()
-    ][:8]
 
-    logbook = []
-    try:
-        logbook = _lb_search(q, limit=8)
-    except Exception:
-        pass
+    def _search_projects():
+        return [
+            {"project": p["project"], "emoji": get_project_emoji(p["project"]),
+             "color": get_project_color(p["project"]), "job_count": p["job_count"]}
+            for p in get_projects() if ql in p["project"].lower()
+        ][:8]
 
-    history_rows = get_history(limit=8, search=q)
-    history = [
-        {"cluster": r["cluster"], "job_id": r.get("job_id") or r.get("jobid", ""),
-         "job_name": r.get("job_name") or r.get("name", ""),
-         "state": r.get("state", ""), "project": r.get("project", ""),
-         "started": r.get("started", "")}
-        for r in history_rows
-    ]
+    def _search_logbook():
+        try:
+            return _lb_search(q, limit=8)
+        except Exception:
+            return []
 
-    return jsonify({"projects": projects, "logbook": logbook, "history": history})
+    def _search_history():
+        return [
+            {"cluster": r["cluster"], "job_id": r.get("job_id") or r.get("jobid", ""),
+             "job_name": r.get("job_name") or r.get("name", ""),
+             "state": r.get("state", ""), "project": r.get("project", ""),
+             "started": r.get("started", "")}
+            for r in get_history(limit=8, search=q)
+        ]
+
+    f_proj = _shared_pool.submit(_search_projects)
+    f_lb = _shared_pool.submit(_search_logbook)
+    f_hist = _shared_pool.submit(_search_history)
+
+    return jsonify({
+        "projects": f_proj.result(),
+        "logbook": f_lb.result(),
+        "history": f_hist.result(),
+    })

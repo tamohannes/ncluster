@@ -312,16 +312,15 @@ def fetch_log_tail(cluster_name, log_path, lines=150):
 def _db_log_path(cluster_name, job_id):
     """Look up the stored log_path for a job from the history DB."""
     try:
-        import sqlite3
-        from .config import DB_PATH
-        con = sqlite3.connect(DB_PATH)
+        from .db import get_db
+        con = get_db()
         row = con.execute(
             "SELECT log_path FROM job_history WHERE cluster=? AND job_id=?",
             (cluster_name, str(job_id)),
         ).fetchone()
         con.close()
         if row and row[0]:
-            return row[0]
+            return row["log_path"]
     except Exception:
         pass
     return ""

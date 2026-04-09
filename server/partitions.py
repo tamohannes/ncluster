@@ -246,8 +246,14 @@ def _fetch_partitions(cluster_name):
     return sorted(partitions.values(), key=lambda p: (-p.get("is_default", False), p["name"]))
 
 
+_refreshing_clusters = set()
+
+
 def get_partitions(cluster_name, force=False):
-    """Return cached partition data for a single cluster, or fetch on demand."""
+    """Return cached partition data for a single cluster, or fetch on demand.
+
+    Single-flight per cluster: only one thread fetches at a time.
+    """
     if cluster_name not in CLUSTERS or cluster_name == "local":
         return None
 
@@ -256,16 +262,22 @@ def get_partitions(cluster_name, force=False):
         rec = _cache.get(cluster_name)
         if rec and not force and (now - rec["ts"]) < PARTITION_CACHE_TTL_SEC:
             return rec["data"]
+        if cluster_name in _refreshing_clusters:
+            return rec["data"] if rec else None
+        _refreshing_clusters.add(cluster_name)
 
-    data = _fetch_partitions(cluster_name)
-    if data is not None:
+    try:
+        data = _fetch_partitions(cluster_name)
+        if data is not None:
+            with _lock:
+                _cache[cluster_name] = {"ts": time.monotonic(), "data": data}
+            return data
         with _lock:
-            _cache[cluster_name] = {"ts": time.monotonic(), "data": data}
-        return data
-
-    with _lock:
-        rec = _cache.get(cluster_name)
-        return rec["data"] if rec else None
+            rec = _cache.get(cluster_name)
+            return rec["data"] if rec else None
+    finally:
+        with _lock:
+            _refreshing_clusters.discard(cluster_name)
 
 
 def get_all_partitions(force=False):
@@ -325,51 +337,6 @@ def _refresh_stale(names):
                 pass
 
 
-def _estimate_partition_wait(part):
-    """Heuristic wait estimate for a single partition.
-
-    Uses active capacity (total - other/drained), queue depth relative to
-    active nodes, and idle-to-pending ratio.  Intentionally conservative:
-    even when idle nodes exist, pending jobs ahead in the queue and
-    fair-share priority mean the user's job rarely starts instantly.
-    """
-    total = part.get("total_nodes", 1) or 1
-    alloc = part.get("alloc_nodes", 0)
-    idle = part.get("idle_nodes", 0)
-    other = part.get("other_nodes", 0)
-    pending = part.get("pending_jobs", 0)
-
-    active = total - other
-    if active <= 0:
-        return "unavail", "long"
-
-    occupancy = alloc / active * 100
-    queue_ratio = pending / active
-
-    if idle > 0 and pending == 0:
-        return "now", "fast"
-
-    if idle > pending and pending < 5:
-        return "< 5 min", "fast"
-
-    if idle > 0 and queue_ratio < 0.05:
-        return "< 5 min", "fast"
-    if idle > 0 and queue_ratio < 0.2:
-        return "~5-15 min", "fast"
-    if idle > 0 and queue_ratio < 0.5:
-        return "~15-30 min", "moderate"
-    if idle > 0 and queue_ratio < 1.0:
-        return "~30-60 min", "moderate"
-
-    if queue_ratio < 0.3:
-        return "~30-60 min", "moderate"
-    if queue_ratio < 1.0:
-        return "~1-2h", "slow"
-    if queue_ratio < 3.0:
-        return "~2-4h", "slow"
-    return "4h+", "long"
-
-
 def get_partition_summary():
     """Compact cross-cluster overview for quick agent decisions."""
     all_data = get_all_partitions_cached()
@@ -384,7 +351,6 @@ def get_partition_summary():
 
         part_list = []
         for p in gpu_parts:
-            wait_label, wait_cls = _estimate_partition_wait(p)
             gpn = p.get("gpus_per_node", 0) or cluster_gpus_fallback
             part_list.append({
                 "name": p["name"],
@@ -395,8 +361,6 @@ def get_partition_summary():
                 "pending_jobs": p.get("pending_jobs", 0),
                 "gpus_per_node": gpn,
                 "preemptable": p.get("preempt_mode", "OFF") != "OFF",
-                "est_wait": wait_label,
-                "est_wait_cls": wait_cls,
             })
 
         summary[cluster_name] = {

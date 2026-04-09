@@ -17,6 +17,7 @@ automatically routed to the background lane.
 
 import atexit
 import logging
+import socket
 import threading
 import time
 
@@ -42,14 +43,48 @@ _data_locks = {}        # cluster -> Lock
 
 # ── Client creation ──────────────────────────────────────────────────────────
 
+_DNS_TIMEOUT_SEC = 3
+
+
+def _resolve_host(hostname, port, timeout=_DNS_TIMEOUT_SEC):
+    """Resolve hostname with a bounded timeout.
+
+    getaddrinfo() uses the system resolver whose timeout is controlled by
+    /etc/resolv.conf and can be 30s+.  We run it in a worker thread so a
+    DNS outage never blocks the SSH pool longer than *timeout* seconds.
+    """
+    result = [None]
+    exc = [None]
+
+    def _do():
+        try:
+            infos = socket.getaddrinfo(hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if infos:
+                result[0] = infos[0][4][0]
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+    if t.is_alive():
+        raise socket.timeout(f"DNS resolution timed out for {hostname} after {timeout}s")
+    if exc[0]:
+        raise exc[0]
+    if not result[0]:
+        raise socket.gaierror(f"Could not resolve {hostname}")
+    return result[0]
+
+
 def _ssh_client(cluster_name, host_override=None):
     cfg = CLUSTERS[cluster_name]
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     host = host_override or cfg["host"]
     try:
+        ip = _resolve_host(host, cfg["port"])
         client.connect(
-            host, port=cfg["port"], username=cfg["user"],
+            ip, port=cfg["port"], username=cfg["user"],
             key_filename=cfg["key"],
             timeout=SSH_TIMEOUT, banner_timeout=SSH_TIMEOUT, auth_timeout=SSH_TIMEOUT,
         )
@@ -88,11 +123,17 @@ def _get_data_lock(cluster_name):
 
 # ── Pooled client helpers ────────────────────────────────────────────────────
 
-def _get_pooled_client(pool, cluster_name, force_new=False, host_override=None):
-    """Return a pooled client from *pool*.  Caller MUST hold the matching lock."""
+def _get_pooled_client(pool, lock, cluster_name, force_new=False, host_override=None):
+    """Return a pooled client from *pool*.
+
+    The per-cluster *lock* is held during pool access and new-connection
+    creation (bounded by DNS timeout + SSH_TIMEOUT) but NOT during
+    command I/O — that happens in ``_exec_on_transport`` which only needs
+    the transport reference, not the lock.
+    """
     now = time.monotonic()
-    old_to_close = None
-    with _ssh_pool_lock:
+
+    with lock:
         if not force_new:
             rec = pool.get(cluster_name)
             if rec:
@@ -104,24 +145,26 @@ def _get_pooled_client(pool, cluster_name, force_new=False, host_override=None):
                         return client
                 except Exception:
                     pass
-                old_to_close = pool.pop(cluster_name, None)
+                pool.pop(cluster_name, None)
+                try:
+                    client.close()
+                except Exception:
+                    pass
         else:
-            old_to_close = pool.pop(cluster_name, None)
+            old = pool.pop(cluster_name, None)
+            if old:
+                try:
+                    old["client"].close()
+                except Exception:
+                    pass
 
-    if old_to_close:
-        try:
-            old_to_close["client"].close()
-        except Exception:
-            pass
-
-    client = _ssh_client(cluster_name, host_override=host_override)
-    with _ssh_pool_lock:
+        client = _ssh_client(cluster_name, host_override=host_override)
         pool[cluster_name] = {"client": client, "last_used": now}
-    return client
+        return client
 
 
-def _close_pool_client(pool, cluster_name):
-    with _ssh_pool_lock:
+def _close_pool_client(pool, lock, cluster_name):
+    with lock:
         rec = pool.pop(cluster_name, None)
     if rec:
         try:
@@ -131,16 +174,21 @@ def _close_pool_client(pool, cluster_name):
 
 
 def close_cluster_client(cluster_name):
-    _close_pool_client(_ssh_pool, cluster_name)
+    _close_pool_client(_ssh_pool, _get_cluster_lock(cluster_name), cluster_name)
 
 
 def close_all_clients():
     """Close every pooled connection (all lanes).  Called at interpreter exit."""
-    for pool in (_ssh_pool, _bg_pool, _data_pool):
+    pools_and_lock_fns = [
+        (_ssh_pool, _get_cluster_lock),
+        (_bg_pool, _get_bg_lock),
+        (_data_pool, _get_data_lock),
+    ]
+    for pool, lock_fn in pools_and_lock_fns:
         with _ssh_pool_lock:
             clusters = list(pool.keys())
         for c in clusters:
-            _close_pool_client(pool, c)
+            _close_pool_client(pool, lock_fn(c), c)
     log.info("SSH pool: closed all connections")
 
 
@@ -152,7 +200,12 @@ atexit.register(close_all_clients)
 def ssh_pool_gc_loop():
     while True:
         now = time.monotonic()
-        for pool in (_ssh_pool, _bg_pool, _data_pool):
+        pools_and_lock_fns = [
+            (_ssh_pool, _get_cluster_lock),
+            (_bg_pool, _get_bg_lock),
+            (_data_pool, _get_data_lock),
+        ]
+        for pool, lock_fn in pools_and_lock_fns:
             stale = []
             with _ssh_pool_lock:
                 for cluster, rec in list(pool.items()):
@@ -166,7 +219,7 @@ def ssh_pool_gc_loop():
                         except Exception:
                             stale.append(cluster)
             for cluster in stale:
-                _close_pool_client(pool, cluster)
+                _close_pool_client(pool, lock_fn(cluster), cluster)
         time.sleep(60)
 
 
@@ -211,6 +264,46 @@ def enable_standalone_ssh():
 
 # ── Core execution ───────────────────────────────────────────────────────────
 
+def _get_transport(pool, lock, cluster_name, force_new=False, host_override=None):
+    """Return an active paramiko Transport for *cluster_name*.
+
+    The per-cluster lock is held during pool lookup and (when needed)
+    connection creation, but NOT during command I/O.  Callers open their
+    own channel on the returned transport, which supports multiplexing.
+    """
+    client = _get_pooled_client(pool, lock, cluster_name,
+                                force_new=force_new, host_override=host_override)
+    tr = client.get_transport()
+    if not tr or not tr.is_active():
+        raise paramiko.SSHException("transport inactive after connect")
+    return tr
+
+
+def _exec_on_transport(transport, command, timeout_sec):
+    """Open a channel on *transport*, run *command*, return (stdout, stderr).
+
+    Paramiko transports multiplex channels — this is safe to call from
+    multiple threads concurrently on the same transport.
+    """
+    chan = transport.open_session(timeout=timeout_sec)
+    try:
+        chan.settimeout(timeout_sec)
+        chan.exec_command("bash")
+        chan.sendall((command + "\nexit\n").encode())
+        chan.shutdown_write()
+
+        stdout = chan.makefile("rb", -1)
+        stderr = chan.makefile_stderr("rb", -1)
+        out = stdout.read().decode().strip()
+        err = stderr.read().decode().strip()
+    finally:
+        try:
+            chan.close()
+        except Exception:
+            pass
+    return out, err
+
+
 def _ssh_exec_data(cluster_name, command, timeout_sec):
     """Execute on the data-copier node, falling back to login on failure."""
     cfg = CLUSTERS.get(cluster_name, {})
@@ -223,34 +316,16 @@ def _ssh_exec_data(cluster_name, command, timeout_sec):
 
     for attempt in (1, 2):
         try:
+            tr = _get_transport(pool, lock, cluster_name,
+                                force_new=(attempt == 2), host_override=data_host)
+            out, err = _exec_on_transport(tr, command, timeout_sec)
             with lock:
-                client = _get_pooled_client(
-                    pool, cluster_name,
-                    force_new=(attempt == 2),
-                    host_override=data_host,
-                )
-                stdin_ch, stdout, stderr = client.exec_command(
-                    "bash", timeout=timeout_sec,
-                )
-                try:
-                    stdout.channel.settimeout(timeout_sec)
-                    stdin_ch.write(command + "\nexit\n")
-                    stdin_ch.flush()
-                    stdin_ch.channel.shutdown_write()
-                    out = stdout.read().decode().strip()
-                    err = stderr.read().decode().strip()
-                finally:
-                    try:
-                        stdout.channel.close()
-                    except Exception:
-                        pass
-                with _ssh_pool_lock:
-                    rec = pool.get(cluster_name)
-                    if rec:
-                        rec["last_used"] = time.monotonic()
-                return out, err
+                rec = pool.get(cluster_name)
+                if rec:
+                    rec["last_used"] = time.monotonic()
+            return out, err
         except Exception:
-            _close_pool_client(pool, cluster_name)
+            _close_pool_client(pool, lock, cluster_name)
             if attempt == 2:
                 log.warning(
                     "ssh_data: DC node %s unreachable for %s, falling back to login",
@@ -268,30 +343,15 @@ def _ssh_exec(cluster_name, command, timeout_sec):
         lock = _get_cluster_lock(cluster_name)
 
     for attempt in (1, 2):
-        with lock:
-            client = _get_pooled_client(pool, cluster_name, force_new=(attempt == 2))
-            try:
-                stdin_ch, stdout, stderr = client.exec_command(
-                    "bash", timeout=timeout_sec,
-                )
-                try:
-                    stdout.channel.settimeout(timeout_sec)
-                    stdin_ch.write(command + "\nexit\n")
-                    stdin_ch.flush()
-                    stdin_ch.channel.shutdown_write()
-                    out = stdout.read().decode().strip()
-                    err = stderr.read().decode().strip()
-                finally:
-                    try:
-                        stdout.channel.close()
-                    except Exception:
-                        pass
-                with _ssh_pool_lock:
-                    rec = pool.get(cluster_name)
-                    if rec:
-                        rec["last_used"] = time.monotonic()
-                return out, err
-            except Exception:
-                _close_pool_client(pool, cluster_name)
-                if attempt == 2:
-                    raise
+        try:
+            tr = _get_transport(pool, lock, cluster_name, force_new=(attempt == 2))
+            out, err = _exec_on_transport(tr, command, timeout_sec)
+            with lock:
+                rec = pool.get(cluster_name)
+                if rec:
+                    rec["last_used"] = time.monotonic()
+            return out, err
+        except Exception:
+            _close_pool_client(pool, lock, cluster_name)
+            if attempt == 2:
+                raise

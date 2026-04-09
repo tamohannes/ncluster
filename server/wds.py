@@ -59,20 +59,27 @@ def compute_wds_snapshot():
     from .aihub import get_ppp_allocations, get_my_fairshare
     from .partitions import get_partition_summary
     from .db import get_db
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_alloc = pool.submit(get_ppp_allocations)
+        f_fs = pool.submit(get_my_fairshare)
+        f_parts = pool.submit(get_partition_summary)
 
     try:
-        alloc_data = get_ppp_allocations()
+        alloc_data = f_alloc.result()
     except Exception as exc:
         log.warning("WDS snapshot: failed to get allocations: %s", exc)
         return 0
 
     try:
-        my_fs_data = get_my_fairshare()
+        my_fs_data = f_fs.result()
     except Exception:
         my_fs_data = {"clusters": {}}
 
     try:
-        part_data = get_partition_summary()
+        part_data = f_parts.result()
     except Exception:
         part_data = {}
 
@@ -81,8 +88,20 @@ def compute_wds_snapshot():
     except Exception:
         fetch_team_jobs = None
 
+    cluster_names = list(alloc_data.get("clusters", {}).keys())
+    team_jobs_map = {}
+    if fetch_team_jobs and cluster_names:
+        with ThreadPoolExecutor(max_workers=len(cluster_names)) as pool:
+            futs = {cn: pool.submit(fetch_team_jobs, cn) for cn in cluster_names}
+        for cn, fut in futs.items():
+            try:
+                team_jobs_map[cn] = fut.result()
+            except Exception:
+                pass
+
     ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
     rows = []
+    me = os.environ.get("USER", "")
 
     for cn, cd in alloc_data.get("clusters", {}).items():
         ps = part_data.get(cn, {})
@@ -100,18 +119,11 @@ def compute_wds_snapshot():
         elif isinstance(ta, (int, float)) and ta > 0:
             team_num = int(ta)
 
-        tj = None
-        if fetch_team_jobs:
-            try:
-                tj = fetch_team_jobs(cn)
-            except Exception:
-                pass
+        tj = team_jobs_map.get(cn)
         tj_summary = (tj or {}).get("summary", {})
         tj_users = tj_summary.get("by_user", {})
         team_running = tj_summary.get("total_running", 0)
 
-        import os
-        me = os.environ.get("USER", "")
         my_data = tj_users.get(me, {})
         my_running = my_data.get("running", 0)
         my_pending = my_data.get("pending", 0) + my_data.get("dependent", 0)
@@ -147,8 +159,8 @@ def compute_wds_snapshot():
     if not rows:
         return 0
 
-    import sqlite3
-    con = sqlite3.connect(DB_PATH)
+    from .db import get_db
+    con = get_db()
     con.executemany("""
         INSERT INTO wds_history (
             ts, cluster, account, wds,
@@ -179,9 +191,8 @@ def wds_snapshot_loop():
 
 def get_wds_history(cluster=None, account=None, days=30, limit=5000):
     """Query WDS history from the database."""
-    import sqlite3
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
+    from .db import get_db
+    con = get_db()
 
     cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     conditions = ["ts >= ?"]
@@ -206,3 +217,122 @@ def get_wds_history(cluster=None, account=None, days=30, limit=5000):
     con.close()
 
     return [dict(r) for r in rows]
+
+
+_wait_calibration_cache = None
+_wait_calibration_ts = 0
+_wait_calibration_computing = False
+_WAIT_CAL_TTL = 1800
+
+_WDS_BUCKETS = [0, 15, 30, 45, 60, 75]
+
+
+def _refresh_calibration_bg():
+    """Run calibration in background thread, update cache when done."""
+    global _wait_calibration_cache, _wait_calibration_ts, _wait_calibration_computing
+    try:
+        result = _compute_wait_calibration()
+        _wait_calibration_cache = result
+        _wait_calibration_ts = time.time()
+        log.info("Wait calibration updated: %d clusters",  len(result))
+    except Exception as exc:
+        log.warning("Wait calibration failed: %s", exc)
+    finally:
+        _wait_calibration_computing = False
+
+
+def get_wait_calibration():
+    """Return cached WDS-to-wait calibration, refreshing async if stale.
+
+    Never blocks the caller. Returns stale/empty data immediately while
+    a background thread recomputes.
+    """
+    global _wait_calibration_computing
+    import threading
+
+    now = time.time()
+    stale = not _wait_calibration_cache or now - _wait_calibration_ts >= _WAIT_CAL_TTL
+
+    if stale and not _wait_calibration_computing:
+        _wait_calibration_computing = True
+        threading.Thread(target=_refresh_calibration_bg, daemon=True).start()
+
+    return _wait_calibration_cache or {}
+
+
+def _compute_wait_calibration():
+    import bisect
+    from collections import defaultdict
+
+    con = get_db()
+
+    try:
+        jobs = con.execute("""
+            SELECT cluster, submitted, started
+            FROM job_history
+            WHERE state IN ('COMPLETED', 'FAILED', 'TIMEOUT')
+              AND submitted IS NOT NULL AND submitted != ''
+              AND started IS NOT NULL AND started != ''
+              AND julianday(started) >= julianday(submitted)
+              AND ended_at >= date('now', '-14 days')
+        """).fetchall()
+
+        wds_rows = con.execute("""
+            SELECT cluster, ts, MAX(wds) as wds
+            FROM wds_history
+            WHERE ts >= date('now', '-15 days')
+            GROUP BY cluster, ts
+            ORDER BY cluster, ts
+        """).fetchall()
+    finally:
+        con.close()
+
+    wds_by_cluster = {}
+    for cluster, ts, wds in wds_rows:
+        wds_by_cluster.setdefault(cluster, ([], []))
+        wds_by_cluster[cluster][0].append(ts)
+        wds_by_cluster[cluster][1].append(wds)
+
+    buckets = defaultdict(lambda: defaultdict(list))
+
+    for cluster, submitted, started in jobs:
+        ts_list, wds_list = wds_by_cluster.get(cluster, ([], []))
+        if not ts_list:
+            continue
+        idx = bisect.bisect_right(ts_list, submitted) - 1
+        if idx < 0:
+            continue
+        wds = wds_list[idx]
+
+        wait_sec = int((datetime.fromisoformat(started) -
+                        datetime.fromisoformat(submitted)).total_seconds())
+        if wait_sec < 0:
+            continue
+
+        wds_b = 0
+        for threshold in _WDS_BUCKETS:
+            if wds >= threshold:
+                wds_b = threshold
+
+        buckets[cluster][wds_b].append(wait_sec)
+
+    result = {}
+    for cluster in sorted(buckets):
+        cluster_buckets = []
+        for wds_min in sorted(buckets[cluster]):
+            waits = sorted(buckets[cluster][wds_min])
+            n = len(waits)
+            if n < 5:
+                continue
+            p50 = waits[max(0, int(n * 0.50) - 1)]
+            p75 = waits[max(0, int(n * 0.75) - 1)]
+            cluster_buckets.append({
+                "wds_min": wds_min,
+                "n": n,
+                "p50_s": p50,
+                "p75_s": p75,
+            })
+        if cluster_buckets:
+            result[cluster] = cluster_buckets
+
+    return result

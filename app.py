@@ -23,6 +23,7 @@ def _run_init():
     from server.backup import backup_loop
     from server.mounts import mount_health_loop
     from server.wds import wds_snapshot_loop
+    from server.config import cache_gc_loop
 
     init_db()
     migrate_legacy_files()
@@ -31,6 +32,7 @@ def _run_init():
     threading.Thread(target=backup_loop, daemon=True).start()
     threading.Thread(target=mount_health_loop, daemon=True).start()
     threading.Thread(target=wds_snapshot_loop, daemon=True).start()
+    threading.Thread(target=cache_gc_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

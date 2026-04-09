@@ -339,6 +339,52 @@ def _cache_set(store, key, value):
         store[key] = {"ts": time.monotonic(), "value": value}
 
 
+def _cache_sweep_all():
+    """Evict entries older than 2x their TTL from all TTL caches.
+
+    Run periodically from a background thread to prevent unbounded growth.
+    """
+    now = time.monotonic()
+    sweep_targets = [
+        (_log_index_cache, LOG_INDEX_TTL_SEC),
+        (_log_content_cache, LOG_CONTENT_TTL_SEC),
+        (_stats_cache, STATS_TTL_SEC),
+        (_dir_list_cache, DIR_LIST_TTL_SEC),
+        (_progress_cache, PROGRESS_TTL_SEC),
+        (_progress_source_cache, PROGRESS_TTL_SEC),
+        (_crash_cache, CRASH_TTL_SEC),
+        (_est_start_cache, EST_START_TTL_SEC),
+        (_team_usage_cache, TEAM_USAGE_TTL_SEC),
+    ]
+    total = 0
+    with _warm_lock:
+        for store, ttl in sweep_targets:
+            stale_keys = [k for k, rec in store.items() if now - rec["ts"] > ttl * 2]
+            for k in stale_keys:
+                del store[k]
+            total += len(stale_keys)
+    return total
+
+
+def cache_gc_loop():
+    """Background loop: sweep caches every 5 minutes."""
+    import logging
+    _log = logging.getLogger(__name__)
+    while True:
+        time.sleep(300)
+        try:
+            n = _cache_sweep_all()
+            try:
+                from .jobs import prune_job_sets
+                prune_job_sets()
+            except Exception:
+                pass
+            if n:
+                _log.debug("cache GC: evicted %d stale entries", n)
+        except Exception:
+            pass
+
+
 def reload_config(new_cfg):
     """Hot-reload mutable globals from a new config dict. Writes to disk first."""
     global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME, TEAM_GPU_ALLOC, PPPS
