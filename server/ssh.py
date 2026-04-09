@@ -13,6 +13,13 @@ per-cluster lock, so lanes never block each other.
 Background threads call ``enable_standalone_ssh()`` once at startup;
 all subsequent ``ssh_run`` / ``ssh_run_with_timeout`` calls are
 automatically routed to the background lane.
+
+Concurrency safety:
+- Per-cluster locks protect only pool dict access (fast, never I/O).
+- SSH connection creation happens OUTSIDE the lock to prevent
+  thread starvation when multiple threads reconnect simultaneously.
+- A global semaphore caps concurrent SSH operations so request
+  threads always remain available for cached/non-SSH responses.
 """
 
 import atexit
@@ -39,6 +46,14 @@ _bg_locks = {}          # cluster -> Lock
 # Data lane — connects to data_host (DC node) when configured.
 _data_pool = {}         # cluster -> {"client": SSHClient, "last_used": float}
 _data_locks = {}        # cluster -> Lock
+
+# Global concurrency limit: at most 16 of 32 gthread workers can be
+# in SSH I/O simultaneously, leaving the rest free for cached responses.
+_ssh_semaphore = threading.Semaphore(16)
+
+# Channel-open timeout is capped independently of command timeout.
+# If the server can't open a channel in this window, the transport is broken.
+_CHAN_OPEN_TIMEOUT = 5
 
 
 # ── Client creation ──────────────────────────────────────────────────────────
@@ -126,12 +141,13 @@ def _get_data_lock(cluster_name):
 def _get_pooled_client(pool, lock, cluster_name, force_new=False, host_override=None):
     """Return a pooled client from *pool*.
 
-    The per-cluster *lock* is held during pool access and new-connection
-    creation (bounded by DNS timeout + SSH_TIMEOUT) but NOT during
-    command I/O — that happens in ``_exec_on_transport`` which only needs
-    the transport reference, not the lock.
+    The per-cluster *lock* is held ONLY during pool dict access (microseconds).
+    SSH connection creation happens outside the lock so a slow reconnect
+    never blocks other threads from using their already-open transports.
     """
     now = time.monotonic()
+    need_new = force_new
+    old_client = None
 
     with lock:
         if not force_new:
@@ -146,21 +162,48 @@ def _get_pooled_client(pool, lock, cluster_name, force_new=False, host_override=
                 except Exception:
                     pass
                 pool.pop(cluster_name, None)
-                try:
-                    client.close()
-                except Exception:
-                    pass
+                old_client = client
+                need_new = True
         else:
-            old = pool.pop(cluster_name, None)
-            if old:
+            old_rec = pool.pop(cluster_name, None)
+            if old_rec:
+                old_client = old_rec["client"]
+            need_new = True
+
+    if old_client:
+        try:
+            old_client.close()
+        except Exception:
+            pass
+
+    if not need_new:
+        return None  # should not happen
+
+    # SSH connection creation happens WITHOUT holding the lock.
+    client = _ssh_client(cluster_name, host_override=host_override)
+
+    with lock:
+        # Another thread may have won the race — check before inserting.
+        existing = pool.get(cluster_name)
+        if existing:
+            try:
+                tr = existing["client"].get_transport()
+                if tr and tr.is_active():
+                    # Discard ours, use theirs.
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    existing["last_used"] = now
+                    return existing["client"]
+            except Exception:
+                pool.pop(cluster_name, None)
                 try:
-                    old["client"].close()
+                    existing["client"].close()
                 except Exception:
                     pass
-
-        client = _ssh_client(cluster_name, host_override=host_override)
         pool[cluster_name] = {"client": client, "last_used": now}
-        return client
+    return client
 
 
 def _close_pool_client(pool, lock, cluster_name):
@@ -197,6 +240,8 @@ atexit.register(close_all_clients)
 
 # ── GC loop ──────────────────────────────────────────────────────────────────
 
+_SSH_MAX_AGE_SEC = 600  # Force-close connections older than 10 minutes
+
 def ssh_pool_gc_loop():
     while True:
         now = time.monotonic()
@@ -209,18 +254,23 @@ def ssh_pool_gc_loop():
             stale = []
             with _ssh_pool_lock:
                 for cluster, rec in list(pool.items()):
-                    if now - rec.get("last_used", 0) > SSH_IDLE_TTL_SEC:
+                    age = now - rec.get("last_used", 0)
+                    if age > SSH_IDLE_TTL_SEC:
                         stale.append(cluster)
-                    else:
-                        try:
-                            tr = rec["client"].get_transport()
-                            if not tr or not tr.is_active():
-                                stale.append(cluster)
-                        except Exception:
+                        continue
+                    created = rec.get("created", rec.get("last_used", 0))
+                    if now - created > _SSH_MAX_AGE_SEC:
+                        stale.append(cluster)
+                        continue
+                    try:
+                        tr = rec["client"].get_transport()
+                        if not tr or not tr.is_active():
                             stale.append(cluster)
+                    except Exception:
+                        stale.append(cluster)
             for cluster in stale:
                 _close_pool_client(pool, lock_fn(cluster), cluster)
-        time.sleep(60)
+        time.sleep(30)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -267,9 +317,7 @@ def enable_standalone_ssh():
 def _get_transport(pool, lock, cluster_name, force_new=False, host_override=None):
     """Return an active paramiko Transport for *cluster_name*.
 
-    The per-cluster lock is held during pool lookup and (when needed)
-    connection creation, but NOT during command I/O.  Callers open their
-    own channel on the returned transport, which supports multiplexing.
+    The per-cluster lock is held only during pool dict access, never I/O.
     """
     client = _get_pooled_client(pool, lock, cluster_name,
                                 force_new=force_new, host_override=host_override)
@@ -282,10 +330,12 @@ def _get_transport(pool, lock, cluster_name, force_new=False, host_override=None
 def _exec_on_transport(transport, command, timeout_sec):
     """Open a channel on *transport*, run *command*, return (stdout, stderr).
 
-    Paramiko transports multiplex channels — this is safe to call from
-    multiple threads concurrently on the same transport.
+    Channel open uses a short fixed timeout (_CHAN_OPEN_TIMEOUT) — if the
+    server can't open a channel quickly, the transport is stale and the
+    caller should reconnect.
     """
-    chan = transport.open_session(timeout=timeout_sec)
+    chan_timeout = min(_CHAN_OPEN_TIMEOUT, timeout_sec)
+    chan = transport.open_session(timeout=chan_timeout)
     try:
         chan.settimeout(timeout_sec)
         chan.exec_command("bash")
@@ -342,16 +392,24 @@ def _ssh_exec(cluster_name, command, timeout_sec):
         pool = _ssh_pool
         lock = _get_cluster_lock(cluster_name)
 
-    for attempt in (1, 2):
-        try:
-            tr = _get_transport(pool, lock, cluster_name, force_new=(attempt == 2))
-            out, err = _exec_on_transport(tr, command, timeout_sec)
-            with lock:
-                rec = pool.get(cluster_name)
-                if rec:
-                    rec["last_used"] = time.monotonic()
-            return out, err
-        except Exception:
-            _close_pool_client(pool, lock, cluster_name)
-            if attempt == 2:
-                raise
+    acquired = _ssh_semaphore.acquire(timeout=timeout_sec)
+    if not acquired:
+        raise paramiko.SSHException(
+            f"SSH to {cluster_name}: too many concurrent operations (semaphore timeout)"
+        )
+    try:
+        for attempt in (1, 2):
+            try:
+                tr = _get_transport(pool, lock, cluster_name, force_new=(attempt == 2))
+                out, err = _exec_on_transport(tr, command, timeout_sec)
+                with lock:
+                    rec = pool.get(cluster_name)
+                    if rec:
+                        rec["last_used"] = time.monotonic()
+                return out, err
+            except Exception:
+                _close_pool_client(pool, lock, cluster_name)
+                if attempt == 2:
+                    raise
+    finally:
+        _ssh_semaphore.release()
