@@ -902,8 +902,8 @@ async function refreshPppAllocations(force) {
     _myFairshareData = null;
     _teamJobsData = null;
     const q = force ? '?force=1' : '';
-    const [allocRes] = await Promise.all([
-      fetch('/api/aihub/allocations' + q),
+    const results = await Promise.allSettled([
+      fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
       _ensureOverlayData(true, force),
       fetchPartitions(),
       _fetchMyFairshare(force),
@@ -912,13 +912,18 @@ async function refreshPppAllocations(force) {
       _ensureLiveJobData(),
       fetchWaitCalibration(),
     ]);
-    const data = await allocRes.json();
-    if (data.status === 'ok') {
-      _pppAllocData = data;
-      _renderPppAllocations(data);
-      _saveComputeCache();
+    const allocResult = results[0];
+    if (allocResult.status === 'fulfilled') {
+      const data = await allocResult.value.json();
+      if (data.status === 'ok') {
+        _pppAllocData = data;
+        _renderPppAllocations(data);
+        _saveComputeCache();
+      } else if (!_pppAllocData) {
+        el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
+      }
     } else if (!_pppAllocData) {
-      el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
+      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
     }
   } catch (e) {
     if (!_pppAllocData) {
@@ -1567,7 +1572,7 @@ let _projectColors = null;
 async function _fetchProjectColors() {
   if (_projectColors) return;
   try {
-    const res = await fetch('/api/settings');
+    const res = await fetchWithTimeout('/api/settings');
     const data = await res.json();
     if (data.projects) _projectColors = data.projects;
   } catch (_) {}
@@ -1591,7 +1596,7 @@ async function _ensureOverlayData(refetch, force) {
   _pppOverlayFetching = true;
   try {
     const url = force ? '/api/aihub/team_overlay?force=1' : '/api/aihub/team_overlay';
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 20000);
     const data = await res.json();
     if (data.status === 'ok') _pppOverlayData = data;
   } catch (_) {}
@@ -1602,7 +1607,7 @@ async function _ensureOverlayData(refetch, force) {
 async function _fetchMyFairshare(force) {
   try {
     const url = force ? '/api/aihub/my_fairshare?force=1' : '/api/aihub/my_fairshare';
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 20000);
     const data = await res.json();
     if (data.status === 'ok') _myFairshareData = data;
   } catch (_) {}
@@ -1800,7 +1805,7 @@ async function initClustersPage() {
 
 async function _fetchTeamJobs() {
   try {
-    const res = await fetch('/api/team_jobs');
+    const res = await fetchWithTimeout('/api/team_jobs');
     const data = await res.json();
     if (data.status === 'ok') _teamJobsData = data;
   } catch (_) {}

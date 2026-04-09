@@ -8,6 +8,7 @@ GPU usage metrics.
 import json
 import logging
 import ssl
+import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,8 @@ from .config import (
 )
 
 log = logging.getLogger(__name__)
+
+_opensearch_sem = threading.Semaphore(6)
 
 CLUSTER_NAME_MAP = {
     "eos": "eos",
@@ -35,24 +38,33 @@ _aihub_cache = {}
 _ssl_ctx = ssl.create_default_context()
 
 
-def _opensearch_query(body, timeout=15):
-    """POST a query to the AI Hub OpenSearch endpoint."""
+def _opensearch_query(body, timeout=10):
+    """POST a query to the AI Hub OpenSearch endpoint.
+
+    A semaphore caps concurrent in-flight queries to prevent thread
+    exhaustion when OpenSearch is slow or unreachable.
+    """
     if not AIHUB_OPENSEARCH_URL:
         log.warning("aihub_opensearch_url not configured")
         return None
-    payload = json.dumps(body).encode()
-    req = urllib.request.Request(
-        AIHUB_OPENSEARCH_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    if not _opensearch_sem.acquire(timeout=2):
+        log.warning("OpenSearch concurrency limit reached, skipping query")
+        return None
     try:
+        payload = json.dumps(body).encode()
+        req = urllib.request.Request(
+            AIHUB_OPENSEARCH_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=timeout, context=_ssl_ctx) as resp:
             return json.loads(resp.read().decode())
     except Exception as exc:
         log.warning("OpenSearch query failed: %s", exc)
         return None
+    finally:
+        _opensearch_sem.release()
 
 
 def _os_cluster_names(clusters=None):
