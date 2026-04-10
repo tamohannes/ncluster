@@ -26,7 +26,7 @@ from .config import (
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
     TEAM_USAGE_TTL_SEC,
     reload_config, settings_response,
-    get_project_color, get_project_emoji, extract_project,
+    get_project_color, get_project_emoji, extract_project, extract_campaign,
 )
 from .db import (
     normalize_job_times_local, get_board_pinned,
@@ -242,6 +242,8 @@ def api_jobs():
             if proj:
                 j["project_color"] = get_project_color(proj)
                 j["project_emoji"] = get_project_emoji(proj)
+                _jname = j.get("name") or j.get("job_name") or ""
+                j["campaign"] = extract_campaign(_jname, proj)
 
     def cluster_sort_key(item):
         name, data = item
@@ -441,6 +443,8 @@ def api_jobs_cluster(cluster):
             if proj:
                 j["project_color"] = get_project_color(proj)
                 j["project_emoji"] = get_project_emoji(proj)
+                _jname = j.get("name") or j.get("job_name") or ""
+                j["campaign"] = extract_campaign(_jname, proj)
     if cluster != "local":
         data["mount"] = cluster_mount_status(cluster)
     return jsonify(data)
@@ -913,6 +917,8 @@ def api_run_info(cluster, root_job_id):
         if proj:
             j["project_color"] = get_project_color(proj)
             j["project_emoji"] = get_project_emoji(proj)
+            _jname = j.get("job_name") or j.get("name") or ""
+            j["campaign"] = extract_campaign(_jname, proj)
     unique_nodes, total_gpus, gpus_per_node = _compute_run_resources(
         run.get("jobs", []),
         cluster=cluster,

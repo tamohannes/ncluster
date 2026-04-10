@@ -233,6 +233,34 @@ def extract_project(job_name):
     return ""
 
 
+def extract_campaign(job_name, project=""):
+    """Return the campaign key from a job name.
+
+    The campaign is the first underscore-delimited segment of the run name
+    (the part after the project prefix).  E.g. ``hle_mpsf_hle-nem120b``
+    → campaign ``mpsf``, ``hle_text_kimi-k25`` → campaign ``text``.
+
+    Naming convention: ``<project>_<campaign>_<rest-of-run-name>``
+    Both project and campaign are separated by underscores.
+    """
+    if not job_name:
+        return ""
+    prefix = ""
+    if project and project in PROJECTS:
+        prefix = PROJECTS[project].get("prefix", "")
+    if not prefix:
+        import re
+        m = re.match(r'^[a-zA-Z][a-zA-Z0-9-]*_', job_name)
+        if m:
+            prefix = m.group(0)
+    if prefix and job_name.startswith(prefix):
+        remainder = job_name[len(prefix):]
+    else:
+        remainder = job_name
+    seg = remainder.split("_")[0].lower()
+    return seg if seg else ""
+
+
 def get_project_color(project_name):
     """Return the color for a project, auto-assigning from palette if needed."""
     if not project_name or project_name not in PROJECTS:

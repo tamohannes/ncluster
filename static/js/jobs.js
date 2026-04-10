@@ -426,7 +426,9 @@ function renderCard(name, data) {
       const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
-      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
+      const _campaign = groupJobs[0]?.campaign || '';
+      const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
+      const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
       const runBadge = name !== 'local'
         ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
@@ -518,7 +520,8 @@ function renderCard(name, data) {
       }
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
 
-      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)};` : '';
+      const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
+      const _rowBg = _rowShaded ? `background:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
       return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">

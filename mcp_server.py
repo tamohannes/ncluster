@@ -27,7 +27,7 @@ from server.config import (
     _cache_lock, _cache, _cache_get,
     _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
     PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
-    extract_project, get_project_color, get_project_emoji, settings_response,
+    extract_project, extract_campaign, get_project_color, get_project_emoji, settings_response,
 )
 from server.logbooks import (
     list_entries as _lb_list,
@@ -75,7 +75,7 @@ _JOB_FIELDS = [
     "nodes", "gres", "partition", "submitted", "account",
     "started_local", "ended_local",
     "progress", "depends_on", "dependents", "dep_details",
-    "project", "project_color", "project_emoji",
+    "project", "project_color", "project_emoji", "campaign",
     "_pinned", "exit_code", "crash_detected", "est_start",
 ]
 
@@ -109,6 +109,8 @@ def _get_all_jobs_snapshot():
             if proj:
                 j["project_color"] = get_project_color(proj)
                 j["project_emoji"] = get_project_emoji(proj)
+                _jn = j.get("name") or j.get("job_name") or ""
+                j["campaign"] = extract_campaign(_jn, proj)
     return snapshot
 
 
@@ -134,6 +136,8 @@ def _get_cluster_jobs(cluster):
             if proj:
                 j["project_color"] = get_project_color(proj)
                 j["project_emoji"] = get_project_emoji(proj)
+                _jn = j.get("name") or j.get("job_name") or ""
+                j["campaign"] = extract_campaign(_jn, proj)
     return data
 
 
@@ -246,6 +250,8 @@ def get_history(cluster: Optional[str] = None, project: Optional[str] = None, li
         if proj:
             r["project_color"] = get_project_color(proj)
             r["project_emoji"] = get_project_emoji(proj)
+            _jn = r.get("job_name") or r.get("name") or ""
+            r["campaign"] = extract_campaign(_jn, proj)
     return rows
 
 
