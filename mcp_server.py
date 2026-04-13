@@ -40,10 +40,10 @@ from server.logbooks import (
     list_logbook_projects,
 )
 from server.jobs import (
-    refresh_all_clusters, refresh_cluster, _is_cache_fresh,
     get_job_stats_cached, fetch_run_metadata_sync, create_run_on_demand,
     schedule_prefetch, fetch_team_jobs,
 )
+from server.poller import touch_demand
 from server.logs import fetch_log_tail, tail_local_file, get_job_log_files_cached
 from server.mounts import (
     all_mount_status, cluster_mount_status, run_mount_script,
@@ -90,9 +90,9 @@ def _slim_job(cluster: str, job: dict) -> dict:
 
 
 def _get_all_jobs_snapshot():
-    """Return enriched job data for all clusters from the in-memory cache."""
+    """Return enriched job data for all clusters from the DB/cache."""
     _ensure_ssh()
-    refresh_all_clusters()
+    touch_demand()
     with _cache_lock:
         snapshot = {k: dict(v) for k, v in _cache.items()}
     for name in CLUSTERS:
@@ -117,7 +117,7 @@ def _get_all_jobs_snapshot():
 def _get_cluster_jobs(cluster):
     """Return enriched job data for one cluster."""
     _ensure_ssh()
-    refresh_cluster(cluster)
+    touch_demand()
     with _cache_lock:
         data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
     if data.get("status") == "ok":

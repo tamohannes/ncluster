@@ -5,6 +5,11 @@ cycles through clusters with adaptive scheduling: healthy clusters are
 polled every HEALTHY_INTERVAL seconds; failing clusters back off
 exponentially up to MAX_BACKOFF seconds.
 
+Demand-driven: the poller only runs when someone is watching.  A consumer
+(frontend /api/jobs, MCP tool call) signals demand via touch_demand().
+If no demand has been seen for DEMAND_IDLE_SEC, polling pauses until the
+next consumer arrives.
+
 A global version counter is bumped on every data change so the /api/jobs
 endpoint can serve instant 304 Not Modified responses when nothing changed.
 """
@@ -19,8 +24,6 @@ from .config import CLUSTERS
 log = logging.getLogger("server.poller")
 
 # ── Version counter ──────────────────────────────────────────────────────────
-# Monotonically increasing; bumped on every successful data change.
-# Used by /api/jobs to generate ETag for conditional short-polling.
 
 _board_version = 0
 _board_version_lock = threading.Lock()
@@ -38,12 +41,31 @@ def get_version():
         return _board_version
 
 
+# ── Demand signal ────────────────────────────────────────────────────────────
+
+_last_demand = 0.0
+_demand_lock = threading.Lock()
+
+
+def touch_demand():
+    """Called by API routes and MCP tools to signal that someone wants data."""
+    global _last_demand
+    with _demand_lock:
+        _last_demand = time.monotonic()
+
+
+def _demand_age():
+    with _demand_lock:
+        return time.monotonic() - _last_demand if _last_demand else float("inf")
+
+
 # ── Poller ────────────────────────────────────────────────────────────────────
 
 class Poller:
     HEALTHY_INTERVAL = 15
     MAX_BACKOFF = 120
     PRIORITY_COOLDOWN = 5
+    DEMAND_IDLE_SEC = 120
 
     def __init__(self):
         self._schedules = {}
@@ -51,7 +73,8 @@ class Poller:
         self._last_priority = {}
         self._priority = queue.Queue()
         self._stop = threading.Event()
-        self._last_success = {}      # cluster -> monotonic timestamp
+        self._last_success = {}
+        self._idle = False
 
     def run(self):
         now = time.monotonic()
@@ -59,9 +82,24 @@ class Poller:
             self._schedules[name] = now + i * 0.5
 
         while not self._stop.is_set():
+            # Priority requests always go through regardless of demand
             handled = self._drain_priority()
             if handled:
                 continue
+
+            if _demand_age() > self.DEMAND_IDLE_SEC:
+                if not self._idle:
+                    log.info("poller idle — no consumers for %ds", self.DEMAND_IDLE_SEC)
+                    self._idle = True
+                self._stop.wait(2)
+                continue
+
+            if self._idle:
+                log.info("poller resumed — consumer detected")
+                self._idle = False
+                now = time.monotonic()
+                for i, name in enumerate(CLUSTERS):
+                    self._schedules[name] = now + i * 0.5
 
             cluster = self._next_due()
             if cluster:
@@ -96,12 +134,24 @@ class Poller:
                 best, best_at = name, at
         return best
 
+    POLL_TIMEOUT = 45
+
     def _poll_one(self, name):
         from .jobs import poll_cluster
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
         try:
             prev_data = self._snapshot_ids(name)
-            poll_cluster(name)
+
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"poll-{name}") as pool:
+                fut = pool.submit(poll_cluster, name)
+                try:
+                    fut.result(timeout=self.POLL_TIMEOUT)
+                except FuturesTimeout:
+                    log.warning("poll %s timed out after %ds, moving on",
+                                name, self.POLL_TIMEOUT)
+                    raise TimeoutError(f"poll {name} exceeded {self.POLL_TIMEOUT}s")
+
             curr_data = self._snapshot_ids(name)
 
             changed = prev_data != curr_data
@@ -153,7 +203,9 @@ class Poller:
             last_ok = self._last_success.get(name)
             staleness = round(now - last_ok, 1) if last_ok else None
 
-            if failures == 0:
+            if self._idle:
+                state = "idle"
+            elif failures == 0:
                 state = "healthy"
             elif failures <= 2:
                 state = "retrying"

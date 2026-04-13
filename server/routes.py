@@ -53,7 +53,7 @@ from .jobs import (
     get_job_stats_cached,
     create_run_on_demand,
 )
-from .poller import get_poller, get_version
+from .poller import get_poller, get_version, touch_demand
 from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
@@ -193,6 +193,8 @@ def index():
 @api.route("/api/jobs")
 def api_jobs():
     from flask import Response
+
+    touch_demand()
 
     version = get_version()
     etag = f'"{version}"'
