@@ -13,7 +13,7 @@ import re
 from datetime import datetime
 
 from .config import PROJECT_ROOT
-from .db import get_db
+from .db import get_db, db_write
 
 log = logging.getLogger(__name__)
 
@@ -143,60 +143,53 @@ def create_entry(project, title, body="", entry_type="note"):
     if entry_type not in ("note", "plan"):
         entry_type = "note"
     now = _now_iso()
-    con = get_db()
-    cur = con.execute(
-        "INSERT INTO logbook_entries (project, title, body, created_at, edited_at, entry_type) VALUES (?, ?, ?, ?, ?, ?)",
-        (project, title, body, now, now, entry_type),
-    )
-    entry_id = cur.lastrowid
-    _update_links(con, entry_id, body)
-    con.commit()
-    con.close()
+    with db_write() as con:
+        cur = con.execute(
+            "INSERT INTO logbook_entries (project, title, body, created_at, edited_at, entry_type) VALUES (?, ?, ?, ?, ?, ?)",
+            (project, title, body, now, now, entry_type),
+        )
+        entry_id = cur.lastrowid
+        _update_links(con, entry_id, body)
     return {"status": "ok", "id": entry_id, "created_at": now}
 
 
 def update_entry(project, entry_id, title=None, body=None, entry_type=None):
-    con = get_db()
-    row = con.execute(
-        "SELECT id FROM logbook_entries WHERE id = ? AND project = ?",
-        (entry_id, project),
-    ).fetchone()
-    if not row:
-        con.close()
-        return {"status": "error", "error": "Entry not found"}
+    with db_write() as con:
+        row = con.execute(
+            "SELECT id FROM logbook_entries WHERE id = ? AND project = ?",
+            (entry_id, project),
+        ).fetchone()
+        if not row:
+            return {"status": "error", "error": "Entry not found"}
 
-    now = _now_iso()
-    sets, params = ["edited_at = ?"], [now]
-    if title is not None:
-        sets.append("title = ?")
-        params.append(title)
-    if body is not None:
-        sets.append("body = ?")
-        params.append(body)
-    if entry_type is not None and entry_type in ("note", "plan"):
-        sets.append("entry_type = ?")
-        params.append(entry_type)
-    params.extend([entry_id, project])
-    con.execute(
-        f"UPDATE logbook_entries SET {', '.join(sets)} WHERE id = ? AND project = ?",
-        params,
-    )
-    if body is not None:
-        _update_links(con, entry_id, body)
-    con.commit()
-    con.close()
+        now = _now_iso()
+        sets, params = ["edited_at = ?"], [now]
+        if title is not None:
+            sets.append("title = ?")
+            params.append(title)
+        if body is not None:
+            sets.append("body = ?")
+            params.append(body)
+        if entry_type is not None and entry_type in ("note", "plan"):
+            sets.append("entry_type = ?")
+            params.append(entry_type)
+        params.extend([entry_id, project])
+        con.execute(
+            f"UPDATE logbook_entries SET {', '.join(sets)} WHERE id = ? AND project = ?",
+            params,
+        )
+        if body is not None:
+            _update_links(con, entry_id, body)
     return {"status": "ok", "id": entry_id, "edited_at": now}
 
 
 def delete_entry(project, entry_id):
-    con = get_db()
-    cur = con.execute(
-        "DELETE FROM logbook_entries WHERE id = ? AND project = ?",
-        (entry_id, project),
-    )
-    con.commit()
-    deleted = cur.rowcount
-    con.close()
+    with db_write() as con:
+        cur = con.execute(
+            "DELETE FROM logbook_entries WHERE id = ? AND project = ?",
+            (entry_id, project),
+        )
+        deleted = cur.rowcount
     if not deleted:
         return {"status": "error", "error": "Entry not found"}
     return {"status": "ok"}
@@ -276,36 +269,32 @@ def migrate_legacy_files():
     if not os.path.isdir(_LEGACY_DIR):
         return
 
-    con = get_db()
-    existing = con.execute("SELECT COUNT(*) FROM logbook_entries").fetchone()[0]
-    if existing > 0:
-        con.close()
-        return
+    with db_write() as con:
+        existing = con.execute("SELECT COUNT(*) FROM logbook_entries").fetchone()[0]
+        if existing > 0:
+            return
 
-    count = 0
-    for project_dir in sorted(glob.glob(os.path.join(_LEGACY_DIR, "*"))):
-        if not os.path.isdir(project_dir):
-            continue
-        project = os.path.basename(project_dir)
-        for md_file in sorted(glob.glob(os.path.join(project_dir, "*.md"))):
-            fname = os.path.basename(md_file)
-            title = fname[:-3] if fname.endswith(".md") else fname
-            try:
-                with open(md_file, "r", encoding="utf-8") as fh:
-                    body = fh.read().strip()
-                if not body:
-                    continue
-                mtime = os.path.getmtime(md_file)
-                ts = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
-                con.execute(
-                    "INSERT INTO logbook_entries (project, title, body, created_at, edited_at) VALUES (?, ?, ?, ?, ?)",
-                    (project, title, body, ts, ts),
-                )
-                count += 1
-            except Exception as exc:
-                log.warning("logbook migration: failed to import %s: %s", md_file, exc)
-
-    con.commit()
-    con.close()
+        count = 0
+        for project_dir in sorted(glob.glob(os.path.join(_LEGACY_DIR, "*"))):
+            if not os.path.isdir(project_dir):
+                continue
+            project = os.path.basename(project_dir)
+            for md_file in sorted(glob.glob(os.path.join(project_dir, "*.md"))):
+                fname = os.path.basename(md_file)
+                title = fname[:-3] if fname.endswith(".md") else fname
+                try:
+                    with open(md_file, "r", encoding="utf-8") as fh:
+                        body = fh.read().strip()
+                    if not body:
+                        continue
+                    mtime = os.path.getmtime(md_file)
+                    ts = datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+                    con.execute(
+                        "INSERT INTO logbook_entries (project, title, body, created_at, edited_at) VALUES (?, ?, ?, ?, ?)",
+                        (project, title, body, ts, ts),
+                    )
+                    count += 1
+                except Exception as exc:
+                    log.warning("logbook migration: failed to import %s: %s", md_file, exc)
     if count:
         log.info("logbook migration: imported %d entries from legacy .md files", count)

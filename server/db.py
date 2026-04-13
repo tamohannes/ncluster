@@ -3,6 +3,8 @@
 import json as _json
 import sqlite3
 import subprocess
+import threading as _th_db
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from .config import DB_PATH, PINNABLE_TERMINAL_STATES, RESULT_DIR_NAMES
@@ -94,6 +96,24 @@ def get_db():
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     return con
+
+
+_db_write_lock = _th_db.RLock()
+
+
+@contextmanager
+def db_write():
+    """Serialize in-process writes so bookkeeping threads don't fight for SQLite."""
+    with _db_write_lock:
+        con = get_db()
+        try:
+            yield con
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
 
 
 def init_db():
@@ -323,72 +343,70 @@ def _resolve_board_visible(cluster, state, current_visible, terminal=False, set_
 
 
 def upsert_job(cluster, job, terminal=False, set_board_visible=None):
-    con = get_db()
-    row = con.execute(
-        "SELECT board_visible FROM job_history WHERE cluster=? AND job_id=?",
-        (cluster, job["jobid"])
-    ).fetchone()
-    current_visible = row["board_visible"] if row else None
-    bv = _resolve_board_visible(
-        cluster,
-        job.get("state"),
-        current_visible,
-        terminal=terminal,
-        set_board_visible=set_board_visible,
-    )
+    with db_write() as con:
+        row = con.execute(
+            "SELECT board_visible FROM job_history WHERE cluster=? AND job_id=?",
+            (cluster, job["jobid"])
+        ).fetchone()
+        current_visible = row["board_visible"] if row else None
+        bv = _resolve_board_visible(
+            cluster,
+            job.get("state"),
+            current_visible,
+            terminal=terminal,
+            set_board_visible=set_board_visible,
+        )
 
-    dep_raw = job.get("dependency", "")
-    if dep_raw in ("(null)", "None", None):
-        dep_raw = ""
+        dep_raw = job.get("dependency", "")
+        if dep_raw in ("(null)", "None", None):
+            dep_raw = ""
 
-    from .config import extract_project
-    job_name = job.get("name") or job.get("job_name") or ""
-    project = job.get("project") or extract_project(job_name)
+        from .config import extract_project
+        job_name = job.get("name") or job.get("job_name") or ""
+        project = job.get("project") or extract_project(job_name)
 
-    node_list_raw = job.get("node_list", "")
-    if node_list_raw in ("(null)", "None", None):
-        node_list_raw = ""
+        node_list_raw = job.get("node_list", "")
+        if node_list_raw in ("(null)", "None", None):
+            node_list_raw = ""
 
-    account_raw = job.get("account", "")
-    if account_raw in ("(null)", "None", None):
-        account_raw = ""
+        account_raw = job.get("account", "")
+        if account_raw in ("(null)", "None", None):
+            account_raw = ""
 
-    con.execute("""
-        INSERT INTO job_history
-            (cluster, job_id, job_name, state, exit_code, reason, elapsed,
-             nodes, gres, partition, submitted, started, ended_at, log_path,
-             board_visible, dependency, project, node_list, account)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(cluster, job_id) DO UPDATE SET
-            job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
-            state       = excluded.state,
-            exit_code   = COALESCE(excluded.exit_code, exit_code),
-            reason      = COALESCE(excluded.reason, reason),
-            elapsed     = COALESCE(excluded.elapsed, elapsed),
-            nodes       = COALESCE(excluded.nodes, nodes),
-            gres        = COALESCE(excluded.gres, gres),
-            partition   = COALESCE(excluded.partition, partition),
-            submitted   = COALESCE(excluded.submitted, submitted),
-            started     = COALESCE(excluded.started, started),
-            ended_at    = COALESCE(excluded.ended_at, ended_at),
-            log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
-            board_visible = excluded.board_visible,
-            dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
-            project     = COALESCE(NULLIF(excluded.project, ''), project),
-            node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
-            account     = COALESCE(NULLIF(excluded.account, ''), account)
-    """, (
-        cluster, job["jobid"],
-        job_name,
-        job.get("state"),
-        job.get("exit_code"), job.get("reason"), job.get("elapsed"),
-        job.get("nodes"), job.get("gres"), job.get("partition"),
-        job.get("submitted"), job.get("started"),
-        job.get("ended_at"), job.get("log_path"),
-        bv, dep_raw, project, node_list_raw, account_raw,
-    ))
-    con.commit()
-    con.close()
+        con.execute("""
+            INSERT INTO job_history
+                (cluster, job_id, job_name, state, exit_code, reason, elapsed,
+                 nodes, gres, partition, submitted, started, ended_at, log_path,
+                 board_visible, dependency, project, node_list, account)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(cluster, job_id) DO UPDATE SET
+                job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
+                state       = excluded.state,
+                exit_code   = COALESCE(excluded.exit_code, exit_code),
+                reason      = COALESCE(excluded.reason, reason),
+                elapsed     = COALESCE(excluded.elapsed, elapsed),
+                nodes       = COALESCE(excluded.nodes, nodes),
+                gres        = COALESCE(excluded.gres, gres),
+                partition   = COALESCE(excluded.partition, partition),
+                submitted   = COALESCE(excluded.submitted, submitted),
+                started     = COALESCE(excluded.started, started),
+                ended_at    = COALESCE(excluded.ended_at, ended_at),
+                log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
+                board_visible = excluded.board_visible,
+                dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
+                project     = COALESCE(NULLIF(excluded.project, ''), project),
+                node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
+                account     = COALESCE(NULLIF(excluded.account, ''), account)
+        """, (
+            cluster, job["jobid"],
+            job_name,
+            job.get("state"),
+            job.get("exit_code"), job.get("reason"), job.get("elapsed"),
+            job.get("nodes"), job.get("gres"), job.get("partition"),
+            job.get("submitted"), job.get("started"),
+            job.get("ended_at"), job.get("log_path"),
+            bv, dep_raw, project, node_list_raw, account_raw,
+        ))
     if terminal or set_board_visible is not None:
         invalidate_pinned_cache(cluster)
 
@@ -399,75 +417,73 @@ def upsert_jobs_batch(cluster, jobs, terminal=False):
         return
     from .config import extract_project
 
-    con = get_db()
-    jids = [j["jobid"] for j in jobs]
-    placeholders = ",".join("?" for _ in jids)
-    rows = con.execute(
-        f"SELECT job_id, board_visible FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
-        (cluster, *jids),
-    ).fetchall()
-    existing_bv = {r["job_id"]: r["board_visible"] for r in rows}
+    with db_write() as con:
+        jids = [j["jobid"] for j in jobs]
+        placeholders = ",".join("?" for _ in jids)
+        rows = con.execute(
+            f"SELECT job_id, board_visible FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
+            (cluster, *jids),
+        ).fetchall()
+        existing_bv = {r["job_id"]: r["board_visible"] for r in rows}
 
-    params = []
-    for job in jobs:
-        jid = job["jobid"]
-        current_visible = existing_bv.get(jid)
-        bv = _resolve_board_visible(
-            cluster,
-            job.get("state"),
-            current_visible,
-            terminal=terminal,
-        )
+        params = []
+        for job in jobs:
+            jid = job["jobid"]
+            current_visible = existing_bv.get(jid)
+            bv = _resolve_board_visible(
+                cluster,
+                job.get("state"),
+                current_visible,
+                terminal=terminal,
+            )
 
-        dep_raw = job.get("dependency", "")
-        if dep_raw in ("(null)", "None", None):
-            dep_raw = ""
-        job_name = job.get("name") or job.get("job_name") or ""
-        project = job.get("project") or extract_project(job_name)
-        node_list_raw = job.get("node_list", "")
-        if node_list_raw in ("(null)", "None", None):
-            node_list_raw = ""
-        account_raw = job.get("account", "")
-        if account_raw in ("(null)", "None", None):
-            account_raw = ""
+            dep_raw = job.get("dependency", "")
+            if dep_raw in ("(null)", "None", None):
+                dep_raw = ""
+            job_name = job.get("name") or job.get("job_name") or ""
+            project = job.get("project") or extract_project(job_name)
+            node_list_raw = job.get("node_list", "")
+            if node_list_raw in ("(null)", "None", None):
+                node_list_raw = ""
+            account_raw = job.get("account", "")
+            if account_raw in ("(null)", "None", None):
+                account_raw = ""
 
-        params.append((
-            cluster, jid, job_name,
-            job.get("state"),
-            job.get("exit_code"), job.get("reason"), job.get("elapsed"),
-            job.get("nodes"), job.get("gres"), job.get("partition"),
-            job.get("submitted"), job.get("started"),
-            job.get("ended_at"), job.get("log_path"),
-            bv, dep_raw, project, node_list_raw, account_raw,
-        ))
+            params.append((
+                cluster, jid, job_name,
+                job.get("state"),
+                job.get("exit_code"), job.get("reason"), job.get("elapsed"),
+                job.get("nodes"), job.get("gres"), job.get("partition"),
+                job.get("submitted"), job.get("started"),
+                job.get("ended_at"), job.get("log_path"),
+                bv, dep_raw, project, node_list_raw, account_raw,
+            ))
 
-    con.executemany("""
-        INSERT INTO job_history
-            (cluster, job_id, job_name, state, exit_code, reason, elapsed,
-             nodes, gres, partition, submitted, started, ended_at, log_path,
-             board_visible, dependency, project, node_list, account)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(cluster, job_id) DO UPDATE SET
-            job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
-            state       = excluded.state,
-            exit_code   = COALESCE(excluded.exit_code, exit_code),
-            reason      = COALESCE(excluded.reason, reason),
-            elapsed     = COALESCE(excluded.elapsed, elapsed),
-            nodes       = COALESCE(excluded.nodes, nodes),
-            gres        = COALESCE(excluded.gres, gres),
-            partition   = COALESCE(excluded.partition, partition),
-            submitted   = COALESCE(excluded.submitted, submitted),
-            started     = COALESCE(excluded.started, started),
-            ended_at    = COALESCE(excluded.ended_at, ended_at),
-            log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
-            board_visible = excluded.board_visible,
-            dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
-            project     = COALESCE(NULLIF(excluded.project, ''), project),
-            node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
-            account     = COALESCE(NULLIF(excluded.account, ''), account)
-    """, params)
-    con.commit()
-    con.close()
+        con.executemany("""
+            INSERT INTO job_history
+                (cluster, job_id, job_name, state, exit_code, reason, elapsed,
+                 nodes, gres, partition, submitted, started, ended_at, log_path,
+                 board_visible, dependency, project, node_list, account)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(cluster, job_id) DO UPDATE SET
+                job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
+                state       = excluded.state,
+                exit_code   = COALESCE(excluded.exit_code, exit_code),
+                reason      = COALESCE(excluded.reason, reason),
+                elapsed     = COALESCE(excluded.elapsed, elapsed),
+                nodes       = COALESCE(excluded.nodes, nodes),
+                gres        = COALESCE(excluded.gres, gres),
+                partition   = COALESCE(excluded.partition, partition),
+                submitted   = COALESCE(excluded.submitted, submitted),
+                started     = COALESCE(excluded.started, started),
+                ended_at    = COALESCE(excluded.ended_at, ended_at),
+                log_path    = COALESCE(NULLIF(excluded.log_path, ''), log_path),
+                board_visible = excluded.board_visible,
+                dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
+                project     = COALESCE(NULLIF(excluded.project, ''), project),
+                node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
+                account     = COALESCE(NULLIF(excluded.account, ''), account)
+        """, params)
     if terminal:
         invalidate_pinned_cache(cluster)
 
@@ -476,7 +492,6 @@ def upsert_history(cluster, job):
     upsert_job(cluster, job)
 
 
-import threading as _th_db
 _pinned_cache = {}
 _pinned_cache_ts = {}
 _pinned_cache_lock = _th_db.Lock()
@@ -739,62 +754,55 @@ repin_recent_terminal_jobs = cleanup_local_on_startup
 
 def upsert_run(cluster, root_job_id, run_name="", project=""):
     """Create or return existing run. Returns the run id."""
-    con = get_db()
-    row = con.execute(
-        "SELECT id FROM runs WHERE cluster=? AND root_job_id=?",
-        (cluster, root_job_id),
-    ).fetchone()
-    if row:
-        run_id = row["id"]
-        if run_name or project:
-            con.execute(
-                "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
-                "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
-                (run_name, project, run_id),
+    with db_write() as con:
+        row = con.execute(
+            "SELECT id FROM runs WHERE cluster=? AND root_job_id=?",
+            (cluster, root_job_id),
+        ).fetchone()
+        if row:
+            run_id = row["id"]
+            if run_name or project:
+                con.execute(
+                    "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
+                    "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
+                    (run_name, project, run_id),
+                )
+        else:
+            cur = con.execute(
+                "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
+                (cluster, root_job_id, run_name, project),
             )
-            con.commit()
-    else:
-        cur = con.execute(
-            "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
-            (cluster, root_job_id, run_name, project),
-        )
-        run_id = cur.lastrowid
-        con.commit()
-    con.close()
-    return run_id
+            run_id = cur.lastrowid
+        return run_id
 
 
 def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda_state=""):
     has_data = any([batch_script, scontrol_raw, env_vars])
-    con = get_db()
-    con.execute("""
-        UPDATE runs SET
-            batch_script  = COALESCE(NULLIF(?, ''), batch_script),
-            scontrol_raw  = COALESCE(NULLIF(?, ''), scontrol_raw),
-            env_vars      = COALESCE(NULLIF(?, ''), env_vars),
-            conda_state   = COALESCE(NULLIF(?, ''), conda_state),
-            meta_fetched  = ?
-        WHERE id = ?
-    """, (batch_script, scontrol_raw, env_vars, conda_state,
-          1 if has_data else 0, run_id))
-    con.commit()
-    con.close()
+    with db_write() as con:
+        con.execute("""
+            UPDATE runs SET
+                batch_script  = COALESCE(NULLIF(?, ''), batch_script),
+                scontrol_raw  = COALESCE(NULLIF(?, ''), scontrol_raw),
+                env_vars      = COALESCE(NULLIF(?, ''), env_vars),
+                conda_state   = COALESCE(NULLIF(?, ''), conda_state),
+                meta_fetched  = ?
+            WHERE id = ?
+        """, (batch_script, scontrol_raw, env_vars, conda_state,
+              1 if has_data else 0, run_id))
 
 
 def update_run_times(run_id, started_at=None, ended_at=None):
-    con = get_db()
-    if started_at:
-        con.execute(
-            "UPDATE runs SET started_at = ? WHERE id = ? AND (started_at IS NULL OR started_at > ?)",
-            (started_at, run_id, started_at),
-        )
-    if ended_at:
-        con.execute(
-            "UPDATE runs SET ended_at = ? WHERE id = ? AND (ended_at IS NULL OR ended_at < ?)",
-            (ended_at, run_id, ended_at),
-        )
-    con.commit()
-    con.close()
+    with db_write() as con:
+        if started_at:
+            con.execute(
+                "UPDATE runs SET started_at = ? WHERE id = ? AND (started_at IS NULL OR started_at > ?)",
+                (started_at, run_id, started_at),
+            )
+        if ended_at:
+            con.execute(
+                "UPDATE runs SET ended_at = ? WHERE id = ? AND (ended_at IS NULL OR ended_at < ?)",
+                (ended_at, run_id, ended_at),
+            )
 
 
 def get_run(cluster, root_job_id):
@@ -835,20 +843,15 @@ def associate_jobs_to_run(cluster, run_id, job_ids):
     """Set run_id on job_history rows for the given job IDs."""
     if not job_ids:
         return
-    con = get_db()
-    placeholders = ",".join("?" for _ in job_ids)
-    con.execute(
-        f"UPDATE job_history SET run_id=? WHERE cluster=? AND job_id IN ({placeholders})",
-        [run_id, cluster] + list(job_ids),
-    )
-    con.commit()
-    con.close()
+    with db_write() as con:
+        placeholders = ",".join("?" for _ in job_ids)
+        con.execute(
+            f"UPDATE job_history SET run_id=? WHERE cluster=? AND job_id IN ({placeholders})",
+            [run_id, cluster] + list(job_ids),
+        )
 
 
 # ─── Safe DB access ─────────────────────────────────────────────────────────
-
-from contextlib import contextmanager
-
 
 @contextmanager
 def db_connection():
@@ -865,15 +868,13 @@ def db_connection():
 def replace_live_jobs(cluster, jobs):
     """Atomically replace all live jobs for a cluster."""
     now = datetime.now().isoformat(timespec="seconds")
-    con = get_db()
-    con.execute("DELETE FROM live_jobs WHERE cluster=?", (cluster,))
-    if jobs:
-        con.executemany(
-            "INSERT INTO live_jobs (cluster, job_id, data_json, updated_at) VALUES (?, ?, ?, ?)",
-            [(cluster, j.get("jobid", ""), _json.dumps(j, default=str), now) for j in jobs],
-        )
-    con.commit()
-    con.close()
+    with db_write() as con:
+        con.execute("DELETE FROM live_jobs WHERE cluster=?", (cluster,))
+        if jobs:
+            con.executemany(
+                "INSERT INTO live_jobs (cluster, job_id, data_json, updated_at) VALUES (?, ?, ?, ?)",
+                [(cluster, j.get("jobid", ""), _json.dumps(j, default=str), now) for j in jobs],
+            )
 
 
 def get_live_board():
@@ -916,43 +917,39 @@ def get_live_jobs_for_cluster(cluster):
 
 def set_cluster_state(cluster, status, updated, last_error=None):
     """Upsert the poll state for a cluster."""
-    con = get_db()
-    if last_error is None:
-        con.execute("""
-            INSERT INTO cluster_state (cluster, status, updated)
-            VALUES (?, ?, ?)
-            ON CONFLICT(cluster) DO UPDATE SET
-                status=excluded.status, updated=excluded.updated, last_error=NULL
-        """, (cluster, status, updated))
-    else:
-        con.execute("""
-            INSERT INTO cluster_state (cluster, status, updated, last_error)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(cluster) DO UPDATE SET
-                status=excluded.status, updated=excluded.updated,
-                last_error=excluded.last_error
-        """, (cluster, status, updated, last_error))
-    con.commit()
-    con.close()
+    with db_write() as con:
+        if last_error is None:
+            con.execute("""
+                INSERT INTO cluster_state (cluster, status, updated)
+                VALUES (?, ?, ?)
+                ON CONFLICT(cluster) DO UPDATE SET
+                    status=excluded.status, updated=excluded.updated, last_error=NULL
+            """, (cluster, status, updated))
+        else:
+            con.execute("""
+                INSERT INTO cluster_state (cluster, status, updated, last_error)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(cluster) DO UPDATE SET
+                    status=excluded.status, updated=excluded.updated,
+                    last_error=excluded.last_error
+            """, (cluster, status, updated, last_error))
 
 
 def cache_db_put(namespace, key, value, ttl_sec):
     """Write a value to the persistent cache store with a TTL."""
     now = datetime.now()
     expires = now + timedelta(seconds=ttl_sec)
-    con = get_db()
-    con.execute("""
-        INSERT INTO cache_store (namespace, key, value_json, updated_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(namespace, key) DO UPDATE SET
-            value_json=excluded.value_json,
-            updated_at=excluded.updated_at,
-            expires_at=excluded.expires_at
-    """, (namespace, key, _json.dumps(value, default=str),
-          now.isoformat(timespec="seconds"),
-          expires.isoformat(timespec="seconds")))
-    con.commit()
-    con.close()
+    with db_write() as con:
+        con.execute("""
+            INSERT INTO cache_store (namespace, key, value_json, updated_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(namespace, key) DO UPDATE SET
+                value_json=excluded.value_json,
+                updated_at=excluded.updated_at,
+                expires_at=excluded.expires_at
+        """, (namespace, key, _json.dumps(value, default=str),
+              now.isoformat(timespec="seconds"),
+              expires.isoformat(timespec="seconds")))
 
 
 def cache_db_get(namespace, key):

@@ -159,20 +159,18 @@ def compute_wds_snapshot():
     if not rows:
         return 0
 
-    from .db import get_db
-    con = get_db()
-    con.executemany("""
-        INSERT INTO wds_history (
-            ts, cluster, account, wds,
-            resource_gate, my_level_fs, ppp_level_fs,
-            queue_score, idle_nodes, pending_queue,
-            ppp_headroom, free_for_team, gpus_consumed, gpus_allocated,
-            team_running, my_running, my_pending, req_nodes, req_gpus_per_node,
-            occupancy_factor
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, rows)
-    con.commit()
-    con.close()
+    from .db import db_write
+    with db_write() as con:
+        con.executemany("""
+            INSERT INTO wds_history (
+                ts, cluster, account, wds,
+                resource_gate, my_level_fs, ppp_level_fs,
+                queue_score, idle_nodes, pending_queue,
+                ppp_headroom, free_for_team, gpus_consumed, gpus_allocated,
+                team_running, my_running, my_pending, req_nodes, req_gpus_per_node,
+                occupancy_factor
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, rows)
 
     log.info("WDS snapshot: %d rows stored at %s", len(rows), ts)
     return len(rows)

@@ -30,7 +30,7 @@ from .config import (
 )
 from .db import (
     dismiss_job, dismiss_by_state_prefix,
-    get_history, get_projects, get_db,
+    get_history, get_projects, get_db, db_write,
     cache_db_get, cache_db_get_stale, cache_db_get_all, cache_db_get_all_multi,
     cache_db_put,
 )
@@ -800,9 +800,8 @@ def api_retry_run_meta(cluster, root_job_id):
     run = get_run(cluster, str(root_job_id))
     if not run:
         return jsonify({"status": "error", "error": "Run not found"}), 404
-    db = get_db()
-    db.execute("UPDATE runs SET meta_fetched=0 WHERE cluster=? AND root_job_id=?", (cluster, str(root_job_id)))
-    db.commit()
+    with db_write() as db:
+        db.execute("UPDATE runs SET meta_fetched=0 WHERE cluster=? AND root_job_id=?", (cluster, str(root_job_id)))
     _capture_run_metadata(cluster, str(root_job_id), run["id"])
     return api_run_info(cluster, root_job_id)
 
@@ -1581,11 +1580,9 @@ def api_logbook_update(project, entry_id):
 @api.route("/api/logbook/<project>/entries/<int:entry_id>/pin", methods=["POST"])
 def api_logbook_pin(project, entry_id):
     pinned = (request.get_json(silent=True) or {}).get("pinned", True)
-    con = get_db()
-    con.execute("UPDATE logbook_entries SET pinned=? WHERE id=? AND project=?",
-                (1 if pinned else 0, entry_id, project))
-    con.commit()
-    con.close()
+    with db_write() as con:
+        con.execute("UPDATE logbook_entries SET pinned=? WHERE id=? AND project=?",
+                    (1 if pinned else 0, entry_id, project))
     return jsonify({"status": "ok"})
 
 

@@ -26,7 +26,7 @@ from .config import (
 )
 from .ssh import ssh_run, ssh_run_with_timeout, enable_standalone_ssh
 from .db import (
-    upsert_job, get_db, get_board_pinned, invalidate_pinned_cache,
+    upsert_job, get_db, db_write, get_board_pinned, invalidate_pinned_cache,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
     upsert_jobs_batch,
     replace_live_jobs, set_cluster_state, cache_db_put,
@@ -1038,22 +1038,20 @@ done"""
     except Exception:
         return
 
-    con = get_db()
-    for line in out.splitlines():
-        if not line.startswith("LOGPATH:"):
-            continue
-        parts = line[8:].split(":", 1)
-        if len(parts) != 2:
-            continue
-        jid, path = parts[0].strip(), parts[1].strip()
-        if path:
-            con.execute(
-                "UPDATE job_history SET log_path=? WHERE cluster=? AND job_id=? AND (log_path IS NULL OR log_path='')",
-                (path, cluster_name, jid),
-            )
-            _stdout_captured.add((cluster_name, jid))
-    con.commit()
-    con.close()
+    with db_write() as con:
+        for line in out.splitlines():
+            if not line.startswith("LOGPATH:"):
+                continue
+            parts = line[8:].split(":", 1)
+            if len(parts) != 2:
+                continue
+            jid, path = parts[0].strip(), parts[1].strip()
+            if path:
+                con.execute(
+                    "UPDATE job_history SET log_path=? WHERE cluster=? AND job_id=? AND (log_path IS NULL OR log_path='')",
+                    (path, cluster_name, jid),
+                )
+                _stdout_captured.add((cluster_name, jid))
 
 
 def _detect_crash_on_complete(cluster, job_id, log_path=""):
@@ -1182,14 +1180,12 @@ def _sacct_final_batched(cluster, job_ids, batch_size=_SACCT_BATCH_SIZE):
 def _hide_pinned_jobs(cluster, job_ids):
     if not job_ids:
         return
-    con = get_db()
-    placeholders = ",".join("?" for _ in job_ids)
-    con.execute(
-        f"UPDATE job_history SET board_visible=0 WHERE cluster=? AND job_id IN ({placeholders})",
-        (cluster, *job_ids),
-    )
-    con.commit()
-    con.close()
+    with db_write() as con:
+        placeholders = ",".join("?" for _ in job_ids)
+        con.execute(
+            f"UPDATE job_history SET board_visible=0 WHERE cluster=? AND job_id IN ({placeholders})",
+            (cluster, *job_ids),
+        )
     invalidate_pinned_cache(cluster)
 
 
@@ -1407,14 +1403,12 @@ def reevaluate_failed_for_softfail():
 
 
 def _update_to_softfail(cluster, job_id, soft_reason):
-    con = get_db()
-    con.execute(
-        "UPDATE job_history SET state='COMPLETED', reason=? "
-        "WHERE cluster=? AND job_id=?",
-        (f"soft-fail: {soft_reason}", cluster, job_id),
-    )
-    con.commit()
-    con.close()
+    with db_write() as con:
+        con.execute(
+            "UPDATE job_history SET state='COMPLETED', reason=? "
+            "WHERE cluster=? AND job_id=?",
+            (f"soft-fail: {soft_reason}", cluster, job_id),
+        )
 
 
 def _schedule_softfail_migration():
@@ -1501,62 +1495,59 @@ def _save_stats_snapshot(cluster, job_id, stats):
     if not stats or stats.get("status") != "ok":
         return
     import json
-    con = get_db()
-    row = con.execute(
-        "SELECT MAX(ts) as last_ts FROM job_stats_snapshots WHERE cluster = ? AND job_id = ?",
-        (cluster, str(job_id)),
-    ).fetchone()
-    if row and row["last_ts"]:
-        try:
-            last = datetime.fromisoformat(row["last_ts"])
-            if (datetime.now() - last).total_seconds() < _get_stats_interval():
-                con.close()
-                return
-        except Exception:
-            pass
-
-    gpu_rows = stats.get("gpus", [])
-    gpu_util = None
-    gpu_mem_used = None
-    gpu_mem_total = None
-    if gpu_rows:
-        utils = []
-        mems_used = []
-        mems_total = []
-        for g in gpu_rows:
+    with db_write() as con:
+        row = con.execute(
+            "SELECT MAX(ts) as last_ts FROM job_stats_snapshots WHERE cluster = ? AND job_id = ?",
+            (cluster, str(job_id)),
+        ).fetchone()
+        if row and row["last_ts"]:
             try:
-                utils.append(float(str(g.get("util", "0")).rstrip("%")))
-            except (ValueError, TypeError):
+                last = datetime.fromisoformat(row["last_ts"])
+                if (datetime.now() - last).total_seconds() < _get_stats_interval():
+                    return
+            except Exception:
                 pass
-            mem = g.get("mem", "")
-            if "/" in mem:
-                parts = mem.replace("MiB", "").strip().split("/")
+
+        gpu_rows = stats.get("gpus", [])
+        gpu_util = None
+        gpu_mem_used = None
+        gpu_mem_total = None
+        if gpu_rows:
+            utils = []
+            mems_used = []
+            mems_total = []
+            for g in gpu_rows:
                 try:
-                    mems_used.append(float(parts[0].strip()))
-                    mems_total.append(float(parts[1].strip()))
-                except (ValueError, IndexError):
+                    utils.append(float(str(g.get("util", "0")).rstrip("%")))
+                except (ValueError, TypeError):
                     pass
-        if utils:
-            gpu_util = round(sum(utils) / len(utils), 1)
-        if mems_used:
-            gpu_mem_used = round(sum(mems_used) / len(mems_used), 1)
-        if mems_total:
-            gpu_mem_total = round(sum(mems_total) / len(mems_total), 1)
+                mem = g.get("mem", "")
+                if "/" in mem:
+                    parts = mem.replace("MiB", "").strip().split("/")
+                    try:
+                        mems_used.append(float(parts[0].strip()))
+                        mems_total.append(float(parts[1].strip()))
+                    except (ValueError, IndexError):
+                        pass
+            if utils:
+                gpu_util = round(sum(utils) / len(utils), 1)
+            if mems_used:
+                gpu_mem_used = round(sum(mems_used) / len(mems_used), 1)
+            if mems_total:
+                gpu_mem_total = round(sum(mems_total) / len(mems_total), 1)
 
-    cpu_util = stats.get("ave_cpu", "") or ""
-    rss_used = _parse_rss_bytes(stats.get("ave_rss", ""))
-    max_rss = _parse_rss_bytes(stats.get("max_rss", ""))
+        cpu_util = stats.get("ave_cpu", "") or ""
+        rss_used = _parse_rss_bytes(stats.get("ave_rss", ""))
+        max_rss = _parse_rss_bytes(stats.get("max_rss", ""))
 
-    now = datetime.now().isoformat(timespec="seconds")
-    con.execute(
-        """INSERT INTO job_stats_snapshots
-           (cluster, job_id, ts, gpu_util, gpu_mem_used, gpu_mem_total, cpu_util, rss_used, max_rss, gpu_details)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (cluster, str(job_id), now, gpu_util, gpu_mem_used, gpu_mem_total,
-         cpu_util, rss_used, max_rss, json.dumps(gpu_rows) if gpu_rows else ""),
-    )
-    con.commit()
-    con.close()
+        now = datetime.now().isoformat(timespec="seconds")
+        con.execute(
+            """INSERT INTO job_stats_snapshots
+               (cluster, job_id, ts, gpu_util, gpu_mem_used, gpu_mem_total, cpu_util, rss_used, max_rss, gpu_details)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (cluster, str(job_id), now, gpu_util, gpu_mem_used, gpu_mem_total,
+             cpu_util, rss_used, max_rss, json.dumps(gpu_rows) if gpu_rows else ""),
+        )
 
 
 def get_stats_snapshots(cluster, job_id):
