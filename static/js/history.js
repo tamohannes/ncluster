@@ -3,29 +3,126 @@ let HIST_GROUPS_PER_PAGE = 50;
 let histPage = 0;
 let histGroups = [];
 
+function _histEsc(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function _histValue(id) {
+  const el = document.getElementById(id);
+  return el ? el.value : '';
+}
+
+function _historyUniqueValues(rows, getValue) {
+  const seen = new Set();
+  for (const row of rows) {
+    const value = getValue(row);
+    if (value) seen.add(value);
+  }
+  return Array.from(seen).sort((a, b) => a.localeCompare(b));
+}
+
+function _historyOptionLabel(id, value) {
+  if (id === 'hist-account') return _shortAcct(value);
+  return value;
+}
+
+function _syncHistorySelect(id, values, allLabel) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const current = el.value;
+  el.innerHTML = `<option value="">${allLabel}</option>` + values.map(value => (
+    `<option value="${_histEsc(value)}">${_histEsc(_historyOptionLabel(id, value))}</option>`
+  )).join('');
+  if (current && values.includes(current)) el.value = current;
+}
+
+function _historyMatches(row, ignore = new Set()) {
+  const allowedStates = _getCheckedStates();
+  const rowState = (row.state || '').toUpperCase().split(' ')[0];
+  if (!ignore.has('state')) {
+    if (!allowedStates.length) return false;
+    if (!allowedStates.some(state => rowState.startsWith(state))) return false;
+  }
+
+  const project = _histValue('hist-project');
+  if (!ignore.has('project') && project && (row.project || '') !== project) return false;
+
+  const campaign = _histValue('hist-campaign');
+  if (!ignore.has('campaign') && campaign && (row.campaign || '') !== campaign) return false;
+
+  const partition = _histValue('hist-partition');
+  if (!ignore.has('partition') && partition && (row.partition || '') !== partition) return false;
+
+  const account = _histValue('hist-account');
+  if (!ignore.has('account') && account && (row.account || '') !== account) return false;
+
+  const q = _histValue('hist-search').trim().toLowerCase();
+  if (!ignore.has('search') && q) {
+    const values = [
+      row.job_name || row.name || '',
+      String(row.job_id || row.jobid || ''),
+      groupKeyForJob(row.job_name || row.name || ''),
+      row.project || '',
+      row.campaign || '',
+      row.partition || '',
+      row.account || '',
+      row.cluster || row._cluster || '',
+    ].map(v => String(v).toLowerCase());
+    if (!values.some(value => value.includes(q))) return false;
+  }
+
+  return true;
+}
+
+function _syncHistoryFacetOptions() {
+  _syncHistorySelect(
+    'hist-project',
+    _historyUniqueValues(historyData.filter(row => _historyMatches(row, new Set(['project']))), row => row.project || ''),
+    'All projects',
+  );
+  _syncHistorySelect(
+    'hist-campaign',
+    _historyUniqueValues(historyData.filter(row => _historyMatches(row, new Set(['campaign']))), row => row.campaign || ''),
+    'All campaigns',
+  );
+  _syncHistorySelect(
+    'hist-partition',
+    _historyUniqueValues(historyData.filter(row => _historyMatches(row, new Set(['partition']))), row => row.partition || ''),
+    'All partitions',
+  );
+  _syncHistorySelect(
+    'hist-account',
+    _historyUniqueValues(historyData.filter(row => _historyMatches(row, new Set(['account']))), row => row.account || ''),
+    'All accounts',
+  );
+}
+
 async function loadHistory() {
-  const cluster = document.getElementById('hist-cluster').value;
+  const cluster = _histValue('hist-cluster') || 'all';
+  const days = _histValue('hist-days');
+  const params = new URLSearchParams({ cluster, limit: '10000' });
+  if (days && days !== 'all') params.set('days', days);
   try {
-    const res = await fetch(`/api/history?cluster=${cluster}&limit=10000`);
-    historyData = await res.json();
+    const res = await fetch(`/api/history?${params.toString()}`);
+    const rows = await res.json();
+    historyData = Array.isArray(rows) ? rows : [];
     histPage = 0;
-    _buildHistGroups(historyData);
-    _renderHistPage();
+    filterHistory();
   } catch (e) {
     toast('Failed to load history', 'error');
   }
 }
 
 function historyGroupKey(r) {
-  const n = (r.job_name || '').trim();
-  if (!n) return `${r.cluster}:misc`;
-  const evalMatch = n.match(/^(eval-[a-z0-9_]+)/i);
-  const base = evalMatch ? evalMatch[1].toLowerCase() : n.replace(/(?:-|_)rs\d+\b/i, '').replace(/(?:-|_)(?:judge|summarize[-_]results?).*$/i, '').toLowerCase();
-  return `${r.cluster}:${base}`;
+  return `${r.cluster}:${groupKeyForJob(r.job_name || r.name || '')}`;
 }
 
 function _buildHistGroups(rows) {
-  // Normalize history rows to look like live job dicts.
   const normalized = rows.map(r => ({
     jobid: r.job_id,
     name: r.job_name || '',
@@ -34,6 +131,8 @@ function _buildHistGroups(rows) {
     nodes: r.nodes || '',
     gres: r.gres || '',
     partition: r.partition || '',
+    account: r.account || '',
+    campaign: r.campaign || '',
     submitted: r.submitted || '',
     started: r.started || '',
     started_local: r.started_local || '',
@@ -51,8 +150,6 @@ function _buildHistGroups(rows) {
     _pinned: true,
   }));
 
-  // Group per-cluster, then use the same groupJobsByDependency as the live view
-  // (name prefix + dependency chains + topo sort).
   const byCluster = {};
   for (const j of normalized) {
     if (!byCluster[j._cluster]) byCluster[j._cluster] = [];
@@ -67,7 +164,6 @@ function _buildHistGroups(rows) {
     }
   }
 
-  // Sort groups by newest job first.
   histGroups.sort((a, b) => {
     const tsA = a.jobs.reduce((best, j) => { const t = j.submitted || j.started || ''; return t > best ? t : best; }, '');
     const tsB = b.jobs.reduce((best, j) => { const t = j.submitted || j.started || ''; return t > best ? t : best; }, '');
@@ -99,11 +195,13 @@ function _renderHistPage() {
     const _proj = groupJobs[0]?.project || '';
     const _projColor = groupJobs[0]?.project_color || '';
     const _projEmoji = groupJobs[0]?.project_emoji || '';
+    const _campaign = groupJobs[0]?.campaign || '';
     const _projBadge = _proj ? `<span class="group-project-badge">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span>` : '';
     const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
     const rootJobId = rootJob.jobid;
     const safeLabel = g.label.replace(/'/g, "\\'");
-    const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
+    const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
+    const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
     const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const hasMultiple = groupJobs.length > 1;
@@ -142,7 +240,8 @@ function _renderHistPage() {
 
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
-      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
+      const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
+      const _rowBg = _rowShaded ? `background:${lightenColor(_rowShaded)}` : '';
       const _grpHidden = hasMultiple && !isGroupExpanded;
       const _rowDisp = _grpHidden ? 'display:none' : '';
       const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
@@ -187,17 +286,23 @@ function _getCheckedStates() {
 }
 
 function filterHistory() {
-  const q = document.getElementById('hist-search').value.toLowerCase();
-  const allowedStates = _getCheckedStates();
-  const filtered = historyData.filter(r => {
-    const st = (r.state || '').toUpperCase().split(' ')[0];
-    if (!allowedStates.some(s => st.startsWith(s))) return false;
-    if (q && !(r.job_name||'').toLowerCase().includes(q) && !(r.job_id||'').includes(q)) return false;
-    return true;
-  });
+  _syncHistoryFacetOptions();
+  const filtered = historyData.filter(row => _historyMatches(row));
   histPage = 0;
   _buildHistGroups(filtered);
   _renderHistPage();
+}
+
+function resetHistoryFilters() {
+  document.getElementById('hist-cluster').value = 'all';
+  document.getElementById('hist-days').value = 'all';
+  document.getElementById('hist-project').value = '';
+  document.getElementById('hist-campaign').value = '';
+  document.getElementById('hist-partition').value = '';
+  document.getElementById('hist-account').value = '';
+  document.getElementById('hist-search').value = '';
+  document.querySelectorAll('#hist-state-filters .hist-state-btn').forEach(btn => btn.classList.add('active'));
+  loadHistory();
 }
 
 async function cleanupHistory() {

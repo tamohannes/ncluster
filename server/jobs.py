@@ -1,5 +1,6 @@
 """Job fetching, parsing, polling, prefetch, and stats."""
 
+from collections import Counter
 import logging
 import os
 import re
@@ -42,6 +43,7 @@ _EVAL_PREFIX_RE = re.compile(r'^(eval-[a-z0-9_]+)', re.I)
 _stdout_captured = set()
 _run_meta_fetched = {}          # (cluster, job_id) -> timestamp
 _RUN_META_TTL_SEC = 300
+_RUN_NAME_MERGE_GAP_SEC = 300
 _STALE_PINNED_ACTIVE_STATES = {"RUNNING", "COMPLETING", "PENDING"}
 _SACCT_BATCH_SIZE = 200
 
@@ -380,6 +382,56 @@ def _group_key_for_job(name):
     ).lower()
 
 
+def _job_group_ts(job):
+    """Best-effort timestamp for separating reruns with the same base name."""
+    for key in ("submitted", "started", "ended_at"):
+        raw = str(job.get(key, "") or "").strip()
+        if not raw or raw in {"N/A", "Unknown", "None", "(null)"}:
+            continue
+        try:
+            return datetime.fromisoformat(raw.replace(" ", "T")).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def _bucket_same_name_jobs(jobs, gap_sec=_RUN_NAME_MERGE_GAP_SEC):
+    """Split same-name jobs into submission-time buckets.
+
+    This keeps reruns that reuse the exact same Slurm job name from being
+    collapsed into one logical run just because their base names match.
+    """
+    if len(jobs) <= 1:
+        return [jobs]
+
+    stamped = []
+    unstamped = []
+    for job in jobs:
+        ts = _job_group_ts(job)
+        if ts is None:
+            unstamped.append(job)
+        else:
+            stamped.append((ts, str(job.get("jobid", "")), job))
+
+    if not stamped:
+        return [jobs]
+
+    stamped.sort(key=lambda item: (item[0], item[1]))
+    buckets = [[stamped[0][2]]]
+    prev_ts = stamped[0][0]
+    for ts, _, job in stamped[1:]:
+        if ts - prev_ts > gap_sec:
+            buckets.append([])
+        buckets[-1].append(job)
+        prev_ts = ts
+
+    # Missing timestamps are rare in practice; attach them to the nearest
+    # active bucket so dependency-based grouping can still pull them in.
+    for job in unstamped:
+        buckets[-1].append(job)
+    return buckets
+
+
 def _group_jobs_for_runs(jobs):
     """Group jobs using union-find on dependency chains + name prefixes.
 
@@ -406,10 +458,12 @@ def _group_jobs_for_runs(jobs):
     name_groups = {}
     for j in jobs:
         key = _group_key_for_job(j.get("name", ""))
-        name_groups.setdefault(key, []).append(j["jobid"])
-    for ids in name_groups.values():
-        for i in range(1, len(ids)):
-            union(ids[0], ids[i])
+        name_groups.setdefault(key, []).append(j)
+    for same_name_jobs in name_groups.values():
+        for bucket in _bucket_same_name_jobs(same_name_jobs):
+            ids = [job["jobid"] for job in bucket]
+            for i in range(1, len(ids)):
+                union(ids[0], ids[i])
 
     groups = {}
     for j in jobs:
@@ -430,10 +484,10 @@ def _detect_and_register_runs(cluster, jobs):
         return
     groups = _group_jobs_for_runs(jobs)
 
-    # Merge groups that share an existing run_id in the DB.
     con = get_db()
     all_job_ids = [jid for _, _, jids in groups for jid in jids]
     existing_run_ids = {}
+    existing_run_roots = {}
     if all_job_ids:
         ph = ",".join("?" for _ in all_job_ids)
         rows = con.execute(
@@ -443,61 +497,86 @@ def _detect_and_register_runs(cluster, jobs):
         for r in rows:
             if r["run_id"]:
                 existing_run_ids[r["job_id"]] = r["run_id"]
+        run_ids = sorted(set(existing_run_ids.values()))
+        if run_ids:
+            ph = ",".join("?" for _ in run_ids)
+            run_rows = con.execute(
+                f"SELECT id, root_job_id FROM runs WHERE cluster=? AND id IN ({ph})",
+                [cluster] + run_ids,
+            ).fetchall()
+            existing_run_roots = {row["id"]: row["root_job_id"] for row in run_rows}
     con.close()
 
-    # Collect all existing run_ids per group, then merge groups that share any.
-    group_run_ids = []
-    for run_name, root_job_id, job_ids in groups:
-        rids = set()
-        for jid in job_ids:
-            rid = existing_run_ids.get(jid)
-            if rid:
-                rids.add(rid)
-        group_run_ids.append(rids)
+    group_run_counters = [
+        Counter(
+            existing_run_ids[jid]
+            for jid in job_ids
+            if existing_run_ids.get(jid)
+        )
+        for _, _, job_ids in groups
+    ]
+    run_owner_idx = {}
+    for rid, root_jid in existing_run_roots.items():
+        root_owner = next(
+            (idx for idx, (_, _, job_ids) in enumerate(groups) if root_jid in job_ids),
+            None,
+        )
+        if root_owner is not None:
+            run_owner_idx[rid] = root_owner
+            continue
+        best_idx = None
+        best_score = None
+        for idx, counter in enumerate(group_run_counters):
+            count = counter.get(rid, 0)
+            if not count:
+                continue
+            score = (count, len(groups[idx][2]))
+            if best_score is None or score > best_score:
+                best_idx = idx
+                best_score = score
+        if best_idx is not None:
+            run_owner_idx[rid] = best_idx
 
-    # Union-find across groups: if two groups share any existing run_id,
-    # or if a group's jobs depend on jobs in another group, merge them.
-    gp = list(range(len(groups)))
-    def gfind(x):
-        while gp[x] != x: gp[x] = gp[gp[x]]; x = gp[x]
-        return x
-    def gunion(a, b): gp[gfind(a)] = gfind(b)
-
-    rid_to_group = {}
-    for gi, rids in enumerate(group_run_ids):
-        for rid in rids:
-            if rid in rid_to_group:
-                gunion(gi, rid_to_group[rid])
-            rid_to_group[rid] = gi
-
-    merged_groups = {}
-    for gi, (run_name, root_job_id, job_ids) in enumerate(groups):
-        root = gfind(gi)
-        if root not in merged_groups:
-            merged_groups[root] = (run_name, root_job_id, list(job_ids))
-        else:
-            merged_groups[root] = (merged_groups[root][0], merged_groups[root][1],
-                                   merged_groups[root][2] + job_ids)
-
-    for run_name, root_job_id, job_ids in merged_groups.values():
+    for idx, (run_name, root_job_id, job_ids) in enumerate(groups):
         root_job = next((j for j in jobs if j["jobid"] == root_job_id), None)
         project = root_job.get("project", "") if root_job else ""
-        run_id = upsert_run(cluster, root_job_id, run_name, project)
+        rid_counts = Counter(
+            {
+                rid: count
+                for rid, count in group_run_counters[idx].items()
+                if run_owner_idx.get(rid) == idx
+            }
+        )
+        canonical_root_job_id = root_job_id
+        if rid_counts:
+            canonical_run_id, _ = rid_counts.most_common(1)[0]
+            canonical_root_job_id = existing_run_roots.get(canonical_run_id, root_job_id)
+
+        run_id = upsert_run(cluster, canonical_root_job_id, run_name, project)
         associate_jobs_to_run(cluster, run_id, job_ids)
 
-        started = root_job.get("started") or root_job.get("submitted") if root_job else None
+        started = min(
+            (
+                ts for ts in (
+                    (job.get("started") or job.get("submitted") or "")
+                    for job in jobs if job["jobid"] in job_ids
+                )
+                if ts and ts not in {"N/A", "Unknown", "None", "(null)"}
+            ),
+            default=None,
+        )
         if started:
             update_run_times(run_id, started_at=started)
 
-        key = (cluster, root_job_id)
+        key = (cluster, canonical_root_job_id)
         cached_ts = _run_meta_fetched.get(key)
         if cached_ts is None or (time.monotonic() - cached_ts) > _RUN_META_TTL_SEC:
-            existing = get_run(cluster, root_job_id)
+            existing = get_run(cluster, canonical_root_job_id)
             if existing and not existing.get("meta_fetched"):
                 _run_meta_fetched[key] = time.monotonic()
                 t = threading.Thread(
                     target=_capture_run_metadata,
-                    args=(cluster, root_job_id, run_id),
+                    args=(cluster, canonical_root_job_id, run_id),
                     daemon=True,
                 )
                 t.start()

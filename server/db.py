@@ -621,12 +621,39 @@ def dismiss_by_state_prefix(cluster, prefixes):
     invalidate_pinned_cache(cluster)
 
 
-def get_history(cluster=None, limit=200, project=None, search=None):
+def _csv_values(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    values = []
+    for part in value:
+        if part is None:
+            continue
+        values.extend(_csv_values(part))
+    return values
+
+
+def get_history(
+    cluster=None,
+    limit=200,
+    project=None,
+    search=None,
+    state=None,
+    campaign=None,
+    partition=None,
+    account=None,
+    days=None,
+):
     from .jobs import parse_dependency
+    from .config import extract_campaign
+    from datetime import datetime, timedelta
+
     con = get_db()
     order = "ORDER BY COALESCE(ended_at, started, submitted, '9999') DESC, id DESC"
     conditions = []
     params = []
+    campaign_values = {v.lower() for v in _csv_values(campaign)}
     if cluster and cluster != "all":
         conditions.append("cluster=?")
         params.append(cluster)
@@ -634,14 +661,44 @@ def get_history(cluster=None, limit=200, project=None, search=None):
         conditions.append("project=?")
         params.append(project)
     if search:
-        conditions.append("job_name LIKE ?")
-        params.append(f"%{search}%")
+        like = f"%{search}%"
+        conditions.append("(job_name LIKE ? OR job_id LIKE ?)")
+        params.extend([like, like])
+    state_values = [v.upper() for v in _csv_values(state)]
+    if state_values:
+        conditions.append("(" + " OR ".join(["UPPER(COALESCE(state, '')) LIKE ?"] * len(state_values)) + ")")
+        params.extend([f"{value}%" for value in state_values])
+    if partition:
+        conditions.append("LOWER(COALESCE(partition, '')) = LOWER(?)")
+        params.append(partition)
+    if account:
+        conditions.append("LOWER(COALESCE(account, '')) = LOWER(?)")
+        params.append(account)
+    if days:
+        try:
+            days_int = int(days)
+        except (TypeError, ValueError):
+            days_int = 0
+        if days_int > 0:
+            cutoff = (datetime.now() - timedelta(days=days_int)).isoformat()
+            conditions.append("COALESCE(ended_at, started, submitted, '') >= ?")
+            params.append(cutoff)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.append(limit)
-    rows = con.execute(f"SELECT * FROM job_history {where} {order} LIMIT ?", params).fetchall()
+    query = f"SELECT * FROM job_history {where} {order}"
+    query_params = list(params)
+    if not campaign_values:
+        query += " LIMIT ?"
+        query_params.append(limit)
+    rows = con.execute(query, query_params).fetchall()
     con.close()
     jobs = [normalize_job_times_local(dict(r)) for r in rows]
     _restore_dependency_fields(jobs, parse_dependency)
+    if campaign_values:
+        jobs = [
+            job for job in jobs
+            if extract_campaign(job.get("job_name") or job.get("name") or "", job.get("project") or "") in campaign_values
+        ]
+        jobs = jobs[:limit]
     return jobs
 
 

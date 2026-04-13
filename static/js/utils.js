@@ -436,6 +436,15 @@ function fmtTime(s) {
        + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
+function runAttemptBadge(job) {
+  const when = fmtTime(job?.submitted || job?.started || job?.ended_at || '');
+  const jid = String(job?.jobid || job?.job_id || '').trim();
+  if (when === '—' && !jid) return '';
+  const label = when !== '—' ? when : `#${jid}`;
+  const title = jid ? `Run root ${jid}` : 'Run attempt';
+  return `<span class="group-project-badge" title="${title}">${label}</span>`;
+}
+
 function fmtStartCell(job) {
   const st = (job.state || '').toUpperCase();
   if (st === 'PENDING' && job.est_start) {
@@ -813,24 +822,33 @@ async function fetchClusterUtilization(force) {
   _clusterUtilFetching = false;
 }
 
-async function fetchPartitions(force) {
-  if (_partitionFetching) return;
-  if (!force && _partitionData && Date.now() - _partitionLastFetched < _AUX_TTL_MS) return;
-  _partitionFetching = true;
+async function fetchPartitions(force, clusterName) {
+  const isSingleCluster = !!clusterName;
+  if (!isSingleCluster) {
+    if (_partitionFetching) return;
+    if (!force && _partitionData && Date.now() - _partitionLastFetched < _AUX_TTL_MS) return;
+    _partitionFetching = true;
+  }
   try {
-    const res = await fetchWithTimeout('/api/partition_summary');
+    const q = _computeClusterQuery(clusterName, force);
+    const res = await fetchWithTimeout('/api/partition_summary' + q);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.status === 'ok') {
-      _partitionData = data.clusters;
+      if (isSingleCluster) {
+        _partitionData = _mergeClusterMap(_partitionData, data.clusters || {}, clusterName);
+      } else {
+        _partitionData = data.clusters;
+      }
       _partitionLastFetched = Date.now();
       if (typeof _clearErrorBannerKey === 'function') _clearErrorBannerKey('partitions');
     }
   } catch (e) {
     console.warn('Partition fetch failed:', e);
     if (typeof _setErrorBanner === 'function') _setErrorBanner('partitions', 'Partition data unavailable');
+  } finally {
+    if (!isSingleCluster) _partitionFetching = false;
   }
-  _partitionFetching = false;
 }
 
 function _fmtTime(timeStr) {
@@ -941,38 +959,118 @@ function _showComputeLoadBar(show) {
 }
 
 let _computeRefreshing = false;
-async function refreshPppAllocations(force) {
+const _computeRefreshingClusters = new Set();
+
+function _mergeClusterPayload(target, payload, clusterName) {
+  const merged = { ...(target || {}), ...(payload || {}) };
+  const nextClusters = { ...(target?.clusters || {}) };
+  if (Object.prototype.hasOwnProperty.call(payload || {}, 'clusters')) {
+    if (Object.prototype.hasOwnProperty.call(payload.clusters || {}, clusterName)) {
+      nextClusters[clusterName] = payload.clusters[clusterName];
+    } else {
+      delete nextClusters[clusterName];
+    }
+    merged.clusters = nextClusters;
+  }
+  return merged;
+}
+
+function _mergeClusterMap(target, payload, clusterName) {
+  const next = { ...(target || {}) };
+  if (Object.prototype.hasOwnProperty.call(payload || {}, clusterName)) {
+    next[clusterName] = payload[clusterName];
+  } else {
+    delete next[clusterName];
+  }
+  return next;
+}
+
+function _computeClusterQuery(clusterName, force) {
+  const params = new URLSearchParams();
+  if (clusterName) params.set('cluster', clusterName);
+  if (force) params.set('force', '1');
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
+function _renderCurrentPppAllocations() {
+  if (_pppAllocData || _partitionData) {
+    _renderPppAllocations(_pppAllocData || { clusters: {} });
+  }
+}
+
+function pppCardFreshnessHtml(clusterName) {
+  const disabled = _computeRefreshing || _computeRefreshingClusters.has(clusterName);
+  return `<span class="card-freshness-group">${freshnessBadgeHtml(clusterName)}<button class="icon-btn ppp-refresh-btn${disabled ? ' is-loading' : ''}" onclick="refreshPppAllocations(true,'${clusterName}')" title="Refresh"${disabled ? ' disabled' : ''}>↻</button></span>`;
+}
+
+async function refreshPppAllocations(force, clusterName) {
+  if (clusterName) {
+    if (_computeRefreshing || _computeRefreshingClusters.has(clusterName)) return;
+    _computeRefreshingClusters.add(clusterName);
+    _renderCurrentPppAllocations();
+    try {
+      await _doRefreshPppAllocations(force, clusterName);
+    } finally {
+      _computeRefreshingClusters.delete(clusterName);
+      _renderCurrentPppAllocations();
+    }
+    return;
+  }
   if (_computeRefreshing) return;
   _computeRefreshing = true;
-  try { await _doRefreshPppAllocations(force); } finally { _computeRefreshing = false; }
+  _renderCurrentPppAllocations();
+  try {
+    await _doRefreshPppAllocations(force);
+  } finally {
+    _computeRefreshing = false;
+    _renderCurrentPppAllocations();
+  }
 }
-async function _doRefreshPppAllocations(force) {
+
+async function _refreshLiveClusterData(clusterName, force) {
+  if (!clusterName) {
+    await _ensureLiveJobData(force);
+    return;
+  }
+  try {
+    const q = force ? '?force=1' : '';
+    const res = await fetchWithTimeout(`/api/jobs/${encodeURIComponent(clusterName)}${q}`);
+    const data = await res.json();
+    if (data.updated) allData[clusterName] = data;
+  } catch (_) {}
+}
+
+async function _doRefreshPppAllocations(force, clusterName) {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
+  const isSingleCluster = !!clusterName;
 
-  if (_loadComputeCache() && _pppAllocData) {
+  if (!isSingleCluster && _loadComputeCache() && _pppAllocData) {
     _renderPppAllocations(_pppAllocData);
   }
 
-  _showComputeLoadBar(true);
+  if (!isSingleCluster) _showComputeLoadBar(true);
   try {
-    const q = force ? '?force=1' : '';
+    const q = _computeClusterQuery(clusterName, force);
     const results = await Promise.allSettled([
       fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
-      _ensureOverlayData(true, force),
-      fetchPartitions(),
-      _fetchMyFairshare(force),
-      _fetchTeamJobs(),
+      _ensureOverlayData(true, force, clusterName),
+      fetchPartitions(force, clusterName),
+      _fetchMyFairshare(force, clusterName),
+      _fetchTeamJobs(force, clusterName),
       _fetchProjectColors(),
-      _ensureLiveJobData(),
-      fetchWaitCalibration(),
+      _refreshLiveClusterData(clusterName, force),
+      ...(isSingleCluster ? [] : [fetchWaitCalibration()]),
     ]);
     const allocResult = results[0];
     if (allocResult.status === 'fulfilled') {
       const data = await allocResult.value.json();
       if (data.status === 'ok') {
-        _pppAllocData = data;
-        _renderPppAllocations(data);
+        _pppAllocData = isSingleCluster
+          ? _mergeClusterPayload(_pppAllocData, data, clusterName)
+          : data;
+        _renderCurrentPppAllocations();
         _saveComputeCache();
       } else if (!_pppAllocData) {
         el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
@@ -985,7 +1083,7 @@ async function _doRefreshPppAllocations(force) {
       el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
     }
   } finally {
-    _showComputeLoadBar(false);
+    if (!isSingleCluster) _showComputeLoadBar(false);
   }
 }
 
@@ -1296,7 +1394,7 @@ function _renderPppAllocations(data) {
               ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
               <span class="ppp-card-gpu" style="opacity:0.5">no PPP data</span>
               ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
-              ${freshnessBadgeHtml(cn)}
+              ${pppCardFreshnessHtml(cn)}
             </div>
             <div class="ppp-card-live"><span class="${idleCls}">${idleGpusP} idle</span> · ${pendingJobs} queued</div>`;
 
@@ -1405,7 +1503,7 @@ function _renderPppAllocations(data) {
         <span class="ppp-card-cluster">${cn}</span>
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
         ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
-        ${freshnessBadgeHtml(cn)}
+        ${pppCardFreshnessHtml(cn)}
       </div>
       ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleGpus} idle</span> · ${pendingJobs} queued</div>` : ''}`;
 
@@ -1473,6 +1571,7 @@ function _renderPppAllocations(data) {
       const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
       const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
       let segments = '';
+      const pendingScale = teamScale ? 1 : 0.3;
       if (hasJobSplit) {
         let myRunning = 0, myPending = 0, teamRunGpus = 0, teamPendGpus = 0;
         for (const j of acctJobs) {
@@ -1484,10 +1583,10 @@ function _renderPppAllocations(data) {
           }
         }
         const myRunGpus = Math.min(myRunning, myTotal);
-        const myPendGpus = Math.min(myPending, myTotal * 0.3);
+        const myPendGpus = Math.min(myPending, myTotal * pendingScale);
 
         const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
-        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * 0.3);
+        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * pendingScale);
 
         const showProjects = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
         if (showMe && showProjects) {
@@ -1502,7 +1601,7 @@ function _renderPppAllocations(data) {
           for (const [proj, pd] of Object.entries(projMap).sort((a, b) => (b[1].run + b[1].pend) - (a[1].run + a[1].pend))) {
             const color = _getProjectColor(proj) || 'var(--accent)';
             const runW = Math.min(pd.run, myTotal);
-            const pendW = Math.min(pd.pend, myTotal * 0.3);
+            const pendW = Math.min(pd.pend, myTotal * pendingScale);
             if (runW > 0)
               segments += `<div class="ppp-seg ppp-seg-proj" style="width:${toPct(runW)}%;background:${color}"></div>`;
             if (pendW > 0)
@@ -1670,25 +1769,35 @@ function _getProjectColor(proj) {
 }
 let _pppOverlayFetching = false;
 
-async function _ensureOverlayData(refetch, force) {
-  if (!refetch && (_pppOverlayData || _pppOverlayFetching)) return _pppOverlayData;
-  _pppOverlayFetching = true;
+async function _ensureOverlayData(refetch, force, clusterName) {
+  const isSingleCluster = !!clusterName;
+  if (!isSingleCluster && !refetch && (_pppOverlayData || _pppOverlayFetching)) return _pppOverlayData;
+  if (!isSingleCluster) _pppOverlayFetching = true;
   try {
-    const url = force ? '/api/aihub/team_overlay?force=1' : '/api/aihub/team_overlay';
+    const url = '/api/aihub/team_overlay' + _computeClusterQuery(clusterName, force);
     const res = await fetchWithTimeout(url, {}, 20000);
     const data = await res.json();
-    if (data.status === 'ok') _pppOverlayData = data;
+    if (data.status === 'ok') {
+      _pppOverlayData = isSingleCluster
+        ? _mergeClusterPayload(_pppOverlayData, data, clusterName)
+        : data;
+    }
   } catch (_) {}
-  _pppOverlayFetching = false;
+  if (!isSingleCluster) _pppOverlayFetching = false;
   return _pppOverlayData;
 }
 
-async function _fetchMyFairshare(force) {
+async function _fetchMyFairshare(force, clusterName) {
+  const isSingleCluster = !!clusterName;
   try {
-    const url = force ? '/api/aihub/my_fairshare?force=1' : '/api/aihub/my_fairshare';
+    const url = '/api/aihub/my_fairshare' + _computeClusterQuery(clusterName, force);
     const res = await fetchWithTimeout(url, {}, 20000);
     const data = await res.json();
-    if (data.status === 'ok') _myFairshareData = data;
+    if (data.status === 'ok') {
+      _myFairshareData = isSingleCluster
+        ? _mergeClusterPayload(_myFairshareData, data, clusterName)
+        : data;
+    }
   } catch (_) {}
 }
 
@@ -1863,8 +1972,8 @@ function _populateAccountSelect() {
   }
 }
 
-async function _ensureLiveJobData() {
-  if (typeof allData !== 'undefined' && Object.values(allData).some(d => d.updated)) return;
+async function _ensureLiveJobData(force) {
+  if (!force && typeof allData !== 'undefined' && Object.values(allData).some(d => d.updated)) return;
   try {
     const res = await fetchWithTimeout('/api/jobs');
     const data = await res.json();
@@ -1882,16 +1991,22 @@ async function initClustersPage() {
 
 /* ── Team Jobs ── */
 
-async function _fetchTeamJobs() {
+async function _fetchTeamJobs(force, clusterName) {
+  const isSingleCluster = !!clusterName;
   try {
-    const res = await fetchWithTimeout('/api/team_jobs');
+    const url = '/api/team_jobs' + _computeClusterQuery(clusterName, force);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
-    if (data.status === 'ok') _teamJobsData = data;
+    if (data.status === 'ok') {
+      _teamJobsData = isSingleCluster
+        ? _mergeClusterPayload(_teamJobsData, data, clusterName)
+        : data;
+    }
   } catch (_) {}
 }
 
 async function refreshTeamJobs() {
-  await _fetchTeamJobs();
+  await _fetchTeamJobs(true);
   if (_pppAllocData) _renderPppAllocations(_pppAllocData);
 }
 

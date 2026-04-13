@@ -171,16 +171,17 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
     Returns per-cluster, per-account allocation and consumption data
     from the last 24 hours of account_gpus_hourly documents.
     """
-    cache_key = "ppp_alloc"
+    accts = accounts or PPP_ACCOUNTS
+    if not accts:
+        return {"clusters": {}}
+
+    cluster_key = ",".join(sorted(clusters or [])) or "all"
+    cache_key = f"ppp_alloc:{','.join(sorted(accts))}:{cluster_key}"
     if not force:
         cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
         if cached is not None:
             _stamp_team_alloc(cached)
             return cached
-
-    accts = accounts or PPP_ACCOUNTS
-    if not accts:
-        return {"clusters": {}}
 
     os_clusters = _os_cluster_names(clusters)
 
@@ -545,15 +546,18 @@ def get_user_overlay(users=None, accounts=None, clusters=None, force=False):
     Used to overlay 'my usage' and 'team usage' on the PPP allocation bars.
     Returns {cluster: {account: {user: gpus_consumed}}}.
     """
-    cache_key = f"user_overlay_{','.join(sorted(users or []))}"
+    accts = accounts or PPP_ACCOUNTS
+    if not accts or not users:
+        return {"clusters": {}}
+
+    cluster_key = ",".join(sorted(clusters or [])) or "all"
+    user_key = ",".join(sorted(users or []))
+    acct_key = ",".join(sorted(accts))
+    cache_key = f"user_overlay:{user_key}:{acct_key}:{cluster_key}"
     if not force:
         cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
         if cached is not None:
             return cached
-
-    accts = accounts or PPP_ACCOUNTS
-    if not accts or not users:
-        return {"clusters": {}}
 
     os_clusters = _os_cluster_names(clusters)
 
@@ -629,12 +633,12 @@ def get_user_overlay(users=None, accounts=None, clusters=None, force=False):
     return result
 
 
-def get_team_overlay(force=False):
+def get_team_overlay(clusters=None, force=False):
     """Get overlay data for the current user and their team members."""
     from .config import DEFAULT_USER
     team_members = _get_team_members()
     all_users = list(set([DEFAULT_USER] + team_members))
-    data = get_user_overlay(users=all_users, force=force)
+    data = get_user_overlay(users=all_users, clusters=clusters, force=force)
     data["current_user"] = DEFAULT_USER
     data["team_members"] = team_members
     data["team_name"] = TEAM_NAME
@@ -653,7 +657,8 @@ def get_my_fairshare(user=None, accounts=None, clusters=None, force=False):
     if not accts:
         return {"user": user, "clusters": {}}
 
-    cache_key = f"my_fs_{user}"
+    cluster_key = ",".join(sorted(clusters or [])) or "all"
+    cache_key = f"my_fs:{user}:{','.join(sorted(accts))}:{cluster_key}"
     if not force:
         cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
         if cached is not None:

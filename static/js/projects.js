@@ -277,6 +277,7 @@ function _buildProjGroups(rows) {
     jobid: r.job_id, name: r.job_name || '', state: r.state || '',
     elapsed: r.elapsed || '', nodes: r.nodes || '', gres: r.gres || '',
     partition: r.partition || '', submitted: r.submitted || '',
+    account: r.account || '', campaign: r.campaign || '',
     started: r.started || '', started_local: r.started_local || '',
     ended_local: r.ended_local || '', ended_at: r.ended_at || '',
     depends_on: r.depends_on || [], dependents: r.dependents || [],

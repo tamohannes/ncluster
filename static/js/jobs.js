@@ -440,6 +440,8 @@ function renderCard(name, data) {
   } else {
     const groupEntries = groupJobsByDependency(jobs);
     const allGroupKeys = groupEntries.map(([gk]) => gk);
+    const groupKeyCounts = {};
+    for (const [gk] of groupEntries) groupKeyCounts[gk] = (groupKeyCounts[gk] || 0) + 1;
     const gkHL = computeNameHighlight(allGroupKeys);
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
@@ -454,6 +456,7 @@ function renderCard(name, data) {
       const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
       const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
+      const attemptBadge = groupKeyCounts[gk] > 1 ? runAttemptBadge(rootJob) : '';
       const runBadge = name !== 'local'
         ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
         : highlightedGk;
@@ -482,7 +485,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${summaryHtml}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${_projBadge} ${summaryHtml}</span>`;
 
       const jobNames = groupJobs.map(j => j.name || '');
       const jnHL = computeNameHighlight(jobNames);

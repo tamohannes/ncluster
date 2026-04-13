@@ -518,6 +518,7 @@ main { padding: 14px 16px 40px; }
 }
 .icon-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 .icon-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-bg); }
+.icon-btn:disabled { opacity: 0.45; cursor: default; }
 
 /* ── Job table ── */
 .card-body { overflow-x: auto; }
@@ -1637,6 +1638,13 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   color: var(--text); outline: none;
 }
 .history-filter select:focus, .history-filter input:focus { border-color: var(--accent); }
+.history-filter .hist-select-wide { min-width: 130px; }
+.history-filter .hist-inline-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
 
 .hist-state-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hist-state-btn {
@@ -2838,7 +2846,7 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .ppp-card-dim { opacity: 0.45; }
 .ppp-card-dim:hover { opacity: 0.8; }
 .ppp-card-head {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+  display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap;
 }
 .ppp-card-cluster {
   font-family: var(--mono); font-size: 15px; font-weight: 700;
@@ -2852,8 +2860,9 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 }
 .ppp-card-scale-label {
   font-family: var(--mono); font-size: 9px; color: var(--muted);
-  font-style: italic; margin-left: auto;
+  font-style: italic;
 }
+.ppp-refresh-btn.is-loading { color: var(--accent); }
 .ppp-card-live {
   font-family: var(--mono); font-size: 10px; color: var(--muted);
   margin-bottom: 12px;

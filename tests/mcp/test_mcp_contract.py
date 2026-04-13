@@ -199,8 +199,28 @@ class TestGetHistory:
 
     def test_passes_filters(self):
         with patch("server.db.get_history", return_value=[]) as mock_hist:
-            get_history(cluster="c1", project="alpha", limit=10)
-        mock_hist.assert_called_once_with("c1", 10, project="alpha")
+            get_history(
+                cluster="c1",
+                project="alpha",
+                campaign="mpsf,text",
+                state="FAILED,RUNNING",
+                partition="p-h100",
+                account="research_team_alpha",
+                search="eval",
+                days=7,
+                limit=10,
+            )
+        mock_hist.assert_called_once_with(
+            "c1",
+            10,
+            project="alpha",
+            search="eval",
+            state="FAILED,RUNNING",
+            campaign="mpsf,text",
+            partition="p-h100",
+            account="research_team_alpha",
+            days=7,
+        )
 
 
 # ── cancel_job ───────────────────────────────────────────────────────────────

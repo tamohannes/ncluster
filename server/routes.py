@@ -52,6 +52,8 @@ from .jobs import (
     schedule_prefetch,
     get_job_stats_cached,
     create_run_on_demand,
+    fetch_team_jobs,
+    fetch_team_usage,
 )
 from .poller import get_poller, get_version, touch_demand
 from .db import get_run_with_jobs
@@ -364,23 +366,35 @@ def api_progress():
 
 @api.route("/api/team_usage", methods=["POST"])
 def api_team_usage():
-    """Return team GPU usage from cache/DB only — poller refreshes data."""
+    """Return cached team GPU usage; hydrate only on explicit force."""
     payload = request.get_json(silent=True) or {}
     cluster_list = payload.get("clusters", [])
+    force = bool(payload.get("force")) or request.args.get("force") == "1"
     if not cluster_list:
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    for c in cluster_list:
-        if c not in CLUSTERS or c == "local":
-            continue
-        tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC)
-        if tu:
-            results[c] = tu
-        else:
-            db_val = cache_db_get("team_usage", c)
-            if db_val:
-                results[c] = db_val
+    if force:
+        for c in cluster_list:
+            if c not in CLUSTERS or c == "local":
+                continue
+            try:
+                tu = fetch_team_usage(c)
+            except Exception:
+                _log.exception("team_usage fetch failed for %s", c)
+                tu = None
+            if tu:
+                results[c] = tu
+    else:
+        db_team = cache_db_get_all("team_usage")
+        for c in cluster_list:
+            if c not in CLUSTERS or c == "local":
+                continue
+            tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC) or db_team.get(c)
+            if tu is None:
+                tu, _ = cache_db_get_stale("team_usage", c)
+            if tu:
+                results[c] = tu
 
     from .config import TEAM_GPU_ALLOC
     return jsonify({"status": "ok", "team_usage": results, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
@@ -388,21 +402,34 @@ def api_team_usage():
 
 @api.route("/api/team_jobs")
 def api_team_jobs():
-    """Return cached team job data — poller refreshes in background."""
+    """Return cached team job data; hydrate only on explicit force."""
     from .jobs import _team_jobs_cache, TEAM_JOBS_TTL_SEC
     cluster_filter = request.args.get("cluster", "")
+    force = request.args.get("force") == "1"
     if cluster_filter:
         cluster_list = [c.strip() for c in cluster_filter.split(",") if c.strip()]
     else:
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    for c in cluster_list:
-        if c not in CLUSTERS or c == "local":
-            continue
-        cached = _cache_get(_team_jobs_cache, c, TEAM_JOBS_TTL_SEC)
-        if cached is not None:
-            results[c] = cached
+    if force:
+        for c in cluster_list:
+            if c not in CLUSTERS or c == "local":
+                continue
+            try:
+                fetched = fetch_team_jobs(c)
+            except Exception:
+                _log.exception("team_jobs fetch failed for %s", c)
+                fetched = None
+            if fetched is not None:
+                results[c] = fetched
+    else:
+        for c in cluster_list:
+            if c not in CLUSTERS or c == "local":
+                continue
+            cached = _cache_get(_team_jobs_cache, c, TEAM_JOBS_TTL_SEC)
+            if cached is not None:
+                results[c] = cached
 
     return jsonify({"status": "ok", "clusters": results})
 
@@ -782,10 +809,32 @@ def api_retry_run_meta(cluster, root_job_id):
 
 @api.route("/api/history")
 def api_history():
+    def _csv_arg(name):
+        values = []
+        for raw in request.args.getlist(name):
+            values.extend(part.strip() for part in raw.split(",") if part.strip())
+        return ",".join(values)
+
     cluster = request.args.get("cluster", "all")
     limit = int(request.args.get("limit", 200))
     project = request.args.get("project", "")
-    rows = get_history(cluster, limit, project=project)
+    campaign = request.args.get("campaign", "")
+    partition = request.args.get("partition", "")
+    account = request.args.get("account", "")
+    search = request.args.get("q", "").strip() or request.args.get("search", "").strip()
+    state = _csv_arg("state")
+    days = request.args.get("days", "")
+    rows = get_history(
+        cluster,
+        limit,
+        project=project,
+        search=search,
+        state=state,
+        campaign=campaign,
+        partition=partition,
+        account=account,
+        days=days,
+    )
     for r in rows:
         if not r.get("project"):
             r["project"] = extract_project(r.get("job_name") or r.get("name") or "")
@@ -793,6 +842,8 @@ def api_history():
         if proj:
             r["project_color"] = get_project_color(proj)
             r["project_emoji"] = get_project_emoji(proj)
+            _jn = r.get("job_name") or r.get("name") or ""
+            r["campaign"] = extract_campaign(_jn, proj)
     return jsonify(rows)
 
 
@@ -1263,9 +1314,52 @@ def api_partitions_cluster(cluster):
     return jsonify({"status": "ok", "cluster": cluster, "partitions": data})
 
 
+def _partition_summary_for_cluster(cluster_name, parts):
+    accessible = [p for p in parts if p.get("user_accessible", True) and p.get("state") == "UP"]
+    gpu_parts = [
+        p for p in accessible
+        if not p["name"].startswith("cpu") and p["name"] not in ("defq", "fake")
+    ]
+    total_nodes = max((p.get("total_nodes", 0) for p in gpu_parts), default=0)
+    cluster_gpus_fallback = CLUSTERS.get(cluster_name, {}).get("gpus_per_node", 0)
+
+    part_list = []
+    for p in gpu_parts:
+        gpn = p.get("gpus_per_node", 0) or cluster_gpus_fallback
+        part_list.append({
+            "name": p["name"],
+            "max_time": p["max_time"],
+            "priority_tier": p.get("priority_tier", 0),
+            "total_nodes": p.get("total_nodes", 0),
+            "idle_nodes": p.get("idle_nodes", 0),
+            "pending_jobs": p.get("pending_jobs", 0),
+            "gpus_per_node": gpn,
+            "preemptable": p.get("preempt_mode", "OFF") != "OFF",
+        })
+
+    return {
+        "gpu_partitions": len(gpu_parts),
+        "total_nodes": total_nodes,
+        "idle_nodes": max((p.get("idle_nodes", 0) for p in gpu_parts), default=0),
+        "pending_jobs": sum(p.get("pending_jobs", 0) for p in gpu_parts),
+        "gpu_type": CLUSTERS.get(cluster_name, {}).get("gpu_type", ""),
+        "partitions": part_list,
+    }
+
+
 @api.route("/api/partition_summary")
 def api_partition_summary():
-    data = get_partition_summary()
+    cluster = request.args.get("cluster", "").strip()
+    force = request.args.get("force", "0") == "1"
+    if cluster:
+        if cluster not in CLUSTERS:
+            return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+        if cluster == "local":
+            return jsonify({"status": "error", "error": "No partitions for local"}), 400
+        parts = _get_partitions(cluster, force=force) or []
+        data = {cluster: _partition_summary_for_cluster(cluster, parts)}
+    else:
+        data = get_partition_summary()
     return jsonify({"status": "ok", "clusters": data})
 
 
@@ -1310,9 +1404,11 @@ from .aihub import (
 def api_aihub_allocations():
     accounts = request.args.get("accounts", "")
     acct_list = [a.strip() for a in accounts.split(",") if a.strip()] or None
+    cluster = request.args.get("cluster", "")
+    clusters = [c.strip() for c in cluster.split(",") if c.strip()] or None
     force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_alloc(accounts=acct_list, force=force)
+        data = _aihub_alloc(accounts=acct_list, clusters=clusters, force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
@@ -1359,9 +1455,11 @@ def api_aihub_occupancy():
 
 @api.route("/api/aihub/team_overlay")
 def api_aihub_team_overlay():
+    cluster = request.args.get("cluster", "")
+    clusters = [c.strip() for c in cluster.split(",") if c.strip()] or None
     force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_team_overlay(force=force)
+        data = _aihub_team_overlay(clusters=clusters, force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
@@ -1369,9 +1467,11 @@ def api_aihub_team_overlay():
 
 @api.route("/api/aihub/my_fairshare")
 def api_aihub_my_fairshare():
+    cluster = request.args.get("cluster", "")
+    clusters = [c.strip() for c in cluster.split(",") if c.strip()] or None
     force = request.args.get("force", "0") == "1"
     try:
-        data = _aihub_my_fairshare(force=force)
+        data = _aihub_my_fairshare(clusters=clusters, force=force)
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500

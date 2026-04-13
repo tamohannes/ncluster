@@ -199,10 +199,33 @@ def get_run_info(cluster: str, root_job_id: str) -> dict:
 
 
 @mcp.tool()
-def get_history(cluster: Optional[str] = None, project: Optional[str] = None, limit: int = 50) -> list[dict]:
-    """Get past job history, optionally filtered by cluster and/or project."""
+def get_history(
+    cluster: Optional[str] = None,
+    project: Optional[str] = None,
+    campaign: Optional[str] = None,
+    state: Optional[str] = None,
+    partition: Optional[str] = None,
+    account: Optional[str] = None,
+    search: Optional[str] = None,
+    days: Optional[int] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Get past job history, filterable by cluster, project, campaign, state, partition, account, search, and recent days.
+
+    String filters accept a single value. ``state`` and ``campaign`` also accept comma-separated values.
+    """
     from server.db import get_history as _db_history
-    rows = _db_history(cluster or "all", limit, project=project or "")
+    rows = _db_history(
+        cluster or "all",
+        limit,
+        project=project or "",
+        search=search or "",
+        state=state or "",
+        campaign=campaign or "",
+        partition=partition or "",
+        account=account or "",
+        days=days,
+    )
     for r in rows:
         if not r.get("project"):
             r["project"] = extract_project(r.get("job_name") or r.get("name") or "")

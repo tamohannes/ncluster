@@ -1,5 +1,6 @@
 """Integration tests for /api/history and /api/cleanup routes."""
 
+from datetime import datetime, timedelta
 import json
 import pytest
 
@@ -46,6 +47,42 @@ class TestApiHistory:
         matching = [r for r in data if r.get("project") == "colorproj"]
         assert len(matching) >= 1
         assert matching[0].get("project_color") == "#aabbcc"
+
+    def test_get_history_campaign_state_and_days_filters(self, client, db_path, monkeypatch):
+        from server.config import PROJECTS
+
+        monkeypatch.setitem(PROJECTS, "alpha", {"prefix": "alpha_"})
+        now = datetime.now()
+        upsert_job("c1", {
+            "jobid": "10",
+            "name": "alpha_mpsf_eval-math",
+            "state": "COMPLETED",
+            "partition": "p-h100",
+            "account": "research_team_alpha",
+            "ended_at": now.isoformat(),
+        })
+        upsert_job("c1", {
+            "jobid": "11",
+            "name": "alpha_text_eval-gpqa",
+            "state": "FAILED",
+            "partition": "p-h100",
+            "account": "research_team_alpha",
+            "ended_at": now.isoformat(),
+        })
+        upsert_job("c1", {
+            "jobid": "12",
+            "name": "alpha_mpsf_eval-chem",
+            "state": "COMPLETED",
+            "partition": "p-h100",
+            "account": "research_team_alpha",
+            "ended_at": (now - timedelta(days=10)).isoformat(),
+        })
+
+        resp = client.get("/api/history?campaign=mpsf&state=COMPLETED&days=7&account=research_team_alpha")
+        data = resp.get_json()
+
+        assert [row["job_id"] for row in data] == ["10"]
+        assert data[0]["campaign"] == "mpsf"
 
 
 @pytest.mark.integration
