@@ -185,4 +185,9 @@ def _fetch_quota_uncached(cluster):
         _cache[cluster] = result
 
     out = {k: v for k, v in result.items() if k != "_ts"}
+    try:
+        from .db import cache_db_put
+        cache_db_put("storage_quota", cluster, out, QUOTA_CACHE_TTL_SEC)
+    except Exception:
+        pass
     return out

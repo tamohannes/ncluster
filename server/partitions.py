@@ -263,7 +263,10 @@ def get_partitions(cluster_name, force=False):
         if rec and not force and (now - rec["ts"]) < PARTITION_CACHE_TTL_SEC:
             return rec["data"]
         if cluster_name in _refreshing_clusters:
-            return rec["data"] if rec else None
+            if rec:
+                return rec["data"]
+            from .db import cache_db_get
+            return cache_db_get("partitions", cluster_name)
         _refreshing_clusters.add(cluster_name)
 
     try:
@@ -271,10 +274,18 @@ def get_partitions(cluster_name, force=False):
         if data is not None:
             with _lock:
                 _cache[cluster_name] = {"ts": time.monotonic(), "data": data}
+            try:
+                from .db import cache_db_put
+                cache_db_put("partitions", cluster_name, data, PARTITION_CACHE_TTL_SEC * 2)
+            except Exception:
+                pass
             return data
         with _lock:
             rec = _cache.get(cluster_name)
-            return rec["data"] if rec else None
+        if rec:
+            return rec["data"]
+        from .db import cache_db_get
+        return cache_db_get("partitions", cluster_name)
     finally:
         with _lock:
             _refreshing_clusters.discard(cluster_name)
@@ -303,7 +314,7 @@ def get_all_partitions(force=False):
 
 
 def get_all_partitions_cached():
-    """Return whatever partition data is in cache right now (no SSH).
+    """Return partition data from memory or DB (no SSH).
 
     Kicks off a background refresh for stale clusters so the next call
     gets fresh data.
@@ -321,7 +332,16 @@ def get_all_partitions_cached():
                     stale.append(n)
             else:
                 stale.append(n)
+
     if stale:
+        try:
+            from .db import cache_db_get_all
+            db_parts = cache_db_get_all("partitions")
+            for n in list(stale):
+                if n in db_parts:
+                    result[n] = db_parts[n]
+        except Exception:
+            pass
         threading.Thread(target=_refresh_stale, args=(stale,), daemon=True).start()
     return result
 

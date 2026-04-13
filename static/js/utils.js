@@ -623,15 +623,16 @@ function lightenColor(hex, lightness) {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   if (_isDarkTheme()) {
-    const mix = lightness || 0.15;
+    const mix = lightness || (0.12 + lum * 0.08);
     const br = 0x1c, bg = 0x1c, bb = 0x28;
     const lr = Math.round(br + (r - br) * mix);
     const lg = Math.round(bg + (g - bg) * mix);
     const lb = Math.round(bb + (b - bb) * mix);
     return `rgb(${lr},${lg},${lb})`;
   }
-  const t = lightness || 0.92;
+  const t = lightness || (lum > 0.75 ? 0.82 : 0.92);
   const lr = Math.round(r + (255 - r) * t);
   const lg = Math.round(g + (255 - g) * t);
   const lb = Math.round(b + (255 - b) * t);
@@ -718,9 +719,9 @@ function _campaignHash(str) {
 function campaignShade(hexColor, campaign) {
   if (!hexColor || !campaign || !hexColor.startsWith('#')) return hexColor;
   const [h, s, l] = _hexToHSL(hexColor);
-  const idx = _campaignHash(campaign) % 11;
-  const hueShift = (idx - 5) * 9;
-  const lightShift = ((idx % 5) - 2) * 0.045;
+  const idx = _campaignHash(campaign) % 7;
+  const hueShift = (idx - 3) * 5;
+  const lightShift = ((idx % 3) - 1) * 0.02;
   return _hslToHex(h + hueShift, s, l + lightShift);
 }
 

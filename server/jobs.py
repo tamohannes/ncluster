@@ -27,6 +27,7 @@ from .db import (
     upsert_job, get_db, get_board_pinned,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
     upsert_jobs_batch,
+    replace_live_jobs, set_cluster_state, cache_db_put,
 )
 from .logs import (
     get_job_log_files, fetch_log_tail, extract_progress, detect_crash,
@@ -350,6 +351,10 @@ def get_job_stats_cached(cluster, job_id, force=False):
     value = get_job_stats(cluster, str(job_id))
     if value.get("status") == "ok":
         _cache_set(_stats_cache, key, value)
+        try:
+            cache_db_put("stats", f"{cluster}:{job_id}", value, STATS_TTL_SEC)
+        except Exception:
+            pass
     return value
 
 
@@ -752,6 +757,21 @@ def poll_cluster(name):
                 prev["updated"] = data["updated"]
             else:
                 _cache[name] = data
+        try:
+            has_live = bool(prev.get("jobs"))
+            if not has_live:
+                con = get_db()
+                has_live = bool(con.execute(
+                    "SELECT 1 FROM live_jobs WHERE cluster=? LIMIT 1", (name,),
+                ).fetchone())
+                con.close()
+            if not has_live:
+                set_cluster_state(name, "error", data["updated"], last_error=data.get("error"))
+            # When we have existing live data, don't touch cluster_state —
+            # the last known good state stays in the DB untouched.
+            # Transient failures (semaphore, DNS) won't cause UI flicker.
+        except Exception:
+            pass
         return
 
     _enrich_missing_gres(name, data.get("jobs", []))
@@ -763,6 +783,12 @@ def poll_cluster(name):
         prev_jobs = {j["jobid"]: j for j in _cache.get(name, {}).get("jobs", [])}
         _cache[name] = data
         _seen_jobs[name] = current_ids
+
+    try:
+        replace_live_jobs(name, data.get("jobs", []))
+        set_cluster_state(name, "ok", data["updated"])
+    except Exception:
+        pass
 
     gone_ids = prev_ids - current_ids
     if gone_ids:
@@ -1178,10 +1204,20 @@ def _extract_progress_with_source(cluster, job_id, files):
         crash = detect_crash(content)
         if crash is not None:
             _cache_set(_crash_cache, (cluster, job_id), crash)
+            try:
+                cache_db_put("crash", f"{cluster}:{job_id}", crash, CRASH_TTL_SEC)
+            except Exception:
+                pass
         if pct is not None:
             _cache_set(_progress_cache, (cluster, job_id), pct)
-            _cache_set(_progress_source_cache, (cluster, job_id), f.get("label", ""))
-            return pct, f.get("label", "")
+            src = f.get("label", "")
+            _cache_set(_progress_source_cache, (cluster, job_id), src)
+            try:
+                cache_db_put("progress", f"{cluster}:{job_id}", pct, PROGRESS_TTL_SEC)
+                cache_db_put("progress_source", f"{cluster}:{job_id}", src, PROGRESS_TTL_SEC)
+            except Exception:
+                pass
+            return pct, src
     return None, ""
 
 
@@ -1308,6 +1344,10 @@ def _prefetch_job_data(cluster, job_id):
             if stats.get("status") == "ok":
                 _cache_set(_stats_cache, (cluster, job_id), stats)
                 _save_stats_snapshot(cluster, job_id, stats)
+                try:
+                    cache_db_put("stats", f"{cluster}:{job_id}", stats, STATS_TTL_SEC)
+                except Exception:
+                    pass
         except Exception:
             pass
     finally:
@@ -1337,6 +1377,10 @@ def fetch_est_start_bulk(cluster, pending_job_ids):
         jid, start = parts[0].strip(), parts[1].strip()
         if start and start not in ("N/A", "Unknown", "(null)"):
             _cache_set(_est_start_cache, (cluster, jid), start)
+            try:
+                cache_db_put("est_start", f"{cluster}:{jid}", start, EST_START_TTL_SEC)
+            except Exception:
+                pass
 
 
 _detected_accounts = {}
@@ -1418,6 +1462,11 @@ def fetch_team_usage(cluster):
         "total_pending_gpus": total_pending,
     }
     _cache_set(_team_usage_cache, cluster, result)
+    try:
+        from .config import TEAM_USAGE_TTL_SEC as _tu_ttl
+        cache_db_put("team_usage", cluster, result, _tu_ttl)
+    except Exception:
+        pass
     return result
 
 
@@ -1587,13 +1636,18 @@ squeue -u $USER -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
                 existing = _cache_get(_stats_cache, (cluster, jid), STATS_TTL_SEC)
                 if existing and existing.get("status") == "ok" and not existing.get("_partial"):
                     continue
-                _cache_set(_stats_cache, (cluster, jid), {
+                partial = {
                     "status": "ok", "job_id": jid, "state": parts[1].strip(),
                     "nodes": parts[2].strip(), "cpus": parts[3].strip(),
                     "gres": parts[4].strip(), "node_list": parts[5].strip(),
                     "elapsed": parts[6].strip(), "gpus": [],
                     "ave_cpu": "", "ave_rss": "", "max_rss": "", "max_vmsize": "", "_partial": True,
-                })
+                }
+                _cache_set(_stats_cache, (cluster, jid), partial)
+                try:
+                    cache_db_put("stats", f"{cluster}:{jid}", partial, STATS_TTL_SEC)
+                except Exception:
+                    pass
 
     for jid in ids:
         from .logs import get_job_log_files

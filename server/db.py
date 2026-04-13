@@ -1,5 +1,6 @@
 """Database operations for job history."""
 
+import json as _json
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
@@ -269,6 +270,36 @@ def init_db():
         con.execute("ALTER TABLE wds_history ADD COLUMN occupancy_factor REAL")
     except Exception:
         pass
+
+    # ── v2 DB-first tables ────────────────────────────────────────────────
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS live_jobs (
+            cluster    TEXT NOT NULL,
+            job_id     TEXT NOT NULL,
+            data_json  TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (cluster, job_id)
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS cluster_state (
+            cluster    TEXT PRIMARY KEY,
+            status     TEXT NOT NULL DEFAULT 'ok',
+            updated    TEXT,
+            last_error TEXT
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS cache_store (
+            namespace  TEXT NOT NULL,
+            key        TEXT NOT NULL,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (namespace, key)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_store(expires_at)")
 
     con.commit()
     con.close()
@@ -753,3 +784,174 @@ def db_connection():
         yield con
     finally:
         con.close()
+
+
+# ─── DB-first v2: live board + persistent cache ──────────────────────────────
+
+def replace_live_jobs(cluster, jobs):
+    """Atomically replace all live jobs for a cluster."""
+    now = datetime.now().isoformat(timespec="seconds")
+    con = get_db()
+    con.execute("DELETE FROM live_jobs WHERE cluster=?", (cluster,))
+    if jobs:
+        con.executemany(
+            "INSERT INTO live_jobs (cluster, job_id, data_json, updated_at) VALUES (?, ?, ?, ?)",
+            [(cluster, j.get("jobid", ""), _json.dumps(j, default=str), now) for j in jobs],
+        )
+    con.commit()
+    con.close()
+
+
+def get_live_board():
+    """Read full live board + cluster states from DB.
+
+    Returns (board_dict, states_dict) where:
+      board_dict  = {cluster: [job_dicts]}
+      states_dict = {cluster: {"status", "updated", "last_error"}}
+    """
+    con = get_db()
+    rows = con.execute("SELECT cluster, data_json FROM live_jobs").fetchall()
+    states = con.execute("SELECT cluster, status, updated, last_error FROM cluster_state").fetchall()
+    con.close()
+
+    board = {}
+    for row in rows:
+        board.setdefault(row["cluster"], []).append(_json.loads(row["data_json"]))
+
+    state_dict = {}
+    for s in states:
+        state_dict[s["cluster"]] = {
+            "status": s["status"],
+            "updated": s["updated"],
+            "last_error": s["last_error"],
+        }
+    return board, state_dict
+
+
+def get_live_jobs_for_cluster(cluster):
+    """Read live jobs for one cluster. Returns (jobs_list, state_dict_or_None)."""
+    con = get_db()
+    rows = con.execute("SELECT data_json FROM live_jobs WHERE cluster=?", (cluster,)).fetchall()
+    state = con.execute(
+        "SELECT status, updated, last_error FROM cluster_state WHERE cluster=?", (cluster,),
+    ).fetchone()
+    con.close()
+    jobs = [_json.loads(r["data_json"]) for r in rows]
+    return jobs, (dict(state) if state else None)
+
+
+def set_cluster_state(cluster, status, updated, last_error=None):
+    """Upsert the poll state for a cluster."""
+    con = get_db()
+    if last_error is None:
+        con.execute("""
+            INSERT INTO cluster_state (cluster, status, updated)
+            VALUES (?, ?, ?)
+            ON CONFLICT(cluster) DO UPDATE SET
+                status=excluded.status, updated=excluded.updated, last_error=NULL
+        """, (cluster, status, updated))
+    else:
+        con.execute("""
+            INSERT INTO cluster_state (cluster, status, updated, last_error)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(cluster) DO UPDATE SET
+                status=excluded.status, updated=excluded.updated,
+                last_error=excluded.last_error
+        """, (cluster, status, updated, last_error))
+    con.commit()
+    con.close()
+
+
+def cache_db_put(namespace, key, value, ttl_sec):
+    """Write a value to the persistent cache store with a TTL."""
+    now = datetime.now()
+    expires = now + timedelta(seconds=ttl_sec)
+    con = get_db()
+    con.execute("""
+        INSERT INTO cache_store (namespace, key, value_json, updated_at, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(namespace, key) DO UPDATE SET
+            value_json=excluded.value_json,
+            updated_at=excluded.updated_at,
+            expires_at=excluded.expires_at
+    """, (namespace, key, _json.dumps(value, default=str),
+          now.isoformat(timespec="seconds"),
+          expires.isoformat(timespec="seconds")))
+    con.commit()
+    con.close()
+
+
+def cache_db_get(namespace, key):
+    """Read a non-expired value from cache store. Returns None if missing/expired."""
+    con = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    row = con.execute(
+        "SELECT value_json FROM cache_store WHERE namespace=? AND key=? AND expires_at>?",
+        (namespace, key, now),
+    ).fetchone()
+    con.close()
+    return _json.loads(row["value_json"]) if row else None
+
+
+def cache_db_get_stale(namespace, key):
+    """Read from cache store even if expired.
+
+    Returns (value, is_fresh) or (None, False) if not found.
+    """
+    con = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    row = con.execute(
+        "SELECT value_json, expires_at FROM cache_store WHERE namespace=? AND key=?",
+        (namespace, key),
+    ).fetchone()
+    con.close()
+    if row:
+        return _json.loads(row["value_json"]), row["expires_at"] > now
+    return None, False
+
+
+def cache_db_get_all(namespace):
+    """Read all non-expired entries for a namespace. Returns {key: value}."""
+    con = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = con.execute(
+        "SELECT key, value_json FROM cache_store WHERE namespace=? AND expires_at>?",
+        (namespace, now),
+    ).fetchall()
+    con.close()
+    return {r["key"]: _json.loads(r["value_json"]) for r in rows}
+
+
+def cache_db_get_all_multi(namespaces):
+    """Read all non-expired entries for multiple namespaces in one query.
+
+    Returns {namespace: {key: value}}.
+    """
+    if not namespaces:
+        return {}
+    con = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    ph = ",".join("?" for _ in namespaces)
+    rows = con.execute(
+        f"SELECT namespace, key, value_json FROM cache_store WHERE namespace IN ({ph}) AND expires_at>?",
+        list(namespaces) + [now],
+    ).fetchall()
+    con.close()
+    result = {ns: {} for ns in namespaces}
+    for r in rows:
+        result[r["namespace"]][r["key"]] = _json.loads(r["value_json"])
+    return result
+
+
+def cache_db_gc():
+    """Remove expired cache entries and stale live_jobs for removed clusters."""
+    from .config import CLUSTERS
+    con = get_db()
+    now = datetime.now().isoformat(timespec="seconds")
+    con.execute("DELETE FROM cache_store WHERE expires_at<?", (now,))
+    if CLUSTERS:
+        ph = ",".join("?" for _ in CLUSTERS)
+        con.execute(f"DELETE FROM live_jobs WHERE cluster NOT IN ({ph})", list(CLUSTERS.keys()))
+        con.execute(f"DELETE FROM cluster_state WHERE cluster NOT IN ({ph})", list(CLUSTERS.keys()))
+    con.commit()
+    con.close()

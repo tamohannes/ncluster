@@ -33,6 +33,9 @@ from .db import (
     dismiss_job, dismiss_by_state_prefix,
     get_history, get_projects, get_db,
     _restore_dependency_fields,
+    get_live_board, get_live_jobs_for_cluster,
+    cache_db_get, cache_db_get_stale, cache_db_get_all, cache_db_get_all_multi,
+    cache_db_put,
 )
 from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout, get_circuit_breaker_status
 from .mounts import (
@@ -65,7 +68,7 @@ def _handle_unhandled(exc):
 
 _active_requests = 0
 _active_lock = threading.Lock()
-_MAX_ACTIVE = 28
+_MAX_ACTIVE = 20
 
 _HEAVY_PREFIXES = (
     "/api/aihub/", "/api/team_jobs", "/api/team_usage",
@@ -193,14 +196,36 @@ def index():
 def api_jobs():
     refresh_all_clusters()
 
-    with _cache_lock:
-        snapshot = {k: dict(v) for k, v in _cache.items()}
+    board, states = get_live_board()
+
+    snapshot = {}
+    for name in CLUSTERS:
+        st = states.get(name, {})
+        jobs = list(board.get(name, []))
+        entry = {
+            "status": st.get("status", "ok"),
+            "jobs": jobs,
+            "updated": st.get("updated"),
+        }
+        err = st.get("last_error")
+        if err:
+            if st.get("status") == "error":
+                entry["error"] = err
+            else:
+                entry["last_error"] = err
+        snapshot[name] = entry
 
     all_pinned = get_board_pinned()
     pinned_by_cluster = {}
     for row in all_pinned:
         c = row["cluster"]
         pinned_by_cluster.setdefault(c, []).append(row)
+
+    overlays = cache_db_get_all_multi(["progress", "progress_source", "crash", "est_start"])
+    db_progress = overlays["progress"]
+    db_progress_src = overlays["progress_source"]
+    db_crash = overlays["crash"]
+    db_est_start = overlays["est_start"]
 
     for name in list(CLUSTERS.keys()):
         if name not in snapshot:
@@ -222,18 +247,19 @@ def api_jobs():
         for j in data.get("jobs", []):
             st = j.get("state", "").upper()
             jid = j.get("jobid")
+            ck = f"{name}:{jid}"
             if st in ("RUNNING", "COMPLETING"):
-                pct = _cache_get(_progress_cache, (name, jid), PROGRESS_TTL_SEC)
+                pct = _cache_get(_progress_cache, (name, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
                 if pct is not None:
                     j["progress"] = pct
-                    src = _cache_get(_progress_source_cache, (name, jid), PROGRESS_TTL_SEC)
+                    src = _cache_get(_progress_source_cache, (name, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
                     if src:
                         j["progress_source"] = src
-                crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC)
+                crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC) or db_crash.get(ck)
                 if crash:
                     j["crash_detected"] = crash
             if st == "PENDING":
-                est = _cache_get(_est_start_cache, (name, jid), EST_START_TTL_SEC)
+                est = _cache_get(_est_start_cache, (name, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
                 if est:
                     j["est_start"] = est
             if not j.get("project"):
@@ -403,8 +429,20 @@ def api_jobs_cluster(cluster):
     if request.args.get("force") == "1":
         _last_polled[cluster] = 0.0
     refresh_cluster(cluster)
-    with _cache_lock:
-        data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
+
+    jobs, st = get_live_jobs_for_cluster(cluster)
+    data = {
+        "status": (st or {}).get("status", "ok"),
+        "jobs": list(jobs),
+        "updated": (st or {}).get("updated"),
+    }
+    err = (st or {}).get("last_error")
+    if err:
+        if (st or {}).get("status") == "error":
+            data["error"] = err
+        else:
+            data["last_error"] = err
+
     if data.get("status") == "ok":
         live_ids = {j["jobid"] for j in data.get("jobs", [])}
         pinned = [
@@ -412,29 +450,35 @@ def api_jobs_cluster(cluster):
             for p in get_board_pinned(cluster) if p["job_id"] not in live_ids
         ]
         if pinned:
-            data = dict(data)
             data["jobs"] = data.get("jobs", []) + pinned
             _rebuild_cross_deps(data["jobs"])
         _fill_run_ids(cluster, data.get("jobs", []))
         data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
+
+        overlays = cache_db_get_all_multi(["progress", "progress_source", "crash", "est_start"])
+        db_progress = overlays["progress"]
+        db_progress_src = overlays["progress_source"]
+        db_crash = overlays["crash"]
+        db_est_start = overlays["est_start"]
+
         for j in data.get("jobs", []):
             s = str(j.get("state", "")).upper()
+            jid = j.get("jobid")
+            ck = f"{cluster}:{jid}"
             if s in {"RUNNING", "COMPLETING"} and not j.get("_pinned"):
-                schedule_prefetch(cluster, j.get("jobid"))
+                schedule_prefetch(cluster, jid)
             if s in ("RUNNING", "COMPLETING"):
-                jid = j.get("jobid")
-                pct = _cache_get(_progress_cache, (cluster, jid), PROGRESS_TTL_SEC)
+                pct = _cache_get(_progress_cache, (cluster, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
                 if pct is not None:
                     j["progress"] = pct
-                    src = _cache_get(_progress_source_cache, (cluster, jid), PROGRESS_TTL_SEC)
+                    src = _cache_get(_progress_source_cache, (cluster, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
                     if src:
                         j["progress_source"] = src
-                crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC)
+                crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC) or db_crash.get(ck)
                 if crash:
                     j["crash_detected"] = crash
             if s == "PENDING":
-                jid = j.get("jobid")
-                est = _cache_get(_est_start_cache, (cluster, jid), EST_START_TTL_SEC)
+                est = _cache_get(_est_start_cache, (cluster, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
                 if est:
                     j["est_start"] = est
             if not j.get("project"):
@@ -497,25 +541,33 @@ def api_progress():
     progress = {}
     progress_sources = {}
     est_starts = {}
+
+    _ov = cache_db_get_all_multi(["progress", "progress_source", "est_start"])
+    db_progress = _ov["progress"]
+    db_progress_src = _ov["progress_source"]
+    db_est_start = _ov["est_start"]
+
     for item in jobs:
         c = item.get("cluster")
         jid = str(item.get("job_id", "")).strip()
         if not c or not jid:
             continue
-        pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC)
+        ck = f"{c}:{jid}"
+        pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
         if pct is not None:
-            progress[f"{c}:{jid}"] = pct
-            src = _cache_get(_progress_source_cache, (c, jid), PROGRESS_TTL_SEC)
+            progress[ck] = pct
+            src = _cache_get(_progress_source_cache, (c, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
             if src:
-                progress_sources[f"{c}:{jid}"] = src
-        est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC)
+                progress_sources[ck] = src
+        est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
         if est:
-            est_starts[f"{c}:{jid}"] = est
+            est_starts[ck] = est
 
+    db_team = cache_db_get_all("team_usage")
     team_usage = {}
     seen_clusters = {item.get("cluster") for item in jobs if item.get("cluster")}
     for c in seen_clusters:
-        tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC)
+        tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC) or db_team.get(c)
         if tu:
             team_usage[c] = tu
 
@@ -525,30 +577,35 @@ def api_progress():
 
 @api.route("/api/team_usage", methods=["POST"])
 def api_team_usage():
-    """Fetch fresh team GPU usage for specified clusters (triggers SSH)."""
+    """Return team GPU usage from DB cache; refresh stale clusters in background."""
     payload = request.get_json(silent=True) or {}
     cluster_list = payload.get("clusters", [])
     if not cluster_list:
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    threads = []
-    import threading as _th
-    def _fetch(c):
-        try:
-            r = fetch_team_usage(c)
-            if r:
-                results[c] = r
-        except Exception:
-            pass
+    stale_clusters = []
     for c in cluster_list:
         if c not in CLUSTERS or c == "local":
             continue
-        t = _th.Thread(target=_fetch, args=(c,), daemon=True)
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join(timeout=25)
+        tu = _cache_get(_team_usage_cache, c, TEAM_USAGE_TTL_SEC)
+        if tu:
+            results[c] = tu
+        else:
+            db_val = cache_db_get("team_usage", c)
+            if db_val:
+                results[c] = db_val
+            else:
+                stale_clusters.append(c)
+
+    if stale_clusters:
+        def _bg():
+            for c in stale_clusters:
+                try:
+                    fetch_team_usage(c)
+                except Exception:
+                    pass
+        threading.Thread(target=_bg, daemon=True).start()
 
     from .config import TEAM_GPU_ALLOC
     return jsonify({"status": "ok", "team_usage": results, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
@@ -694,7 +751,20 @@ def api_stats(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     from .jobs import get_stats_snapshots
-    result = get_job_stats_cached(cluster, job_id)
+
+    db_val, is_fresh = cache_db_get_stale("stats", f"{cluster}:{job_id}")
+    if db_val and is_fresh and not db_val.get("_partial"):
+        result = db_val
+    elif db_val and not is_fresh:
+        result = dict(db_val)
+        result["_stale"] = True
+        threading.Thread(
+            target=lambda: get_job_stats_cached(cluster, job_id, force=True),
+            daemon=True,
+        ).start()
+    else:
+        result = get_job_stats_cached(cluster, job_id)
+
     snapshots = get_stats_snapshots(cluster, job_id)
     if isinstance(result, dict):
         result["snapshots"] = snapshots
@@ -1297,9 +1367,10 @@ def api_settings_post():
     if not patch or not isinstance(patch, dict):
         return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
 
-    from .config import _sync_config
-    _sync_config()
-    merged = dict(_CONFIG)
+    import copy
+    from . import config as _cfgmod
+    _cfgmod._sync_config()
+    merged = copy.deepcopy(_cfgmod._CONFIG)
     for key in ("port", "ssh_timeout", "cache_fresh_sec", "stats_interval_sec",
                 "backup_interval_hours", "backup_max_keep",
                 "log_search_bases", "nemo_run_bases", "mount_lustre_prefixes",
@@ -1373,6 +1444,15 @@ def api_user_avatar():
 def api_storage_quota(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    db_val, is_fresh = cache_db_get_stale("storage_quota", cluster)
+    if db_val and is_fresh:
+        return jsonify(db_val)
+    if db_val:
+        threading.Thread(
+            target=lambda: fetch_storage_quota(cluster),
+            daemon=True,
+        ).start()
+        return jsonify(db_val)
     data = fetch_storage_quota(cluster)
     return jsonify(data)
 
@@ -1394,10 +1474,9 @@ from .partitions import get_partitions as _get_partitions, get_all_partitions, g
 @api.route("/api/partitions")
 def api_partitions_all():
     force = request.args.get("force", "0") == "1"
+    data = get_all_partitions_cached()
     if force:
-        data = get_all_partitions(force=True)
-    else:
-        data = get_all_partitions_cached()
+        threading.Thread(target=lambda: get_all_partitions(force=True), daemon=True).start()
     return jsonify({"status": "ok", "clusters": data})
 
 
@@ -1408,8 +1487,13 @@ def api_partitions_cluster(cluster):
     if cluster == "local":
         return jsonify({"status": "error", "error": "No partitions for local"}), 400
     force = request.args.get("force", "0") == "1"
-    data = _get_partitions(cluster, force=force)
+    data = _get_partitions(cluster, force=False)
+    if force:
+        threading.Thread(target=lambda: _get_partitions(cluster, force=True), daemon=True).start()
     if data is None:
+        db_data = cache_db_get("partitions", cluster)
+        if db_data:
+            return jsonify({"status": "ok", "cluster": cluster, "partitions": db_data})
         return jsonify({"status": "error", "error": f"Could not fetch partitions from {cluster}"}), 502
     return jsonify({"status": "ok", "cluster": cluster, "partitions": data})
 

@@ -992,10 +992,15 @@ async function saveProjects() {
   for (const card of cards) {
     const name = (card.querySelector('[data-f="name"]').value || '').trim();
     if (!name) continue;
+    const hexInput = card.querySelector('[data-f="color-hex"]');
+    const pickerInput = card.querySelector('[data-f="color"]');
+    const color = (hexInput && /^#[0-9a-fA-F]{6}$/.test(hexInput.value.trim()))
+      ? hexInput.value.trim()
+      : (pickerInput ? pickerInput.value.trim() : '#e8f4fd');
     projects[name] = {
       prefix: card.querySelector('[data-f="prefix"]').value.trim(),
       emoji: card.querySelector('[data-f="emoji"]').value.trim(),
-      color: card.querySelector('[data-f="color"]').value.trim(),
+      color,
     };
   }
   try {
@@ -1007,6 +1012,11 @@ async function saveProjects() {
     const d = await res.json();
     if (d.status === 'ok') {
       toast('Projects saved');
+      if (d.settings && d.settings.projects) {
+        renderProjectEditor(d.settings.projects);
+      }
+      _projectColors = null;
+      loadProjectButtons();
       fetchAll();
     } else {
       toast(d.error || 'Save failed', 'error');

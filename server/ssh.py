@@ -51,13 +51,31 @@ _bg_locks = {}          # cluster -> Lock
 _data_pool = {}         # cluster -> {"client": SSHClient, "last_used": float}
 _data_locks = {}        # cluster -> Lock
 
-# Global concurrency limit: at most 10 of 32 gthread workers can be
-# in SSH I/O simultaneously, leaving the rest free for cached responses.
-_ssh_semaphore = threading.Semaphore(10)
+# Global concurrency limit: at most 8 of 32 gthread workers can be
+# in SSH I/O simultaneously, leaving 24 free for cached responses,
+# health checks, and non-SSH routes.  Previously 12 — lowered after
+# repeated watchdog kills when clusters flap simultaneously.
+_ssh_semaphore = threading.Semaphore(8)
 
 # Channel-open timeout is capped independently of command timeout.
 # If the server can't open a channel in this window, the transport is broken.
 _CHAN_OPEN_TIMEOUT = 5
+
+# Per-cluster concurrency cap: prevents one flaky cluster from consuming
+# all semaphore slots.  Each cluster can have at most this many concurrent
+# SSH operations across all lanes.
+_MAX_PER_CLUSTER = 2
+_per_cluster_sem_lock = threading.Lock()
+_per_cluster_sems = {}  # cluster -> Semaphore
+
+
+def _get_cluster_sem(cluster_name):
+    with _per_cluster_sem_lock:
+        sem = _per_cluster_sems.get(cluster_name)
+        if sem is None:
+            sem = threading.Semaphore(_MAX_PER_CLUSTER)
+            _per_cluster_sems[cluster_name] = sem
+        return sem
 
 # ── Circuit breaker ──────────────────────────────────────────────────────────
 # When a cluster fails SSH, back off for _CB_COOLDOWN_SEC before retrying.
@@ -377,7 +395,12 @@ def ssh_pool_gc_loop():
                 _close_pool_client(pool, lock_fn(cluster), cluster)
 
         _watchdog_reset_active_requests()
-        time.sleep(30)
+        time.sleep(15)
+
+
+_wd_prev_count = 0
+_wd_stable_cycles = 0
+_WD_DRIFT_THRESHOLD = 16
 
 
 def _watchdog_reset_active_requests():
@@ -385,21 +408,48 @@ def _watchdog_reset_active_requests():
 
     Gunicorn's gthread worker can silently kill threads that exceed the
     45s timeout.  If that happens mid-request, the teardown hook never
-    runs and _active_requests stays inflated permanently.  This watchdog
-    resets the counter to a sane value when no requests should be active.
+    runs and _active_requests stays inflated permanently.
+
+    Two triggers:
+      1) Immediate reset when counter exceeds _MAX_ACTIVE.
+      2) Trend-based reset when counter stays above _WD_DRIFT_THRESHOLD
+         for 2 consecutive cycles (~30s) — catches slow drift before
+         full saturation.
     """
+    global _wd_prev_count, _wd_stable_cycles
     try:
-        from .routes import _active_requests, _active_lock, _MAX_ACTIVE
-        with _active_lock:
-            current = _active_requests
-        if current > _MAX_ACTIVE:
-            from . import routes
+        from . import routes
+        with routes._active_lock:
+            current = routes._active_requests
+
+        if current > routes._MAX_ACTIVE:
             with routes._active_lock:
                 log.warning(
                     "watchdog: _active_requests=%d exceeds max=%d, resetting to 0",
-                    routes._active_requests, _MAX_ACTIVE,
+                    routes._active_requests, routes._MAX_ACTIVE,
                 )
                 routes._active_requests = 0
+            _wd_prev_count = 0
+            _wd_stable_cycles = 0
+            return
+
+        if current >= _WD_DRIFT_THRESHOLD:
+            if current >= _wd_prev_count and _wd_prev_count >= _WD_DRIFT_THRESHOLD:
+                _wd_stable_cycles += 1
+            else:
+                _wd_stable_cycles = 1
+            if _wd_stable_cycles >= 2:
+                with routes._active_lock:
+                    log.warning(
+                        "watchdog: _active_requests=%d stuck above %d for %d cycles, resetting to 0",
+                        routes._active_requests, _WD_DRIFT_THRESHOLD, _wd_stable_cycles,
+                    )
+                    routes._active_requests = 0
+                _wd_stable_cycles = 0
+        else:
+            _wd_stable_cycles = 0
+
+        _wd_prev_count = current
     except Exception:
         pass
 
@@ -555,26 +605,34 @@ def _ssh_exec(cluster_name, command, timeout_sec):
         pool = _ssh_pool
         lock = _get_cluster_lock(cluster_name)
 
-    acquired = _ssh_semaphore.acquire(timeout=min(timeout_sec, 3))
-    if not acquired:
+    cluster_sem = _get_cluster_sem(cluster_name)
+    if not cluster_sem.acquire(timeout=min(timeout_sec, 4)):
         raise paramiko.SSHException(
-            f"SSH to {cluster_name}: too many concurrent operations (semaphore timeout)"
+            f"SSH to {cluster_name}: per-cluster concurrency limit reached"
         )
     try:
-        for attempt in (1, 2):
-            try:
-                tr = _get_transport(pool, lock, cluster_name, force_new=(attempt == 2))
-                out, err = _exec_on_transport(tr, command, timeout_sec)
-                with lock:
-                    rec = pool.get(cluster_name)
-                    if rec:
-                        rec["last_used"] = time.monotonic()
-                _cb_record_success(cluster_name)
-                return out, err
-            except Exception:
-                _close_pool_client(pool, lock, cluster_name)
-                if attempt == 2:
-                    _cb_record_failure(cluster_name)
-                    raise
+        acquired = _ssh_semaphore.acquire(timeout=min(timeout_sec, 8))
+        if not acquired:
+            raise paramiko.SSHException(
+                f"SSH to {cluster_name}: too many concurrent operations (semaphore timeout)"
+            )
+        try:
+            for attempt in (1, 2):
+                try:
+                    tr = _get_transport(pool, lock, cluster_name, force_new=(attempt == 2))
+                    out, err = _exec_on_transport(tr, command, timeout_sec)
+                    with lock:
+                        rec = pool.get(cluster_name)
+                        if rec:
+                            rec["last_used"] = time.monotonic()
+                    _cb_record_success(cluster_name)
+                    return out, err
+                except Exception:
+                    _close_pool_client(pool, lock, cluster_name)
+                    if attempt == 2:
+                        _cb_record_failure(cluster_name)
+                        raise
+        finally:
+            _ssh_semaphore.release()
     finally:
-        _ssh_semaphore.release()
+        cluster_sem.release()

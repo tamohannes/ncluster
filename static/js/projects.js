@@ -45,7 +45,7 @@ async function loadProjectButtons() {
     el.innerHTML = projects.map(p => {
       const emoji = p.emoji || '';
       const rawColor = p.color || '';
-      const color = rawColor ? (_isDarkTheme() ? darkenColor(rawColor, 0.6) : rawColor) : 'var(--surface)';
+      const color = rawColor ? (_isDarkTheme() ? darkenColor(rawColor, 0.6) : lightenColor(rawColor, 0.5)) : 'var(--surface)';
       return `<button class="nav-project-btn" data-project="${p.project}" style="--proj-color:${color}" onclick="navClick(event,'project','${p.project}','${p.project}')">${emoji ? emoji + ' ' : ''}${p.project}</button>`;
     }).join('');
   } catch (_) {}

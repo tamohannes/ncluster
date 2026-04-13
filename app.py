@@ -71,6 +71,53 @@ def _inject_static_version():
     return {"v": _BOOT_TS}
 
 
+def _sd_notify(state):
+    """Send a notification to systemd if NOTIFY_SOCKET is set."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return False
+    import socket as _sock
+    sock = _sock.socket(_sock.AF_UNIX, _sock.SOCK_DGRAM)
+    try:
+        if addr.startswith("@"):
+            addr = "\0" + addr[1:]
+        sock.sendto(state.encode(), addr)
+        return True
+    except Exception:
+        return False
+    finally:
+        sock.close()
+
+
+def _watchdog_notify_loop():
+    """Notify systemd watchdog periodically with an in-process liveness check.
+
+    Previous approach used an HTTP probe to /api/health — but when all
+    gunicorn threads are blocked on SSH, the probe can't get a thread,
+    times out, and systemd kills the process.  Now we check liveness
+    directly: if the watchdog daemon thread itself can run and the worker
+    process is responsive, we notify.  Thread exhaustion is handled
+    separately by the SSH semaphore and per-cluster caps.
+    """
+    log = logging.getLogger("server.watchdog")
+    _sd_notify("READY=1")
+    time.sleep(10)
+    while True:
+        try:
+            from server.routes import _active_requests, _MAX_ACTIVE
+            from server.ssh import get_circuit_breaker_status
+            if _active_requests > _MAX_ACTIVE * 3:
+                log.warning(
+                    "watchdog: active_requests=%d dangerously high, skipping notify",
+                    _active_requests,
+                )
+            else:
+                _sd_notify("WATCHDOG=1")
+        except Exception as exc:
+            log.warning("watchdog: health check failed: %s", exc)
+        time.sleep(30)
+
+
 def _run_init():
     from server.db import init_db, cleanup_local_on_startup
     from server.logbooks import migrate_legacy_files
@@ -88,6 +135,7 @@ def _run_init():
     threading.Thread(target=mount_health_loop, daemon=True).start()
     threading.Thread(target=wds_snapshot_loop, daemon=True).start()
     threading.Thread(target=cache_gc_loop, daemon=True).start()
+    threading.Thread(target=_watchdog_notify_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clausius — Design Specification</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --text: #18181f;
+    --muted: #9090aa;
+    --border: #e4e4ec;
+    --accent: #2BA298;
+    --section-gap: 56px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 48px 32px 80px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+
+  .doc-header {
+    margin-bottom: 64px;
+    padding-bottom: 40px;
+    border-bottom: 1px solid var(--border);
+  }
+  .doc-header h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: -1.5px;
+    margin-bottom: 8px;
+  }
+  .doc-header h1 span { color: var(--accent); }
+  .doc-header .subtitle {
+    font-size: 16px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  .doc-header .meta {
+    margin-top: 20px;
+    display: flex;
+    gap: 24px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .doc-header .meta strong { color: var(--text); font-weight: 600; }
+
+  .spec-section { margin-bottom: var(--section-gap); }
+  .spec-section h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .spec-section .section-desc {
+    font-size: 14px;
+    color: var(--muted);
+    margin-bottom: 24px;
+    max-width: 700px;
+  }
+
+  h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--muted);
+    margin-bottom: 16px;
+    margin-top: 32px;
+  }
+
+  .font-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 16px;
+  }
+  .font-card .font-name {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--accent);
+    margin-bottom: 4px;
+  }
+  .font-card .font-var {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: 'JetBrains Mono', monospace;
+    margin-bottom: 12px;
+  }
+  .font-card .font-sample {
+    font-size: 28px;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+  }
+  .font-card .font-weights {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .font-card .font-weights span { font-size: 14px; color: var(--muted); }
+  .font-card .font-usage {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .font-card .font-usage code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: #f0f0f5;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .palette-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .swatch {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    transition: transform 0.15s;
+  }
+  .swatch:hover { transform: translateY(-2px); }
+  .swatch-color {
+    height: 72px;
+    position: relative;
+    cursor: pointer;
+  }
+  .swatch-color .copy-hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.3);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+  .swatch-color:hover .copy-hint { opacity: 1; }
+  .swatch-info { padding: 10px 12px; }
+  .swatch-info .name { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+  .swatch-info .hex {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .swatch-info .var-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    margin-top: 4px;
+  }
+
+  .theme-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .theme-panel {
+    border-radius: 12px;
+    padding: 24px;
+    border: 1px solid;
+  }
+  .theme-panel.light {
+    background: #f5f5f7;
+    border-color: #e4e4ec;
+    color: #18181f;
+  }
+  .theme-panel.dark {
+    background: #121218;
+    border-color: #2e2e44;
+    color: #e4e4f0;
+  }
+  .theme-panel .theme-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 16px;
+  }
+  .theme-panel.light .theme-label { color: #9090aa; }
+  .theme-panel.dark .theme-label { color: #7878a0; }
+  .theme-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .theme-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 1px solid rgba(128,128,128,0.2);
+    flex-shrink: 0;
+  }
+  .theme-row .tname { flex: 1; font-weight: 500; }
+  .theme-row .tval {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    opacity: 0.6;
+  }
+
+  .type-scale {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+  }
+  .type-row {
+    display: flex;
+    align-items: baseline;
+    gap: 20px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .type-row:last-child { border-bottom: none; }
+  .type-row .type-meta {
+    width: 140px;
+    flex-shrink: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .type-row .type-sample { flex: 1; }
+
+  .spacing-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 10px;
+  }
+  .spacing-bar {
+    height: 24px;
+    background: var(--accent);
+    border-radius: 4px;
+    opacity: 0.25;
+  }
+  .spacing-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    width: 50px;
+    flex-shrink: 0;
+    text-align: right;
+  }
+  .spacing-use { font-size: 12px; color: var(--muted); }
+
+  .radius-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+  .radius-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .radius-box {
+    width: 72px;
+    height: 72px;
+    border: 2px solid var(--accent);
+    background: rgba(43,162,152,0.06);
+  }
+  .radius-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .radius-use {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    max-width: 80px;
+  }
+
+  .shadow-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+  .shadow-item {
+    background: var(--surface);
+    width: 140px;
+    height: 100px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  .shadow-item .shadow-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .shadow-item .shadow-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--muted);
+    text-align: center;
+    padding: 0 8px;
+  }
+
+  .icon-showcase {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+  }
+  .icon-showcase svg {
+    width: 80px;
+    height: 80px;
+    border-radius: 18px;
+  }
+  .icon-showcase .icon-info {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  .spec-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .spec-table th {
+    text-align: left;
+    font-weight: 600;
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+  .spec-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .spec-table td code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: #f0f0f5;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .info-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    font-size: 13px;
+    line-height: 1.8;
+  }
+  .info-card strong { font-weight: 600; }
+  .info-card code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    background: #f0f0f5;
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .bp-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-top: 12px;
+  }
+  .bp-table th {
+    text-align: left;
+    font-weight: 600;
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+  .bp-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .bp-table td:first-child {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .bp-table td:last-child { color: var(--muted); }
+
+  .footer {
+    margin-top: 64px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .footer code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+
+  @media (max-width: 700px) {
+    body { padding: 24px 16px 60px; }
+    .theme-compare { grid-template-columns: 1fr; }
+    .palette-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+    .doc-header h1 { font-size: 30px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════ HEADER ════════════════ -->
+<div class="doc-header">
+  <h1><span>Clausius</span> Design Specification</h1>
+  <p class="subtitle">Visual identity, color system, typography, and component patterns for the multi-cluster Slurm dashboard.</p>
+  <div class="meta">
+    <span>Version <strong>1.0</strong></span>
+    <span>Source <strong>static/css/style.css</strong></span>
+    <span>Theme <strong>Light + Dark</strong></span>
+  </div>
+</div>
+
+<!-- ════════════════ 1. TYPOGRAPHY ════════════════ -->
+<div class="spec-section">
+  <h2>1. Typography</h2>
+  <p class="section-desc">Three typefaces form a clear hierarchy: a geometric display face for branding, a humanist sans for body copy, and a monospace for data and code.</p>
+
+  <div class="font-card">
+    <div class="font-name">Display — Space Grotesk</div>
+    <div class="font-var">font-family: 'Space Grotesk', sans-serif</div>
+    <div class="font-sample" style="font-family:'Space Grotesk',sans-serif; font-weight:700;">The entropy of the universe tends to a maximum.</div>
+    <div class="font-weights">
+      <span style="font-family:'Space Grotesk'; font-weight:400;">Regular 400</span>
+      <span style="font-family:'Space Grotesk'; font-weight:500;">Medium 500</span>
+      <span style="font-family:'Space Grotesk'; font-weight:600;">SemiBold 600</span>
+      <span style="font-family:'Space Grotesk'; font-weight:700;">Bold 700</span>
+    </div>
+    <div class="font-usage">Used for: topbar title, logo text, section headings (<code>.topbar-title</code>, <code>.logo</code>, section <code>h2</code>). Not assigned to a CSS variable — applied directly.</div>
+  </div>
+
+  <div class="font-card">
+    <div class="font-name">Body — Inter</div>
+    <div class="font-var">var(--sans) → 'Inter', sans-serif</div>
+    <div class="font-sample" style="font-family:'Inter',sans-serif; font-weight:400;">Multi-cluster GPU job monitoring & logbook</div>
+    <div class="font-weights">
+      <span style="font-family:'Inter'; font-weight:300;">Light 300</span>
+      <span style="font-family:'Inter'; font-weight:400;">Regular 400</span>
+      <span style="font-family:'Inter'; font-weight:500;">Medium 500</span>
+      <span style="font-family:'Inter'; font-weight:600;">SemiBold 600</span>
+      <span style="font-family:'Inter'; font-weight:700;">Bold 700</span>
+    </div>
+    <div class="font-usage">Used for: all body text, labels, buttons, navigation. Base size: <code>13px</code>, line-height: <code>1.5</code>. Set on <code>body</code> via <code>var(--sans)</code>.</div>
+  </div>
+
+  <div class="font-card">
+    <div class="font-name">Monospace — JetBrains Mono</div>
+    <div class="font-var">var(--mono) → 'JetBrains Mono', monospace</div>
+    <div class="font-sample" style="font-family:'JetBrains Mono',monospace; font-weight:400; font-size:22px;">squeue --me --format="%.18i %.9P %.60j"</div>
+    <div class="font-weights">
+      <span style="font-family:'JetBrains Mono'; font-weight:300;">Light 300</span>
+      <span style="font-family:'JetBrains Mono'; font-weight:400;">Regular 400</span>
+      <span style="font-family:'JetBrains Mono'; font-weight:500;">Medium 500</span>
+      <span style="font-family:'JetBrains Mono'; font-weight:600;">SemiBold 600</span>
+    </div>
+    <div class="font-usage">Used for: code blocks, log viewers, job IDs, hex values, JSON syntax, CLI output, metric values, table data.</div>
+  </div>
+
+  <h3>Type Scale</h3>
+  <div class="type-scale">
+    <div class="type-row">
+      <div class="type-meta">20px / bold</div>
+      <div class="type-sample" style="font-size:20px; font-weight:700;">Logbook Entry Title</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">16px / 600</div>
+      <div class="type-sample" style="font-size:16px; font-weight:600;">Card Title</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">15px / 400</div>
+      <div class="type-sample" style="font-size:15px;">Spotlight Search Input</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">14px / 500</div>
+      <div class="type-sample" style="font-size:14px; font-weight:500;">Section Heading</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">13px / 400</div>
+      <div class="type-sample" style="font-size:13px;">Default body text and labels</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">12px / mono</div>
+      <div class="type-sample" style="font-size:12px; font-family:'JetBrains Mono',monospace;">Job ID: 482917 — RUNNING on draco-hsg</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">11px / mono</div>
+      <div class="type-sample" style="font-size:11px; font-family:'JetBrains Mono',monospace;">--accent: #2BA298</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">10px / 400</div>
+      <div class="type-sample" style="font-size:10px;">Tick labels, fine print</div>
+    </div>
+    <div class="type-row">
+      <div class="type-meta">9px / mono</div>
+      <div class="type-sample" style="font-size:9px; font-family:'JetBrains Mono',monospace;">GPU-UTIL 98%</div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ 2. COLOR SYSTEM ════════════════ -->
+<div class="spec-section">
+  <h2>2. Color System</h2>
+  <p class="section-desc">All colors are defined as CSS custom properties on <code>:root</code> (light) and <code>[data-theme="dark"]</code> (dark). The accent color shifts from teal in light mode to rose-pink in dark mode — a dual-identity brand.</p>
+
+  <h3>Core Palette</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#f5f5f7;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Background</div><div class="hex">#f5f5f7</div><div class="var-name">--bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#ffffff;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Surface</div><div class="hex">#ffffff</div><div class="var-name">--surface</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#f9f9fb;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Surface 2</div><div class="hex">#f9f9fb</div><div class="var-name">--surface2</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#e4e4ec;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Border</div><div class="hex">#e4e4ec</div><div class="var-name">--border</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#18181f;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Text</div><div class="hex">#18181f</div><div class="var-name">--text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#9090aa;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Muted</div><div class="hex">#9090aa</div><div class="var-name">--muted</div></div></div>
+  </div>
+
+  <h3>Accent — Dual Identity</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#2BA298;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent (light)</div><div class="hex">#2BA298</div><div class="var-name">--accent</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#e6f5f3;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent BG</div><div class="hex">#e6f5f3</div><div class="var-name">--accent-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#8dd4cc;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent Border</div><div class="hex">#8dd4cc</div><div class="var-name">--accent-bd</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#E95378;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent (dark)</div><div class="hex">#E95378</div><div class="var-name">--accent (dark)</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#2d1520;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent BG (dark)</div><div class="hex">#2d1520</div><div class="var-name">--accent-bg (dark)</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#b83a5c;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Accent Border (dark)</div><div class="hex">#b83a5c</div><div class="var-name">--accent-bd (dark)</div></div></div>
+  </div>
+
+  <h3>Status Colors</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#16a34a;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Green</div><div class="hex">#16a34a</div><div class="var-name">--green</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#dcfce7;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Green BG</div><div class="hex">#dcfce7</div><div class="var-name">--green-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#bbf7d0;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Green Border</div><div class="hex">#bbf7d0</div><div class="var-name">--green-bd</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#b45309;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Amber</div><div class="hex">#b45309</div><div class="var-name">--amber</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fef3c7;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Amber BG</div><div class="hex">#fef3c7</div><div class="var-name">--amber-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fde68a;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Amber Border</div><div class="hex">#fde68a</div><div class="var-name">--amber-bd</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#eab308;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Yellow</div><div class="hex">#eab308</div><div class="var-name">--yellow</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#4ade80;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Done</div><div class="hex">#4ade80</div><div class="var-name">--done</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#dc2626;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Red</div><div class="hex">#dc2626</div><div class="var-name">--red</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fee2e2;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Red BG</div><div class="hex">#fee2e2</div><div class="var-name">--red-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fecaca;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Red Border</div><div class="hex">#fecaca</div><div class="var-name">--red-bd</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#d97756;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Soft Fail</div><div class="hex">#d97756</div><div class="var-name">--softfail</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#0e7490;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Cyan</div><div class="hex">#0e7490</div><div class="var-name">--cyan</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#cffafe;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Cyan BG</div><div class="hex">#cffafe</div><div class="var-name">--cyan-bg</div></div></div>
+  </div>
+
+  <h3>Chrome & Layout</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:rgba(255,255,255,0.92); border:1px solid #e4e4ec;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Nav BG</div><div class="hex">rgba(255,255,255,0.92)</div><div class="var-name">--nav-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#e8e8f1;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Splitter</div><div class="hex">#e8e8f1</div><div class="var-name">--splitter</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#c3fad9;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Running Border</div><div class="hex">#c3fad9</div><div class="var-name">--running-bd</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#f0f0f5;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Row Border</div><div class="hex">#f0f0f5</div><div class="var-name">--row-border</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#f8f8fd;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Surface Hover</div><div class="hex">#f8f8fd</div><div class="var-name">--surface-hover</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#f0f7f6;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Group BG</div><div class="hex">#f0f7f6</div><div class="var-name">--group-bg</div></div></div>
+  </div>
+
+  <h3>Code & Syntax Highlighting</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#fafafa;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Code BG</div><div class="hex">#fafafa</div><div class="var-name">--code-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#333333;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Code Text</div><div class="hex">#333333</div><div class="var-name">--code-text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#1d4ed8;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">JSON Key</div><div class="hex">#1d4ed8</div><div class="var-name">--json-key</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#0f766e;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">JSON String</div><div class="hex">#0f766e</div><div class="var-name">--json-string</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#9333ea;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">JSON Number</div><div class="hex">#9333ea</div><div class="var-name">--json-number</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#c2410c;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">JSON Boolean</div><div class="hex">#c2410c</div><div class="var-name">--json-boolean</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#6b7280;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">JSON Null</div><div class="hex">#6b7280</div><div class="var-name">--json-null</div></div></div>
+  </div>
+
+  <h3>Markdown Renderer</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#2a2a36;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Text</div><div class="hex">#2a2a36</div><div class="var-name">--md-text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#1a7a72;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Heading</div><div class="hex">#1a7a72</div><div class="var-name">--md-heading</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#0f172a;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Pre BG</div><div class="hex">#0f172a</div><div class="var-name">--md-pre-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#e2e8f0;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Pre Text</div><div class="hex">#e2e8f0</div><div class="var-name">--md-pre-text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#e6f5f3;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Inline Code BG</div><div class="hex">#e6f5f3</div><div class="var-name">--md-code-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#1e8a80;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">MD Inline Code Text</div><div class="hex">#1e8a80</div><div class="var-name">--md-code-text</div></div></div>
+  </div>
+
+  <h3>Log Viewer</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#fff8e1;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Trace BG</div><div class="hex">#fff8e1</div><div class="var-name">--log-trace-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#8a4b00;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Trace Text</div><div class="hex">#8a4b00</div><div class="var-name">--log-trace-text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#ffe9e9;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Error BG</div><div class="hex">#ffe9e9</div><div class="var-name">--log-error-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#9b1c1c;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Error Text</div><div class="hex">#9b1c1c</div><div class="var-name">--log-error-text</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fff4e2;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Warning BG</div><div class="hex">#fff4e2</div><div class="var-name">--log-warn-bg</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#8a5200;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Warning Text</div><div class="hex">#8a5200</div><div class="var-name">--log-warn-text</div></div></div>
+  </div>
+
+  <h3>Status Pills</h3>
+  <div class="palette-grid">
+    <div class="swatch"><div class="swatch-color" style="background:#ecfeff; border-bottom:3px solid #99f6e4;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Mount</div><div class="hex">text #0f766e</div><div class="var-name">--pill-mount-*</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#fffbeb; border-bottom:3px solid #fcd34d;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">SSH</div><div class="hex">text #92400e</div><div class="var-name">--pill-ssh-*</div></div></div>
+    <div class="swatch"><div class="swatch-color" style="background:#eff6ff; border-bottom:3px solid #93c5fd;"><div class="copy-hint">Click to copy</div></div><div class="swatch-info"><div class="name">Cache</div><div class="hex">text #1d4ed8</div><div class="var-name">--pill-cache-*</div></div></div>
+  </div>
+
+  <h3>Light vs Dark — Side by Side</h3>
+  <div class="theme-compare">
+    <div class="theme-panel light">
+      <div class="theme-label">Light Theme</div>
+      <div class="theme-row"><div class="theme-dot" style="background:#f5f5f7;"></div><div class="tname">Background</div><div class="tval">#f5f5f7</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#ffffff;"></div><div class="tname">Surface</div><div class="tval">#ffffff</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#e4e4ec;"></div><div class="tname">Border</div><div class="tval">#e4e4ec</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#18181f;"></div><div class="tname">Text</div><div class="tval">#18181f</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#9090aa;"></div><div class="tname">Muted</div><div class="tval">#9090aa</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#2BA298;"></div><div class="tname">Accent</div><div class="tval">#2BA298</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#16a34a;"></div><div class="tname">Green</div><div class="tval">#16a34a</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#dc2626;"></div><div class="tname">Red</div><div class="tval">#dc2626</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#0e7490;"></div><div class="tname">Cyan</div><div class="tval">#0e7490</div></div>
+    </div>
+    <div class="theme-panel dark">
+      <div class="theme-label">Dark Theme</div>
+      <div class="theme-row"><div class="theme-dot" style="background:#121218;"></div><div class="tname">Background</div><div class="tval">#121218</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#1c1c28;"></div><div class="tname">Surface</div><div class="tval">#1c1c28</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#2e2e44;"></div><div class="tname">Border</div><div class="tval">#2e2e44</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#e4e4f0;"></div><div class="tname">Text</div><div class="tval">#e4e4f0</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#7878a0;"></div><div class="tname">Muted</div><div class="tval">#7878a0</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#E95378;"></div><div class="tname">Accent</div><div class="tval">#E95378</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#22c55e;"></div><div class="tname">Green</div><div class="tval">#22c55e</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#ef4444;"></div><div class="tname">Red</div><div class="tval">#ef4444</div></div>
+      <div class="theme-row"><div class="theme-dot" style="background:#22d3ee;"></div><div class="tname">Cyan</div><div class="tval">#22d3ee</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ 3. SPACING ════════════════ -->
+<div class="spec-section">
+  <h2>3. Spacing</h2>
+  <p class="section-desc">Spacing follows a loose 4px/8px grid. The app favors tighter spacing for data density with generous padding in modal and card containers.</p>
+
+  <div class="info-card">
+    <div class="spacing-row"><div class="spacing-label">2px</div><div class="spacing-bar" style="width:8px;"></div><div class="spacing-use">Inline icon gaps</div></div>
+    <div class="spacing-row"><div class="spacing-label">4px</div><div class="spacing-bar" style="width:16px;"></div><div class="spacing-use">Tight gaps (badge content, chip padding)</div></div>
+    <div class="spacing-row"><div class="spacing-label">6px</div><div class="spacing-bar" style="width:24px;"></div><div class="spacing-use">Button padding-y, small gaps</div></div>
+    <div class="spacing-row"><div class="spacing-label">8px</div><div class="spacing-bar" style="width:32px;"></div><div class="spacing-use">Standard gap between elements</div></div>
+    <div class="spacing-row"><div class="spacing-label">10px</div><div class="spacing-bar" style="width:40px;"></div><div class="spacing-use">Swatch info padding, section gaps</div></div>
+    <div class="spacing-row"><div class="spacing-label">12px</div><div class="spacing-bar" style="width:48px;"></div><div class="spacing-use">Card inner padding, row padding</div></div>
+    <div class="spacing-row"><div class="spacing-label">14px</div><div class="spacing-bar" style="width:56px;"></div><div class="spacing-use">Main content padding, grid gap</div></div>
+    <div class="spacing-row"><div class="spacing-label">16px</div><div class="spacing-bar" style="width:64px;"></div><div class="spacing-use">Card padding-x, section padding</div></div>
+    <div class="spacing-row"><div class="spacing-label">24px</div><div class="spacing-bar" style="width:96px;"></div><div class="spacing-use">Modal padding, large section gaps</div></div>
+    <div class="spacing-row"><div class="spacing-label">40px</div><div class="spacing-bar" style="width:160px;"></div><div class="spacing-use">Main content bottom padding, topbar height</div></div>
+  </div>
+</div>
+
+<!-- ════════════════ 4. BORDER RADIUS ════════════════ -->
+<div class="spec-section">
+  <h2>4. Border Radius</h2>
+  <p class="section-desc">A consistent radius scale from sharp UI controls to fully rounded pills.</p>
+
+  <div class="radius-grid">
+    <div class="radius-item"><div class="radius-box" style="border-radius:4px;"></div><div class="radius-val">4px</div><div class="radius-use">Buttons, chips, tags</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius:6px;"></div><div class="radius-val">6px</div><div class="radius-use">Small cards, inputs</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius:8px;"></div><div class="radius-val">8px</div><div class="radius-use">Badges, tooltips</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius:10px;"></div><div class="radius-val">10px</div><div class="radius-use">var(--radius) — cards, panels</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius:12px;"></div><div class="radius-val">12px</div><div class="radius-use">Modals, overlays</div></div>
+    <div class="radius-item"><div class="radius-box" style="border-radius:999px;"></div><div class="radius-val">999px</div><div class="radius-use">Pills, status dots</div></div>
+  </div>
+</div>
+
+<!-- ════════════════ 5. SHADOWS ════════════════ -->
+<div class="spec-section">
+  <h2>5. Shadows & Depth</h2>
+  <p class="section-desc">Shadows range from subtle card elevation to heavy modal overlays. <code>backdrop-filter: blur()</code> provides frosted-glass effects on nav and overlays.</p>
+
+  <div class="shadow-grid">
+    <div class="shadow-item" style="box-shadow:0 2px 16px rgba(0,0,0,0.06);">
+      <div class="shadow-label">Card hover</div>
+      <div class="shadow-val">0 2px 16px 0.06</div>
+    </div>
+    <div class="shadow-item" style="box-shadow:0 6px 24px rgba(0,0,0,0.1);">
+      <div class="shadow-label">Tooltip</div>
+      <div class="shadow-val">0 6px 24px 0.10</div>
+    </div>
+    <div class="shadow-item" style="box-shadow:0 12px 40px rgba(0,0,0,0.15);">
+      <div class="shadow-label">Panel</div>
+      <div class="shadow-val">0 12px 40px 0.15</div>
+    </div>
+    <div class="shadow-item" style="box-shadow:0 20px 60px rgba(0,0,0,0.18);">
+      <div class="shadow-label">Modal</div>
+      <div class="shadow-val">0 20px 60px 0.18</div>
+    </div>
+    <div class="shadow-item" style="box-shadow:0 16px 48px rgba(0,0,0,0.30);">
+      <div class="shadow-label">Spotlight</div>
+      <div class="shadow-val">0 16px 48px 0.30</div>
+    </div>
+  </div>
+  <p style="margin-top:16px; font-size:13px; color:var(--muted);">Overlays use <code>var(--overlay-bg)</code>: <code>rgba(0,0,0,0.25)</code> in light / <code>rgba(0,0,0,0.50)</code> in dark. Nav and modal overlays apply <code>backdrop-filter: blur(2–3px)</code>.</p>
+</div>
+
+<!-- ════════════════ 6. APP ICON ════════════════ -->
+<div class="spec-section">
+  <h2>6. App Icon</h2>
+  <p class="section-desc">The favicon features the ΔS&lt;0 thermodynamic symbol — a reference to Rudolf Clausius and entropy. Adapts to the active OS/app theme.</p>
+
+  <div class="icon-showcase">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+      <rect width="128" height="128" rx="28" fill="#0d1117"/>
+      <path d="M28 88 L44 48 L60 88 Z M38 82 L44 58 L50 82 Z" fill="#E95378" fill-rule="evenodd"/>
+      <text x="78" y="88" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="62" fill="#E95378">S</text>
+      <text x="108" y="106" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="700" font-size="24" fill="#E95378">&lt;0</text>
+    </svg>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+      <rect width="128" height="128" rx="28" fill="#ffffff" stroke="#e4e4ec"/>
+      <path d="M28 88 L44 48 L60 88 Z M38 82 L44 58 L50 82 Z" fill="#2BA298" fill-rule="evenodd"/>
+      <text x="78" y="88" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="800" font-size="62" fill="#2BA298">S</text>
+      <text x="108" y="106" text-anchor="middle" font-family="'Helvetica Neue',Arial,sans-serif" font-weight="700" font-size="24" fill="#2BA298">&lt;0</text>
+    </svg>
+    <div class="icon-info">
+      <strong>Dark mode:</strong> #0d1117 background, #E95378 glyph<br>
+      <strong>Light mode:</strong> #ffffff background, #2BA298 glyph<br>
+      <strong>Corner radius:</strong> 28px (on 128×128 viewBox)<br>
+      <strong>Icon font:</strong> Helvetica Neue, weight 800/700<br>
+      <strong>Detection:</strong> <code>prefers-color-scheme</code> media query + JS <code>data-theme</code>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ 7. ANIMATIONS ════════════════ -->
+<div class="spec-section">
+  <h2>7. Motion & Transitions</h2>
+  <p class="section-desc">Animations are minimal and functional — short durations to convey state changes without drawing attention.</p>
+
+  <table class="spec-table">
+    <thead><tr><th>Name</th><th>Duration</th><th>Easing</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>blink</code></td><td>1.2s ∞</td><td>ease-in-out</td><td>Pulsing status dot for running jobs</td></tr>
+      <tr><td><code>grid-bar</code></td><td>1.2s ∞</td><td>linear</td><td>Loading bar on grid refresh</td></tr>
+      <tr><td><code>slideUp</code></td><td>0.35s</td><td>cubic-bezier</td><td>Toast notification entrance</td></tr>
+      <tr><td><code>toastProgress</code></td><td>3s</td><td>linear</td><td>Toast auto-dismiss countdown</td></tr>
+      <tr><td><code>spotlightIn</code></td><td>0.2s</td><td>ease-out</td><td>Spotlight modal open</td></tr>
+      <tr><td><code>ubIn</code></td><td>0.25s</td><td>ease-out</td><td>User breakdown modal open</td></tr>
+      <tr><td><code>lb-anchor-flash</code></td><td>0.8s</td><td>ease-out</td><td>Logbook anchor highlight pulse</td></tr>
+      <tr><td><code>computeLoadSlide</code></td><td>1.5s ∞</td><td>ease-in-out</td><td>Loading shimmer for cluster data</td></tr>
+      <tr><td colspan="4" style="color:var(--muted); font-style:italic;">General transitions: 0.1–0.15s for color/background; 0.2–0.4s for width/transform/shadow</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ════════════════ 8. LAYOUT ════════════════ -->
+<div class="spec-section">
+  <h2>8. Layout & Grid</h2>
+  <p class="section-desc">The app uses a shell layout with a fixed topbar, collapsible sidebar, and a responsive content grid.</p>
+
+  <div class="info-card">
+    <strong>Topbar:</strong> 40px height, <code>position: fixed</code>, frosted-glass <code>var(--nav-bg)</code> with <code>backdrop-filter</code><br>
+    <strong>Sidebar:</strong> resizable (120–600px), default 200px, width stored in <code>localStorage</code><br>
+    <strong>Content grid:</strong> <code>repeat(auto-fill, minmax(680px, 1fr))</code>, gap 14px<br>
+    <strong>Main padding:</strong> 14px 16px 40px<br>
+    <strong>Modal max-width:</strong> ~640px (run/stats), ~740px (settings), ~580px (advisor)<br><br>
+    <strong>Responsive breakpoints:</strong>
+    <table class="bp-table">
+      <thead><tr><th>Breakpoint</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td>≤ 760px</td><td>Sidebar becomes overlay; grid single-column; splitter hidden</td></tr>
+        <tr><td>≤ 800px</td><td>PPP grid and team-jobs grid collapse to 1 column</td></tr>
+        <tr><td>≤ 560px</td><td>Settings nav becomes narrower</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════════════ 9. SPECIAL COLORS ════════════════ -->
+<div class="spec-section">
+  <h2>9. Hardcoded & Semantic Colors</h2>
+  <p class="section-desc">Some colors are used directly outside the custom-property system for specific UI contexts.</p>
+
+  <table class="spec-table">
+    <thead><tr><th>Value</th><th>Context</th></tr></thead>
+    <tbody>
+      <tr><td><code>#ff6b6b</code> / <code>#ff4444</code></td><td>Crash warning badge and row highlight</td></tr>
+      <tr><td><code>#3a1a1a</code></td><td>Crash warning row background (dark-red tint)</td></tr>
+      <tr><td><code>#F5A623</code></td><td>Team/orange bars in PPP charts, "where to submit" accent</td></tr>
+      <tr><td><code>#558B2F → #A4D65E</code></td><td>Green gradient for PPP consumed-bar segments</td></tr>
+      <tr><td><code>color-mix(in srgb, …)</code></td><td>Dynamic opacity blends for logbook plans, map nodes, tooltips</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ════════════════ 10. THEME SWITCHING ════════════════ -->
+<div class="spec-section">
+  <h2>10. Theme Switching</h2>
+  <p class="section-desc">Theme is controlled by a <code>data-theme</code> attribute on <code>&lt;html&gt;</code>, persisted in <code>localStorage</code>.</p>
+
+  <div class="info-card">
+    <strong>Storage key:</strong> <code>localStorage['clausius.theme']</code><br>
+    <strong>Values:</strong> <code>"system"</code> | <code>"light"</code> | <code>"dark"</code><br>
+    <strong>System detection:</strong> <code>matchMedia('(prefers-color-scheme: dark)')</code><br>
+    <strong>Flash prevention:</strong> Inline <code>&lt;script&gt;</code> in <code>&lt;head&gt;</code> sets <code>data-theme</code> before first paint<br>
+    <strong>Favicon:</strong> Dynamically generated SVG data URI — rose-pink on dark (#0d1117), teal on light (#ffffff)<br>
+    <strong>CSS scope:</strong> <code>:root</code> for light defaults, <code>[data-theme="dark"]</code> for dark overrides
+  </div>
+</div>
+
+<div class="footer">
+  Clausius Design Specification — generated from <code>static/css/style.css</code> (3300 lines) · All tokens defined as CSS custom properties · Theme switching via <code>data-theme</code> attribute on <code>&lt;html&gt;</code>
+</div>
+
+<script>
+document.querySelectorAll('.swatch-color').forEach(el => {
+  el.addEventListener('click', () => {
+    const hex = el.closest('.swatch').querySelector('.hex')?.textContent;
+    if (hex) {
+      navigator.clipboard.writeText(hex).then(() => {
+        const hint = el.querySelector('.copy-hint');
+        if (hint) { hint.textContent = 'Copied!'; setTimeout(() => hint.textContent = 'Click to copy', 1200); }
+      });
+    }
+  });
+});
+</script>
+
+</body>
+</html>

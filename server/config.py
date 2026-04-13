@@ -314,7 +314,7 @@ def _sync_config():
         "include": LOCAL_PROC_INCLUDE,
         "exclude": LOCAL_PROC_EXCLUDE,
     }
-    _CONFIG["projects"] = dict(PROJECTS)
+    _CONFIG["projects"] = {k: dict(v) for k, v in PROJECTS.items()}
     existing_clusters = _CONFIG.get("clusters", {})
     for cname, ccfg in CLUSTERS.items():
         if cname == "local":
@@ -407,6 +407,11 @@ def cache_gc_loop():
                 prune_job_sets()
             except Exception:
                 pass
+            try:
+                from .db import cache_db_gc
+                cache_db_gc()
+            except Exception:
+                pass
             if n:
                 _log.debug("cache GC: evicted %d stale entries", n)
         except Exception:
@@ -492,7 +497,7 @@ def settings_response():
     cfg["stats_interval_sec"] = STATS_INTERVAL_SEC
     cfg["backup_interval_hours"] = BACKUP_INTERVAL_HOURS
     cfg["backup_max_keep"] = BACKUP_MAX_KEEP
-    cfg["projects"] = dict(PROJECTS)
+    cfg["projects"] = {k: dict(v) for k, v in PROJECTS.items()}
     cfg["team"] = TEAM_NAME
     cfg["team_gpu_allocations"] = dict(TEAM_GPU_ALLOC)
     cfg["ppps"] = dict(PPPS)
