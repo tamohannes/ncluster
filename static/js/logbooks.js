@@ -15,6 +15,16 @@ const LB_SIDEBAR_MAX = 600;
 const LB_MAP_VIEW_KEY = 'clausius.lbMapView';
 let _pinnedEntryIds = new Set();
 
+function _restoreLogbookSidebarState() {
+  try {
+    const saved = parseInt(localStorage.getItem(LB_SIDEBAR_WIDTH_KEY) || '', 10);
+    if (!isNaN(saved) && saved >= LB_SIDEBAR_MIN && saved <= LB_SIDEBAR_MAX) {
+      const sidebar = document.querySelector('.lb-sidebar');
+      if (sidebar) sidebar.style.width = saved + 'px';
+    }
+  } catch (_) {}
+}
+
 async function togglePinEntry(entryId, project) {
   const wasPinned = _pinnedEntryIds.has(entryId);
   const newPinned = !wasPinned;
@@ -57,13 +67,7 @@ function _isEntryPinned(entryId) {
       if (sp) sp.classList.remove('active');
     }
   });
-  try {
-    const saved = parseInt(localStorage.getItem(LB_SIDEBAR_WIDTH_KEY) || '', 10);
-    if (!isNaN(saved) && saved >= LB_SIDEBAR_MIN && saved <= LB_SIDEBAR_MAX) {
-      const sidebar = document.querySelector('.lb-sidebar');
-      if (sidebar) sidebar.style.width = saved + 'px';
-    }
-  } catch (_) {}
+  _restoreLogbookSidebarState();
 })();
 
 // ── Page init ───────────────────────────────────────────────────────────────

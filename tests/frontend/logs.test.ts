@@ -5,8 +5,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { loadBrowserScripts } from './helpers';
 
 beforeAll(() => {
   // Provide DOM elements that logs.js and its dependencies need
@@ -34,16 +33,7 @@ beforeAll(() => {
     <div id="settings-overlay"></div>
   `;
 
-  // Load utils first (logs.js depends on utils globals)
-  const utils = readFileSync(join(__dirname, '../../static/js/utils.js'), 'utf-8');
-  new Function(utils).call(globalThis);
-
-  // Then settings.js (logs.js uses toast, jsonlLimit, jsonlMode)
-  const settings = readFileSync(join(__dirname, '../../static/js/settings.js'), 'utf-8');
-  new Function(settings).call(globalThis);
-
-  const code = readFileSync(join(__dirname, '../../static/js/logs.js'), 'utf-8');
-  new Function(code).call(globalThis);
+  loadBrowserScripts(['utils.js', 'crash_detect.js', 'logs.js']);
 });
 
 declare const escapeHtml: (s: string) => string;

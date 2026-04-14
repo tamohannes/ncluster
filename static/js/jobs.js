@@ -814,14 +814,9 @@ async function prefetchAndUpdateProgress(data) {
   if (!batch.length) { _saveProgressCache(); return; }
   const hasPending = batch.some(j => (j.state || '').toUpperCase() === 'PENDING');
   try {
-    await Promise.allSettled([
-      fetchWithTimeout('/api/prefetch_visible', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobs: batch }),
-      }),
-      hasPending && !_waitCalibration ? fetchWaitCalibration() : Promise.resolve(),
-    ]);
+    if (hasPending && !_waitCalibration) {
+      await fetchWaitCalibration();
+    }
   } catch (_) {}
   setTimeout(() => _fetchProgressUpdate(batch), 4000);
 }

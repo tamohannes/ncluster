@@ -127,6 +127,7 @@ def _run_init():
     from server.wds import wds_snapshot_loop
     from server.config import cache_gc_loop
     from server.poller import start_poller
+    from server.progress_scraper import start_progress_scraper
 
     init_db()
     migrate_legacy_files()
@@ -138,6 +139,7 @@ def _run_init():
     threading.Thread(target=cache_gc_loop, daemon=True).start()
     threading.Thread(target=_watchdog_notify_loop, daemon=True).start()
     start_poller()
+    start_progress_scraper()
 
 
 if __name__ == "__main__":

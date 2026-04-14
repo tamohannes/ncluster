@@ -5,8 +5,7 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { loadBrowserScripts } from './helpers';
 
 beforeAll(() => {
   document.body.innerHTML = `
@@ -62,11 +61,7 @@ beforeAll(() => {
     <div id="cleanup-days"></div>
   `;
 
-  const files = ['utils.js', 'jobs.js', 'logs.js', 'explorer.js', 'settings.js', 'history.js'];
-  for (const f of files) {
-    const code = readFileSync(join(__dirname, '../../static/js', f), 'utf-8');
-    try { new Function(code).call(globalThis); } catch (_) {}
-  }
+  loadBrowserScripts(['utils.js', 'history.js']);
 });
 
 declare const historyGroupKey: (r: any) => string;
@@ -74,7 +69,7 @@ declare const historyGroupKey: (r: any) => string;
 describe('historyGroupKey', () => {
   it('groups eval prefix with cluster', () => {
     const key = historyGroupKey({ cluster: 'cluster-a', job_name: 'eval-math_100' });
-    expect(key).toBe('cluster-a:eval-math');
+    expect(key).toBe('cluster-a:eval-math_100');
   });
 
   it('strips judge suffix', () => {

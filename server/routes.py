@@ -76,6 +76,9 @@ _HEAVY_PREFIXES = (
     "/api/partition_summary", "/api/cluster_utilization",
     "/api/log_files/", "/api/log/", "/api/log_full/",
     "/api/jsonl_index/", "/api/jsonl_record/", "/api/ls/",
+    "/api/cancel_jobs/", "/api/cancel/",
+    "/api/force_poll/", "/api/run_script/", "/api/stats/", 
+    "/api/mount/", "/api/run_info/", "/api/cleanup"
 )
 
 

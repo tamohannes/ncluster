@@ -235,7 +235,17 @@ def cancel_jobs_with_report(cluster_name, job_ids, timeout_sec=20, chunk_size=25
     cancelled_ids = []
     errors = []
 
+    import time
+    start_time = time.monotonic()
+    overall_timeout = timeout_sec + 5
+
     for i in range(0, len(sanitized), step):
+        if time.monotonic() - start_time > overall_timeout:
+            msg = f"Overall timeout exceeded ({overall_timeout}s)"
+            for jid in sanitized[i:]:
+                errors.append({'job_id': jid, 'error': msg, 'exit_code': None})
+            break
+
         chunk = sanitized[i:i + step]
         try:
             out, err = ssh_run_with_timeout(
@@ -245,9 +255,9 @@ def cancel_jobs_with_report(cluster_name, job_ids, timeout_sec=20, chunk_size=25
             )
         except Exception as exc:
             msg = str(exc)
-            for jid in chunk:
+            for jid in sanitized[i:]:
                 errors.append({'job_id': jid, 'error': msg, 'exit_code': None})
-            continue
+            break
 
         seen = set()
         for raw_line in out.splitlines():

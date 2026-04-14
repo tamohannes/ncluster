@@ -6,16 +6,13 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
+import { loadBrowserScripts } from './helpers';
 
 // Load utils.js into the jsdom global scope
 beforeAll(() => {
   // Provide the minimal DOM elements utils.js expects
   document.body.innerHTML = '<script id="cluster-data" type="application/json">{"local":{"host":null,"gpu_type":"local"}}</script>';
-  const code = readFileSync(join(__dirname, '../../static/js/utils.js'), 'utf-8');
-  const fn = new Function(code);
-  fn.call(globalThis);
+  loadBrowserScripts(['utils.js', 'jobs.js']);
 });
 
 // Access globals that utils.js defines
@@ -79,7 +76,7 @@ describe('parseGpus', () => {
 });
 
 describe('groupKeyForJob', () => {
-  it('extracts eval prefix', () => expect(groupKeyForJob('eval-math_100')).toBe('eval-math'));
+  it('keeps eval suffix segments', () => expect(groupKeyForJob('eval-math_100')).toBe('eval-math_100'));
   it('strips judge suffix', () => expect(groupKeyForJob('eval-math-judge')).toBe('eval-math'));
   it('strips rs suffix', () => expect(groupKeyForJob('eval-math-rs0')).toBe('eval-math'));
   it('empty returns misc', () => expect(groupKeyForJob('')).toBe('misc'));

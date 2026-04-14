@@ -1433,11 +1433,12 @@ def schedule_prefetch(cluster, job_id):
         last = _prefetch_last.get(k, 0.0)
         if now - last < PREFETCH_MIN_GAP_SEC:
             return
-        _prefetch_last[k] = now
     with _prefetch_active_lock:
         if _prefetch_active.get(cluster, 0) >= _MAX_PREFETCH_THREADS:
             return
         _prefetch_active[cluster] = _prefetch_active.get(cluster, 0) + 1
+    with _warm_lock:
+        _prefetch_last[k] = now
     t = threading.Thread(target=_prefetch_job_data, args=(cluster, str(job_id)), daemon=True)
     t.start()
 

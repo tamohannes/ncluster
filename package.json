@@ -7,8 +7,8 @@
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "vitest": "latest",
-    "jsdom": "latest",
-    "@playwright/test": "latest"
+    "vitest": "2.1.8",
+    "jsdom": "22.1.0",
+    "@playwright/test": "1.59.1"
   }
 }
