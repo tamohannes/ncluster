@@ -665,29 +665,39 @@ def get_history(
     from datetime import datetime, timedelta
 
     con = get_db()
-    order = "ORDER BY COALESCE(ended_at, started, submitted, '9999') DESC, id DESC"
+    order = "ORDER BY COALESCE(jh.ended_at, jh.started, jh.submitted, '9999') DESC, jh.id DESC"
     conditions = []
     params = []
     campaign_values = {v.lower() for v in _csv_values(campaign)}
     if cluster and cluster != "all":
-        conditions.append("cluster=?")
+        conditions.append("jh.cluster=?")
         params.append(cluster)
     if project:
-        conditions.append("project=?")
+        conditions.append("jh.project=?")
         params.append(project)
     if search:
         like = f"%{search}%"
-        conditions.append("(job_name LIKE ? OR job_id LIKE ?)")
-        params.extend([like, like])
+        conditions.append(
+            "("
+            "LOWER(COALESCE(jh.job_name, '')) LIKE LOWER(?) OR "
+            "CAST(jh.job_id AS TEXT) LIKE ? OR "
+            "LOWER(COALESCE(r.run_name, '')) LIKE LOWER(?) OR "
+            "LOWER(COALESCE(jh.project, '')) LIKE LOWER(?) OR "
+            "LOWER(COALESCE(jh.partition, '')) LIKE LOWER(?) OR "
+            "LOWER(COALESCE(jh.account, '')) LIKE LOWER(?) OR "
+            "LOWER(COALESCE(jh.cluster, '')) LIKE LOWER(?)"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like, like])
     state_values = [v.upper() for v in _csv_values(state)]
     if state_values:
-        conditions.append("(" + " OR ".join(["UPPER(COALESCE(state, '')) LIKE ?"] * len(state_values)) + ")")
+        conditions.append("(" + " OR ".join(["UPPER(COALESCE(jh.state, '')) LIKE ?"] * len(state_values)) + ")")
         params.extend([f"{value}%" for value in state_values])
     if partition:
-        conditions.append("LOWER(COALESCE(partition, '')) = LOWER(?)")
+        conditions.append("LOWER(COALESCE(jh.partition, '')) = LOWER(?)")
         params.append(partition)
     if account:
-        conditions.append("LOWER(COALESCE(account, '')) = LOWER(?)")
+        conditions.append("LOWER(COALESCE(jh.account, '')) = LOWER(?)")
         params.append(account)
     if days:
         try:
@@ -696,10 +706,15 @@ def get_history(
             days_int = 0
         if days_int > 0:
             cutoff = (datetime.now() - timedelta(days=days_int)).isoformat()
-            conditions.append("COALESCE(ended_at, started, submitted, '') >= ?")
+            conditions.append("COALESCE(jh.ended_at, jh.started, jh.submitted, '') >= ?")
             params.append(cutoff)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    query = f"SELECT * FROM job_history {where} {order}"
+    query = (
+        "SELECT jh.*, COALESCE(r.run_name, '') AS run_name "
+        "FROM job_history jh "
+        "LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster "
+        f"{where} {order}"
+    )
     query_params = list(params)
     if not campaign_values:
         query += " LIMIT ?"

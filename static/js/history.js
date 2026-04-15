@@ -2,6 +2,8 @@
 let HIST_GROUPS_PER_PAGE = 50;
 let histPage = 0;
 let histGroups = [];
+let _historySearchTimer = null;
+let _historyLoadSeq = 0;
 
 function _histEsc(s) {
   return String(s || '')
@@ -39,6 +41,14 @@ function _historyGroupCountLabel(count) {
   return `${count} ${count === 1 ? 'job' : 'jobs'}`;
 }
 
+function historySearchChanged() {
+  if (_historySearchTimer) clearTimeout(_historySearchTimer);
+  _historySearchTimer = setTimeout(() => {
+    _historySearchTimer = null;
+    loadHistory();
+  }, 180);
+}
+
 function _syncHistorySelect(id, values, allLabel) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -73,6 +83,7 @@ function _historyMatches(row, ignore = new Set()) {
   if (!ignore.has('search') && q) {
     const values = [
       row.job_name || row.name || '',
+      row.run_name || '',
       String(row.job_id || row.jobid || ''),
       groupKeyForJob(row.job_name || row.name || ''),
       row.project || '',
@@ -111,13 +122,17 @@ function _syncHistoryFacetOptions() {
 }
 
 async function loadHistory() {
+  const seq = ++_historyLoadSeq;
   const cluster = _histValue('hist-cluster') || 'all';
   const days = _histValue('hist-days');
+  const q = _histValue('hist-search').trim();
   const params = new URLSearchParams({ cluster, limit: '10000' });
   if (days && days !== 'all') params.set('days', days);
+  if (q) params.set('q', q);
   try {
     const res = await fetch(`/api/history?${params.toString()}`);
     const rows = await res.json();
+    if (seq !== _historyLoadSeq) return;
     historyData = Array.isArray(rows) ? rows : [];
     histPage = 0;
     filterHistory();

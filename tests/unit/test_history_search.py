@@ -4,7 +4,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from server.db import init_db, upsert_job, get_history
+from server.db import (
+    init_db, upsert_job, get_history,
+    upsert_run, associate_jobs_to_run,
+)
 from server.config import PROJECTS
 
 
@@ -50,6 +53,14 @@ class TestHistorySearch:
         results = get_history(search="101")
         assert len(results) == 1
         assert results[0]["job_id"] == "101"
+
+    def test_search_matches_run_name(self):
+        run_id = upsert_run("eos", "100", run_name="text-qwen35-no-tool-r7", project="hle")
+        associate_jobs_to_run("eos", run_id, ["100", "101"])
+        results = get_history(search="qwen35")
+        job_ids = {r["job_id"] for r in results}
+        assert job_ids == {"100", "101"}
+        assert all(r["run_name"] == "text-qwen35-no-tool-r7" for r in results)
 
     def test_no_search_returns_all(self):
         results = get_history()

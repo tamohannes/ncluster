@@ -80,45 +80,49 @@
     <!-- History view -->
     <div class="history-view" id="history-view">
       <main>
-        <div class="history-filter">
-          <select id="hist-cluster" onchange="loadHistory()">
-            <option value="all">All clusters</option>
-            {% for name in clusters %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
-          </select>
-          <select id="hist-days" onchange="loadHistory()">
-            <option value="all">All time</option>
-            <option value="7">Last 7d</option>
-            <option value="30">Last 30d</option>
-            <option value="90">Last 90d</option>
-          </select>
-          <select id="hist-project" class="hist-select-wide" onchange="filterHistory()">
-            <option value="">All projects</option>
-          </select>
-          <select id="hist-campaign" class="hist-select-wide" onchange="filterHistory()">
-            <option value="">All campaigns</option>
-          </select>
-          <select id="hist-partition" class="hist-select-wide" onchange="filterHistory()">
-            <option value="">All partitions</option>
-          </select>
-          <select id="hist-account" class="hist-select-wide" onchange="filterHistory()">
-            <option value="">All accounts</option>
-          </select>
-          <input id="hist-search" type="text" placeholder="filter by project, run, name, job id…" oninput="filterHistory()" />
-          <button class="btn" onclick="resetHistoryFilters()">clear</button>
-          <div class="hist-state-filters" id="hist-state-filters">
-            <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleStateFilter(this)">completed</button>
-            <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleStateFilter(this)">failed</button>
-            <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleStateFilter(this)">cancelled</button>
-            <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleStateFilter(this)">timeout</button>
-            <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleStateFilter(this)">running</button>
-            <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleStateFilter(this)">pending</button>
+        <div class="history-controls">
+          <div class="history-search-row">
+            <input id="hist-search" type="text" placeholder="Search any run by name, job id, project, campaign, partition, account, or cluster…" oninput="historySearchChanged()" />
+            <button class="btn" onclick="resetHistoryFilters()">clear</button>
           </div>
-          <span class="hist-inline-actions">
-            <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">older than</span>
-            <input type="number" id="cleanup-days" value="30" min="1" max="365" style="width:50px;font-family:var(--mono);font-size:11px;padding:4px 6px;border-radius:5px;border:1px solid var(--border)">
-            <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">days</span>
-            <button class="btn" style="border-color:var(--red-bd);color:var(--red)" onclick="cleanupHistory()">cleanup</button>
-          </span>
+          <div class="history-filter">
+            <select id="hist-cluster" onchange="loadHistory()">
+              <option value="all">All clusters</option>
+              {% for name in clusters %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+            </select>
+            <select id="hist-days" onchange="loadHistory()">
+              <option value="all">All time</option>
+              <option value="7">Last 7d</option>
+              <option value="30">Last 30d</option>
+              <option value="90">Last 90d</option>
+            </select>
+            <select id="hist-project" class="hist-select-wide" onchange="filterHistory()">
+              <option value="">All projects</option>
+            </select>
+            <select id="hist-campaign" class="hist-select-wide" onchange="filterHistory()">
+              <option value="">All campaigns</option>
+            </select>
+            <select id="hist-partition" class="hist-select-wide" onchange="filterHistory()">
+              <option value="">All partitions</option>
+            </select>
+            <select id="hist-account" class="hist-select-wide" onchange="filterHistory()">
+              <option value="">All accounts</option>
+            </select>
+            <div class="hist-state-filters" id="hist-state-filters">
+              <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleStateFilter(this)">completed</button>
+              <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleStateFilter(this)">failed</button>
+              <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleStateFilter(this)">cancelled</button>
+              <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleStateFilter(this)">timeout</button>
+              <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleStateFilter(this)">running</button>
+              <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleStateFilter(this)">pending</button>
+            </div>
+            <span class="hist-inline-actions">
+              <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">older than</span>
+              <input type="number" id="cleanup-days" value="30" min="1" max="365" style="width:50px;font-family:var(--mono);font-size:11px;padding:4px 6px;border-radius:5px;border:1px solid var(--border)">
+              <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">days</span>
+              <button class="btn" style="border-color:var(--red-bd);color:var(--red)" onclick="cleanupHistory()">cleanup</button>
+            </span>
+          </div>
         </div>
         <div class="history-table-wrap">
           <table id="hist-table">

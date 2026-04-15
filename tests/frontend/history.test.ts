@@ -4,7 +4,7 @@
  * Run with: npx vitest run tests/frontend/history.test.ts
  */
 
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { loadBrowserScripts } from './helpers';
 
 function renderDom() {
@@ -85,7 +85,12 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 declare const historyGroupKey: (r: any) => string;
+declare const historySearchChanged: () => void;
 declare const loadHistory: () => Promise<void>;
 
 describe('historyGroupKey', () => {
@@ -106,6 +111,20 @@ describe('historyGroupKey', () => {
 });
 
 describe('history search rendering', () => {
+  it('queries the backend with the search term', async () => {
+    vi.useFakeTimers();
+    (document.getElementById('hist-search') as HTMLInputElement).value = 'qwen35';
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => [] });
+    (globalThis as any).fetch = fetchMock;
+
+    historySearchChanged();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/api/history?');
+    expect(String(fetchMock.mock.calls[0][0])).toContain('q=qwen35');
+  });
+
   it('shows only run rows when search is active', async () => {
     (document.getElementById('hist-search') as HTMLInputElement).value = 'text-qwen35-no-tool-r7';
     (globalThis as any).fetch = vi.fn().mockResolvedValue({
