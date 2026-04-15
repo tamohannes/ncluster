@@ -775,6 +775,14 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   filter: brightness(1.12);
 }
+/* Yellow ring (outline) so it still shows when projectBadgeStyle sets inline border-color */
+.run-name-badge.run-name-badge--starred {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.run-name-badge.run-name-badge--starred:hover {
+  filter: brightness(1.06);
+}
 
 /* ── Run info modal ── */
 .run-overlay {
@@ -795,11 +803,16 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   padding: 20px 24px 14px;
   border-bottom: 1px solid var(--border);
 }
-.run-head-info { flex: 1; }
+.run-head-info { flex: 1; min-width: 0; }
+.run-title-line {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
 .run-title {
   font-size: 16px; font-weight: 700; color: var(--text);
   font-family: var(--mono);
+  flex: 1; min-width: 0;
 }
+.run-mark-slot { flex-shrink: 0; }
 .run-subtitle {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   margin-top: 4px;
@@ -874,18 +887,32 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   padding: 5px 10px; border-bottom: 1px solid var(--row-border);
 }
 
-/* ── Run star + notes ── */
-.run-star-row {
-  display: flex; align-items: center; gap: 10px;
+/* ── Run notes (mark control lives in #run-mark-slot in header) ── */
+.run-notes-block {
   margin-bottom: 14px;
 }
-.run-star-btn {
-  background: none; border: none; cursor: pointer;
-  font-size: 20px; line-height: 1; padding: 2px;
-  color: var(--muted); transition: color 0.15s, transform 0.15s;
+.run-mark-btn {
+  flex-shrink: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--muted);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 }
-.run-star-btn:hover { transform: scale(1.2); }
-.run-star-btn.active { color: #f5a623; }
+.run-mark-btn:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.run-mark-btn.active {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
 .run-notes-wrap {
   flex: 1; position: relative;
 }
@@ -905,10 +932,6 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   opacity: 0; transition: opacity 0.3s;
 }
 .run-notes-saved.show { opacity: 1; }
-.star-indicator {
-  color: #f5a623; font-size: 11px; margin-right: 2px;
-  pointer-events: none; display: inline;
-}
 
 /* ── History view ── */
 .history-view { display: none; }

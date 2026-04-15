@@ -189,7 +189,8 @@ function _renderHistPage() {
     const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
     const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
-    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+    const runDataAttrs = ` data-run-cluster="${escAttr(g.cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
+    const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const hasMultiple = groupJobs.length > 1;
     const groupId = `${g.cluster}:${rootJobId}`;
     const isGroupExpanded = _expandedGroups.has(groupId);
@@ -199,9 +200,8 @@ function _renderHistPage() {
       const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, g.cluster);
-      const starHtml = rootJob.starred ? '<span class="star-indicator">★</span>' : '';
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')`;
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${starHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 

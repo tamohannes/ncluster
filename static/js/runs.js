@@ -5,6 +5,8 @@ async function openRunInfo(cluster, rootJobId, runName) {
   const title = document.getElementById('run-title');
   const subtitle = document.getElementById('run-subtitle');
   const body = document.getElementById('run-body');
+  const markSlot = document.getElementById('run-mark-slot');
+  if (markSlot) markSlot.innerHTML = '';
 
   title.textContent = runName || 'Run Info';
   subtitle.textContent = `${cluster} · job ${rootJobId}`;
@@ -16,11 +18,13 @@ async function openRunInfo(cluster, rootJobId, runName) {
     const res = await fetch(`/api/run_info/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
     const data = await res.json();
     if (data.status !== 'ok' || !data.run) {
+      if (markSlot) markSlot.innerHTML = '';
       body.innerHTML = `<div class="err-msg">Could not load run info: ${data.error || 'unknown error'}</div>`;
       return;
     }
     _renderRunBody(data.run, cluster);
   } catch (e) {
+    if (markSlot) markSlot.innerHTML = '';
     body.innerHTML = `<div class="err-msg">Failed to fetch run info: ${e.message}</div>`;
   }
 }
@@ -31,6 +35,8 @@ function closeRunInfo(event) {
 }
 
 function closeRunInfoDirect() {
+  const markSlot = document.getElementById('run-mark-slot');
+  if (markSlot) markSlot.innerHTML = '';
   document.getElementById('run-overlay').classList.remove('open');
   _runOverlayOpen = false;
 }
@@ -52,13 +58,20 @@ function _renderRunBody(run, cluster) {
   const notes = run.notes || '';
   const runId = run.id;
 
+  const markSlot = document.getElementById('run-mark-slot');
+  if (markSlot) {
+    const dc = escAttr(cluster);
+    const dr = escAttr(String(run.root_job_id));
+    markSlot.innerHTML = `<button type="button" class="run-mark-btn${starred ? ' active' : ''}" id="run-mark-btn"
+            data-run-cluster="${dc}" data-run-root="${dr}"
+            onclick="_toggleRunMark(${runId})" title="${starred ? 'Unmark this run' : 'Mark this run'}">
+      ${starred ? 'Marked' : 'Mark'}
+    </button>`;
+  }
+
   let html = '';
 
-  html += `<div class="run-star-row">
-    <button class="run-star-btn${starred ? ' active' : ''}" id="run-star-btn"
-            onclick="_toggleRunStar(${runId})" title="Star this run">
-      ${starred ? '★' : '☆'}
-    </button>
+  html += `<div class="run-notes-block">
     <div class="run-notes-wrap">
       <textarea class="run-notes-textarea" id="run-notes-textarea"
                 placeholder="Add notes about this run…"
@@ -258,20 +271,37 @@ function _formatDuration(start, end) {
   return `${secs}s`;
 }
 
-async function _toggleRunStar(runId) {
-  const btn = document.getElementById('run-star-btn');
+async function _toggleRunMark(runId) {
+  const btn = document.getElementById('run-mark-btn');
   if (!btn) return;
-  const wasStarred = btn.classList.contains('active');
-  const newVal = wasStarred ? 0 : 1;
+  const cluster = btn.getAttribute('data-run-cluster');
+  const rootJobId = btn.getAttribute('data-run-root');
+  const wasMarked = btn.classList.contains('active');
+  const newVal = wasMarked ? 0 : 1;
   btn.classList.toggle('active', !!newVal);
-  btn.textContent = newVal ? '★' : '☆';
+  btn.textContent = newVal ? 'Marked' : 'Mark';
+  btn.title = newVal ? 'Unmark this run' : 'Mark this run';
+  if (typeof syncRunMarkedBorders === 'function') {
+    syncRunMarkedBorders(cluster, rootJobId, !!newVal);
+  }
   try {
-    await fetch(`/api/run/${runId}`, {
+    const res = await fetch(`/api/run/${runId}`, {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({starred: newVal}),
     });
-  } catch (_) {}
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || 'request failed');
+    }
+  } catch (_) {
+    btn.classList.toggle('active', !!wasMarked);
+    btn.textContent = wasMarked ? 'Marked' : 'Mark';
+    btn.title = wasMarked ? 'Unmark this run' : 'Mark this run';
+    if (typeof syncRunMarkedBorders === 'function') {
+      syncRunMarkedBorders(cluster, rootJobId, !!wasMarked);
+    }
+  }
 }
 
 function _onRunNoteInput(runId) {

@@ -362,7 +362,8 @@ function _renderProjPage() {
       const _projColor = groupJobs[0]?.project_color || '';
       const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
       const highlightedLabel = highlightJobName(g.label, _clusterGkHL.prefix, _clusterGkHL.suffix);
-      const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+      const runDataAttrs = ` data-run-cluster="${escAttr(cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
+      const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
       const hasMultiple = groupJobs.length > 1;
       const groupId = `${cluster}:${rootJobId}`;
       const isGroupExpanded = _expandedGroups.has(groupId);
@@ -372,8 +373,7 @@ function _renderProjPage() {
       const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, cluster);
-      const starHtml = rootJob.starred ? '<span class="star-indicator">★</span>' : '';
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${starHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 

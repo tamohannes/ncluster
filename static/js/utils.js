@@ -14,6 +14,27 @@ window.fetch = function(input, init) {
 function fetchWithTimeout(url, opts = {}, ms = 15000) {
   return fetch(url, { signal: AbortSignal.timeout(ms), ...opts });
 }
+
+/** Escape a string for use in an HTML double-quoted attribute value */
+function escAttr(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;');
+}
+
+/** Update board/history/project run name badges when mark state changes (no full refresh). */
+function syncRunMarkedBorders(cluster, rootJobId, marked) {
+  if (cluster == null || rootJobId == null) return;
+  const c = String(cluster);
+  const r = String(rootJobId);
+  document.querySelectorAll('.run-name-badge[data-run-cluster][data-run-root]').forEach((el) => {
+    if (el.getAttribute('data-run-cluster') === c && el.getAttribute('data-run-root') === r) {
+      el.classList.toggle('run-name-badge--starred', !!marked);
+    }
+  });
+}
 let allData = {};
 let historyData = [];
 let countdown = 20;
