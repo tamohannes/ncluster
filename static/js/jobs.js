@@ -413,6 +413,16 @@ function renderCard(name, data) {
   const jobParts = [];
   if (runCount) jobParts.push(`${runCount} running`);
   if (pendCount) jobParts.push(`${pendCount} pending`);
+  if (runCount || pendCount) {
+    let cardGpuTotal = 0;
+    for (const j of jobs) {
+      const s = (j.state || '').toUpperCase();
+      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING') {
+        cardGpuTotal += jobGpuCount(j.nodes, j.gres);
+      }
+    }
+    jobParts.push(`${cardGpuTotal} GPU${cardGpuTotal !== 1 ? 's' : ''}`);
+  }
   let jobCountText;
   if (isErr && failCount >= 3 && !jobs.length) {
     jobCountText = 'unreachable';

@@ -22,6 +22,7 @@ declare const isFailedLikeState: (s: string) => boolean;
 declare const isCompletedState: (s: string) => boolean;
 declare const fmtTime: (s: string) => string;
 declare const parseGpus: (nodes: string, gres: string) => string | null;
+declare const jobGpuCount: (nodes: string, gres: string) => number;
 declare const groupKeyForJob: (name: string) => string;
 declare const groupJobsByDependency: (jobs: any[]) => [string, any[]][];
 declare const topoSortJobs: (jobs: any[]) => any[];
@@ -73,6 +74,18 @@ describe('parseGpus', () => {
   it('returns null for cpu', () => expect(parseGpus('1', 'cpu')).toBe(null));
   it('returns null for (null)', () => expect(parseGpus('1', '(null)')).toBe(null));
   it('single gpu', () => expect(parseGpus('1', 'gpu:1')).toBe('1 GPU'));
+});
+
+describe('jobGpuCount', () => {
+  it('matches parseGpus totals', () => {
+    expect(jobGpuCount('1', 'gpu:8')).toBe(8);
+    expect(jobGpuCount('2', 'gpu:8')).toBe(16);
+    expect(jobGpuCount('1', 'gpu:h100:8')).toBe(8);
+  });
+  it('returns 0 for cpu or missing gres', () => {
+    expect(jobGpuCount('1', 'cpu')).toBe(0);
+    expect(jobGpuCount('1', '(null)')).toBe(0);
+  });
 });
 
 describe('groupKeyForJob', () => {

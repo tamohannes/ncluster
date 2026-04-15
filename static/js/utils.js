@@ -451,6 +451,17 @@ function parseGpus(nodes, gres) {
   return total === perNode ? `${total} GPU${total !== 1 ? 's' : ''}` : `${total} GPUs (${n}×${perNode})`;
 }
 
+/** Numeric GPU count (nodes × per-node gres) for aggregations; 0 if none. */
+function jobGpuCount(nodes, gres) {
+  if (!gres || gres === 'cpu' || gres === '(null)' || gres === 'N/A' || gres === 'local') return 0;
+  const m = String(gres).match(/gpu[^:]*:(?:[^:]+:)?(\d+)/);
+  if (!m) return 0;
+  const perNode = parseInt(m[1], 10) || 0;
+  if (perNode === 0) return 0;
+  const n = parseInt(nodes, 10) || 1;
+  return perNode * n;
+}
+
 function groupKeyForJob(name) {
   const n = (name || '').trim();
   if (!n) return 'misc';
