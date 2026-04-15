@@ -1124,6 +1124,30 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .lb-detail { max-width: 800px; margin: 0 auto; }
 .lb-main-plan { background: color-mix(in srgb, var(--amber-bg) 15%, var(--bg)); }
 .lb-detail-actions { display: flex; gap: 6px; margin-bottom: 16px; align-items: center; }
+.lb-present-close {
+  display: none;
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 30;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+  backdrop-filter: blur(10px);
+}
+.lb-present-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-bg) 92%, transparent);
+}
 .lb-export-hint {
   font-family: var(--sans); font-size: 10px; color: var(--muted);
   cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
@@ -1228,6 +1252,11 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .lb-detail-body img {
   max-width: 100%; border-radius: 6px;
 }
+.lb-present-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
 .lb-html-embed {
   margin: 12px 0; border-radius: 8px; overflow: hidden;
   border: 1px solid var(--border); background: #fff;
@@ -1261,6 +1290,138 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   font-family: var(--sans); font-size: 11px; color: var(--muted);
   padding: 6px 12px; border-top: 1px solid var(--border);
   background: var(--surface); text-align: center; letter-spacing: -0.01em;
+}
+
+.logbook-view.active.lb-present-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 850;
+  background: var(--bg);
+}
+.logbook-view.lb-present-mode .lb-page {
+  width: 100%;
+}
+.logbook-view.lb-present-mode .lb-sidebar,
+.logbook-view.lb-present-mode .lb-splitter {
+  display: none;
+}
+.logbook-view.lb-present-mode .lb-main {
+  padding: clamp(28px, 4vw, 56px) clamp(22px, 6vw, 88px) 72px;
+  background: var(--bg);
+}
+.logbook-view.lb-present-mode .lb-detail {
+  max-width: 1040px;
+}
+.logbook-view.lb-present-mode .lb-present-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.logbook-view.lb-present-mode .lb-detail-actions {
+  display: none;
+}
+.logbook-view.lb-present-mode .lb-detail-title {
+  font-size: clamp(34px, 4vw, 48px);
+  line-height: 1.18;
+  margin-bottom: 12px;
+}
+.logbook-view.lb-present-mode .lb-detail-id {
+  font-size: 15px;
+}
+.logbook-view.lb-present-mode .lb-detail-meta {
+  font-size: 13px;
+  gap: 10px;
+  margin-bottom: 28px;
+}
+.logbook-view.lb-present-mode .lb-detail-body {
+  font-size: clamp(16px, 1.08vw, 18px);
+  line-height: 1.82;
+}
+.logbook-view.lb-present-mode .lb-detail-body h1 {
+  font-size: clamp(28px, 2.6vw, 34px);
+  margin: 28px 0 12px;
+}
+.logbook-view.lb-present-mode .lb-detail-body h2 {
+  font-size: clamp(22px, 2.05vw, 27px);
+  margin: 22px 0 10px;
+}
+.logbook-view.lb-present-mode .lb-detail-body h3 {
+  font-size: clamp(18px, 1.55vw, 21px);
+  margin: 18px 0 8px;
+}
+.logbook-view.lb-present-mode .lb-detail-body p,
+.logbook-view.lb-present-mode .lb-detail-body ul,
+.logbook-view.lb-present-mode .lb-detail-body ol,
+.logbook-view.lb-present-mode .lb-detail-body blockquote {
+  margin: 12px 0;
+}
+.logbook-view.lb-present-mode .lb-detail-body ul,
+.logbook-view.lb-present-mode .lb-detail-body ol {
+  padding-left: 30px;
+}
+.logbook-view.lb-present-mode .lb-detail-body pre {
+  font-size: 0.88em;
+  padding: 16px 18px;
+  margin: 16px 0;
+  border-radius: 10px;
+}
+.logbook-view.lb-present-mode .md-inline-code {
+  font-size: 0.86em;
+  padding: 0.08em 0.36em;
+}
+.logbook-view.lb-present-mode .md-table-wrap {
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.logbook-view.lb-present-mode .md-table {
+  font-size: 1.06em;
+}
+.logbook-view.lb-present-mode .md-table th,
+.logbook-view.lb-present-mode .md-table td {
+  font-size: 1em;
+  padding: 9px 15px;
+  line-height: 1.58;
+  font-variant-numeric: tabular-nums;
+}
+.logbook-view.lb-present-mode .md-table .md-inline-code {
+  font-size: 0.94em;
+  padding: 0.1em 0.38em;
+}
+.logbook-view.lb-present-mode .lb-detail-body img,
+.logbook-view.lb-present-mode .lb-inline-img,
+.logbook-view.lb-present-mode .lb-html-embed {
+  border-radius: 10px;
+}
+.logbook-view.lb-present-mode .lb-html-embed {
+  margin: 22px 0;
+}
+.logbook-view.lb-present-mode .lb-html-embed iframe {
+  height: min(70vh, 820px);
+}
+.logbook-view.lb-present-mode .run-ref,
+.logbook-view.lb-present-mode .anchor-ref {
+  font-size: 0.78em;
+  padding: 0.14em 0.45em;
+}
+.logbook-view.lb-present-mode .entry-ref {
+  gap: 6px;
+  padding: 0.12em 0.45em;
+}
+.logbook-view.lb-present-mode .entry-ref-id {
+  font-size: 0.72em;
+}
+.logbook-view.lb-present-mode .entry-ref-project {
+  font-size: 0.66em;
+  padding: 0.08em 0.38em;
+}
+.logbook-view.lb-present-mode .entry-ref-title {
+  font-size: 0.86em;
+}
+.logbook-view.lb-present-mode .lb-figure-caption,
+.logbook-view.lb-present-mode .lb-html-embed-caption {
+  font-size: 0.8em;
+  line-height: 1.55;
 }
 
 .logbook-entry { position: relative; padding: 8px 0; }

@@ -9,6 +9,7 @@ let _lbRunNames = [];
 let _lbSuggestTarget = null;
 let _lbSuggestStart = -1;
 let _lbCurrentEntry = null;
+let _lbPresentMode = false;
 const LB_SIDEBAR_WIDTH_KEY = 'clausius.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
@@ -213,6 +214,48 @@ function _highlightSidebarItem(id) {
   });
 }
 
+function _presentModeButtonLabel() {
+  return _lbPresentMode ? 'exit present' : 'present mode';
+}
+
+function _syncLogbookPresentMode() {
+  const root = document.getElementById('logbook-view');
+  if (root) root.classList.toggle('lb-present-mode', _lbPresentMode);
+  document.querySelectorAll('.lb-present-toggle').forEach(btn => {
+    btn.textContent = _presentModeButtonLabel();
+    btn.classList.toggle('active', _lbPresentMode);
+  });
+}
+
+async function toggleLogbookPresentMode(force) {
+  const root = document.getElementById('logbook-view');
+  if (!root) return;
+
+  const next = typeof force === 'boolean' ? force : !_lbPresentMode;
+  _lbPresentMode = next;
+  _syncLogbookPresentMode();
+
+  if (_lbPresentMode) {
+    if (typeof root.requestFullscreen === 'function' && document.fullscreenElement !== root) {
+      try { await root.requestFullscreen(); } catch (_) {}
+    }
+    return;
+  }
+
+  if (document.fullscreenElement === root && typeof document.exitFullscreen === 'function') {
+    try { await document.exitFullscreen(); } catch (_) {}
+  }
+}
+
+document.addEventListener('fullscreenchange', () => {
+  const root = document.getElementById('logbook-view');
+  if (!_lbPresentMode || !root) return;
+  if (document.fullscreenElement !== root) {
+    _lbPresentMode = false;
+    _syncLogbookPresentMode();
+  }
+});
+
 
 // ── Search & filter ─────────────────────────────────────────────────────────
 
@@ -236,6 +279,7 @@ function filterLogbookType(btn) {
 // ── Main pane — entry detail ────────────────────────────────────────────────
 
 function _showMainEmpty() {
+  if (_lbPresentMode) void toggleLogbookPresentMode(false);
   const el = document.getElementById('lb-main');
   if (!el) return;
   el.classList.remove('lb-main-plan');
@@ -313,9 +357,11 @@ async function openLogbookEntry(entryId, opts = {}) {
     const typeBadge = isPlan ? '<span class="lb-badge-plan">plan</span>' : '<span class="lb-badge-note">note</span>';
     el.innerHTML = `
       <div class="lb-detail">
+        <button class="lb-present-close" onclick="toggleLogbookPresentMode(false)" title="Exit present mode" aria-label="Exit present mode">×</button>
         <div class="lb-detail-actions">
           <button class="btn" onclick="_lbGoBack()" title="Back">← back</button>
           <button class="btn" onclick="openEntryGraph(${entry.id})" title="Graph around this entry">graph</button>
+          <button class="btn lb-present-toggle${_lbPresentMode ? ' active' : ''}" onclick="toggleLogbookPresentMode()" title="Open this entry in present mode">${_presentModeButtonLabel()}</button>
           ${typeBadge}
           <span style="flex:1"></span>
           <span class="lb-export-hint" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">${_exportShortcutLabel()} export</span>
@@ -652,6 +698,7 @@ function updateIcon() {
 // ── Editor ──────────────────────────────────────────────────────────────────
 
 function showLogbookEditor(entryId, title, body, entryType) {
+  if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _lbEditingId = entryId || null;
   const el = document.getElementById('lb-main');
   if (!el) return;
@@ -1164,6 +1211,7 @@ function _clearMapFocus() {
 
 function openEntryGraph(entryId) {
   if (!_lbProject || !entryId) return;
+  if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _mapFocusEntryId = Number(entryId);
   _mapNeighborHops = 1;
   _mapEdgeDir = 'both';
@@ -1176,6 +1224,7 @@ function openEntryGraph(entryId) {
 }
 
 function toggleLogbookMap() {
+  if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _mapActive = !_mapActive;
   _syncMapBtnActive(_mapActive);
   if (_mapActive) {
