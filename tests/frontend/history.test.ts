@@ -4,19 +4,32 @@
  * Run with: npx vitest run tests/frontend/history.test.ts
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { loadBrowserScripts } from './helpers';
 
-beforeAll(() => {
+function renderDom() {
   document.body.innerHTML = `
     <script id="cluster-data" type="application/json">{"local":{"host":null,"gpu_type":"local"}}</script>
     <div id="live-view"></div>
     <div id="history-view"></div>
     <div id="tab-live"></div>
     <div id="tab-history"></div>
-    <div id="hist-cluster"><option value="all">All</option></div>
-    <div id="hist-search"></div>
-    <div id="hist-body"></div>
+    <select id="hist-cluster"><option value="all">All</option></select>
+    <select id="hist-days"><option value="all">All time</option></select>
+    <select id="hist-project"><option value="">All projects</option></select>
+    <select id="hist-campaign"><option value="">All campaigns</option></select>
+    <select id="hist-partition"><option value="">All partitions</option></select>
+    <select id="hist-account"><option value="">All accounts</option></select>
+    <input id="hist-search" value="" />
+    <div id="hist-state-filters">
+      <button class="hist-state-btn active" data-state="COMPLETED"></button>
+      <button class="hist-state-btn active" data-state="FAILED"></button>
+      <button class="hist-state-btn active" data-state="CANCELLED"></button>
+      <button class="hist-state-btn active" data-state="TIMEOUT"></button>
+      <button class="hist-state-btn active" data-state="RUNNING"></button>
+      <button class="hist-state-btn active" data-state="PENDING"></button>
+    </div>
+    <table><tbody id="hist-body"></tbody></table>
     <div id="hist-pagination"></div>
     <div id="grid"></div>
     <div id="cd">30</div>
@@ -58,13 +71,22 @@ beforeAll(() => {
     <div id="set-jsonl-mode"></div>
     <div id="exp-tab-formatted"></div>
     <div id="exp-tab-raw"></div>
-    <div id="cleanup-days"></div>
+    <input id="cleanup-days" value="30" />
   `;
+}
 
+beforeAll(() => {
+  renderDom();
   loadBrowserScripts(['utils.js', 'history.js']);
 });
 
+beforeEach(() => {
+  renderDom();
+  vi.restoreAllMocks();
+});
+
 declare const historyGroupKey: (r: any) => string;
+declare const loadHistory: () => Promise<void>;
 
 describe('historyGroupKey', () => {
   it('groups eval prefix with cluster', () => {
@@ -80,5 +102,37 @@ describe('historyGroupKey', () => {
   it('returns misc for empty name', () => {
     const key = historyGroupKey({ cluster: 'c1', job_name: '' });
     expect(key).toBe('c1:misc');
+  });
+});
+
+describe('history search rendering', () => {
+  it('shows only run rows when search is active', async () => {
+    (document.getElementById('hist-search') as HTMLInputElement).value = 'text-qwen35-no-tool-r7';
+    (globalThis as any).fetch = vi.fn().mockResolvedValue({
+      json: async () => ([
+        {
+          cluster: 'h100',
+          job_id: '101',
+          job_name: 'hle_text-qwen35-no-tool-r7',
+          state: 'COMPLETED',
+          depends_on: [],
+          dep_details: [],
+        },
+        {
+          cluster: 'h100',
+          job_id: '102',
+          job_name: 'hle_text-qwen35-no-tool-r7-judge-rs0',
+          state: 'COMPLETED',
+          depends_on: ['101'],
+          dep_details: [],
+        },
+      ]),
+    });
+
+    await loadHistory();
+
+    expect(document.querySelectorAll('#hist-body tr.group-head-row').length).toBe(1);
+    expect(document.querySelectorAll('#hist-body tr.hist-compact').length).toBe(0);
+    expect(document.getElementById('hist-body')?.textContent).toContain('2 jobs');
   });
 });

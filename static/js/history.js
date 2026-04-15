@@ -31,6 +31,14 @@ function _historyOptionLabel(id, value) {
   return value;
 }
 
+function _historyHasSearchQuery() {
+  return !!_histValue('hist-search').trim();
+}
+
+function _historyGroupCountLabel(count) {
+  return `${count} ${count === 1 ? 'job' : 'jobs'}`;
+}
+
 function _syncHistorySelect(id, values, allLabel) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -175,6 +183,7 @@ function _buildHistGroups(rows) {
 function _renderHistPage() {
   const tbody = document.getElementById('hist-body');
   const totalGroups = histGroups.length;
+  const searchOnlyRuns = _historyHasSearchQuery();
   const totalPages = Math.max(1, Math.ceil(totalGroups / HIST_GROUPS_PER_PAGE));
   if (histPage >= totalPages) histPage = totalPages - 1;
   if (histPage < 0) histPage = 0;
@@ -207,13 +216,19 @@ function _renderHistPage() {
     const hasMultiple = groupJobs.length > 1;
     const groupId = `${g.cluster}:${rootJobId}`;
     const isGroupExpanded = _expandedGroups.has(groupId);
-    if (hasMultiple) {
-      const chevronCls = isGroupExpanded ? ' expanded' : '';
-      const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+    if (searchOnlyRuns || hasMultiple) {
+      const showChevron = hasMultiple && !searchOnlyRuns;
+      const chevronCls = showChevron && isGroupExpanded ? ' expanded' : '';
+      const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
-      const summaryHtml = statusSummaryHtml(groupJobs);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
-      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const summaryHtml = statusSummaryHtml(groupJobs, g.cluster);
+      const rowAction = searchOnlyRuns ? `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')` : `toggleRunGroup('${groupId}')`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+    }
+
+    if (searchOnlyRuns) {
+      return;
     }
 
     const idSet = new Set(groupJobs.map(j => j.jobid));
