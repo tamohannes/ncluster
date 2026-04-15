@@ -104,12 +104,13 @@ def _watchdog_notify_loop():
     time.sleep(10)
     while True:
         try:
-            from server.routes import _active_requests, _MAX_ACTIVE
+            from server.routes import _active_request_count, _MAX_ACTIVE
             from server.ssh import get_circuit_breaker_status
-            if _active_requests > _MAX_ACTIVE * 3:
+            active = _active_request_count()
+            if active > _MAX_ACTIVE * 3:
                 log.warning(
                     "watchdog: active_requests=%d dangerously high, skipping notify",
-                    _active_requests,
+                    active,
                 )
             else:
                 _sd_notify("WATCHDOG=1")

@@ -107,11 +107,12 @@ class TestCircuitBreaker:
 class TestLoadShedding:
     """Verify load shedding protects the server without leaking counters."""
 
-    def test_rejected_request_does_not_inflate_counter(self, client, mock_ssh):
+    def test_rejected_request_when_at_capacity(self, client, mock_ssh):
         from server import routes
-        original = routes._active_requests
+        fake_tids = set(range(900_000, 900_000 + routes._MAX_ACTIVE + 5))
         with routes._active_lock:
-            routes._active_requests = routes._MAX_ACTIVE + 5
+            saved = routes._active_threads.copy()
+            routes._active_threads.update(fake_tids)
 
         try:
             resp = client.get("/api/partition_summary")
@@ -119,57 +120,51 @@ class TestLoadShedding:
             data = resp.get_json()
             assert data["status"] == "error"
             assert "busy" in data["error"]
-
-            with routes._active_lock:
-                assert routes._active_requests == routes._MAX_ACTIVE + 5
         finally:
             with routes._active_lock:
-                routes._active_requests = original
+                routes._active_threads.clear()
+                routes._active_threads.update(saved)
 
     def test_non_heavy_endpoint_bypasses_shedding(self, client, mock_ssh):
         from server import routes
-        original = routes._active_requests
+        fake_tids = set(range(900_000, 900_000 + routes._MAX_ACTIVE + 10))
         with routes._active_lock:
-            routes._active_requests = routes._MAX_ACTIVE + 10
+            saved = routes._active_threads.copy()
+            routes._active_threads.update(fake_tids)
 
         try:
             resp = client.get("/api/health")
             assert resp.status_code == 200
         finally:
             with routes._active_lock:
-                routes._active_requests = original
+                routes._active_threads.clear()
+                routes._active_threads.update(saved)
 
-    def test_counter_decrements_on_success(self, client, mock_ssh):
+    def test_threads_cleaned_on_success(self, client, mock_ssh):
         from server import routes
-        with routes._active_lock:
-            before = routes._active_requests
+        before = routes._active_request_count()
 
         resp = client.get("/api/health")
         assert resp.status_code == 200
 
-        with routes._active_lock:
-            after = routes._active_requests
+        after = routes._active_request_count()
         assert after == before
 
-    def test_counter_decrements_on_404(self, client, mock_ssh):
+    def test_threads_cleaned_on_404(self, client, mock_ssh):
         from server import routes
-        with routes._active_lock:
-            before = routes._active_requests
+        before = routes._active_request_count()
 
         resp = client.get("/api/jobs/nonexistent-cluster")
         assert resp.status_code == 404
 
-        with routes._active_lock:
-            after = routes._active_requests
+        after = routes._active_request_count()
         assert after == before
 
-    def test_counter_accurate_under_concurrent_load(self, app, mock_ssh):
-        """Fire parallel requests and verify the counter returns to baseline."""
+    def test_threads_accurate_under_concurrent_load(self, app, mock_ssh):
+        """Fire parallel requests and verify the thread set returns to baseline."""
         from server import routes
-        with routes._active_lock:
-            baseline = routes._active_requests
+        baseline = routes._active_request_count()
 
-        results = []
         def _make_request():
             with app.test_client() as c:
                 resp = c.get("/api/health")
@@ -181,8 +176,7 @@ class TestLoadShedding:
 
         assert all(r == 200 for r in results)
 
-        with routes._active_lock:
-            final = routes._active_requests
+        final = routes._active_request_count()
         assert final == baseline
 
 
@@ -341,29 +335,23 @@ class TestConcurrency:
 
 @pytest.mark.integration
 class TestWatchdog:
-    """Verify the self-healing watchdog resets drifted counters."""
+    """Verify the set-based tracking auto-prunes dead threads."""
 
-    def test_watchdog_resets_inflated_counter(self):
+    def test_dead_thread_ids_pruned_on_count(self):
         from server import routes
-        from server.ssh import _watchdog_reset_active_requests
         with routes._active_lock:
-            routes._active_requests = routes._MAX_ACTIVE + 50
+            saved = routes._active_threads.copy()
+            routes._active_threads.add(999_999_999)
 
-        _watchdog_reset_active_requests()
-
+        count = routes._active_request_count()
         with routes._active_lock:
-            assert routes._active_requests == 0
+            assert 999_999_999 not in routes._active_threads
+            routes._active_threads.clear()
+            routes._active_threads.update(saved)
 
-    def test_watchdog_leaves_normal_counter_alone(self):
-        from server import routes
-        from server.ssh import _watchdog_reset_active_requests
-        with routes._active_lock:
-            routes._active_requests = 5
-
-        _watchdog_reset_active_requests()
-
-        with routes._active_lock:
-            assert routes._active_requests == 5
+    def test_watchdog_log_does_not_crash(self):
+        from server.ssh import _watchdog_log_active
+        _watchdog_log_active()
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +438,14 @@ class TestHealthEndpoint:
     def test_health_not_load_shed(self, client, mock_ssh):
         """Health check must never be load-shed."""
         from server import routes
-        original = routes._active_requests
+        fake_tids = set(range(900_000, 900_000 + 999))
         with routes._active_lock:
-            routes._active_requests = 999
+            saved = routes._active_threads.copy()
+            routes._active_threads.update(fake_tids)
         try:
             resp = client.get("/api/health")
             assert resp.status_code == 200
         finally:
             with routes._active_lock:
-                routes._active_requests = original
+                routes._active_threads.clear()
+                routes._active_threads.update(saved)

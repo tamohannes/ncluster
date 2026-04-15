@@ -474,6 +474,19 @@ function groupJobsByDependency(jobs) {
     for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
   }
 
+  // Union by output_dir so continuation runs (same experiment restarted) are
+  // displayed as a single entity rather than separate groups.
+  const outputDirGroups = {};
+  for (const j of jobs) {
+    if (j.output_dir) {
+      if (!outputDirGroups[j.output_dir]) outputDirGroups[j.output_dir] = [];
+      outputDirGroups[j.output_dir].push(j.jobid);
+    }
+  }
+  for (const ids of Object.values(outputDirGroups)) {
+    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+  }
+
   // Collect groups.
   const groups = {};
   for (const j of jobs) {

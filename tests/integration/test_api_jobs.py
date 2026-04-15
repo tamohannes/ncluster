@@ -61,22 +61,27 @@ class TestApiJobs:
         if mock_cluster in data and data[mock_cluster].get("status") == "ok":
             assert "mount" in data[mock_cluster]
 
-    def test_force_poll_runs_immediately(self, client, monkeypatch, mock_cluster):
+    def test_force_poll_queues_priority_refresh(self, client, monkeypatch, mock_cluster):
         class _Poller:
-            def poll_now(self, cluster):
+            def __init__(self):
+                self.queued = []
+
+            def request_priority(self, cluster):
                 assert cluster == mock_cluster
-                return {"status": "ok", "cluster": cluster, "duration_ms": 12, "changed": True}
+                self.queued.append(cluster)
 
             def get_status(self):
-                return {mock_cluster: {"state": "healthy"}}
+                return {mock_cluster: {"state": "healthy", "inflight": False}}
 
-        monkeypatch.setattr("server.routes.get_poller", lambda: _Poller())
+        poller = _Poller()
+        monkeypatch.setattr("server.routes.get_poller", lambda: poller)
 
         resp = client.post(f"/api/force_poll/{mock_cluster}")
-        assert resp.status_code == 200
+        assert resp.status_code == 202
         data = resp.get_json()
-        assert data["status"] == "ok"
+        assert data["status"] == "queued"
         assert data["cluster"] == mock_cluster
+        assert poller.queued == [mock_cluster]
 
 
 @pytest.mark.integration

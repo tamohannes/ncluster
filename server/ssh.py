@@ -348,53 +348,34 @@ atexit.register(close_all_clients)
 
 # -- Watchdog loop -----------------------------------------------------------
 
-_wd_prev_count = 0
-_wd_stable_cycles = 0
-_WD_DRIFT_THRESHOLD = 16
+def _watchdog_log_active():
+    """Log when active request count is unusually high.
 
-
-def _watchdog_reset_active_requests():
-    """Correct the active request counter if it has drifted."""
-    global _wd_prev_count, _wd_stable_cycles
+    The set-based _active_threads in routes.py self-heals (dead threads are
+    pruned on read), so no manual reset is needed.  This loop just provides
+    observability.
+    """
     try:
         from . import routes
-        with routes._active_lock:
-            current = routes._active_requests
-
-        if current > routes._MAX_ACTIVE:
-            with routes._active_lock:
-                log.warning(
-                    'watchdog: _active_requests=%d exceeds max=%d, resetting to 0',
-                    routes._active_requests, routes._MAX_ACTIVE,
-                )
-                routes._active_requests = 0
-            _wd_prev_count = 0
-            _wd_stable_cycles = 0
-            return
-
-        if current >= _WD_DRIFT_THRESHOLD:
-            if current >= _wd_prev_count and _wd_prev_count >= _WD_DRIFT_THRESHOLD:
-                _wd_stable_cycles += 1
-            else:
-                _wd_stable_cycles = 1
-            if _wd_stable_cycles >= 2:
-                with routes._active_lock:
-                    log.warning(
-                        'watchdog: _active_requests=%d stuck above %d for %d cycles, resetting to 0',
-                        routes._active_requests, _WD_DRIFT_THRESHOLD, _wd_stable_cycles,
-                    )
-                    routes._active_requests = 0
-                _wd_stable_cycles = 0
-        else:
-            _wd_stable_cycles = 0
-
-        _wd_prev_count = current
+        count = routes._active_request_count()
+        if count >= 16:
+            log.warning('watchdog: %d active requests', count)
+            routes._debug_log(
+                f"watchdog-{int(time.time() * 1000)}",
+                "H6",
+                "server/ssh.py:_watchdog_log_active",
+                "high active request snapshot",
+                {
+                    "active_requests": count,
+                    "requests": routes._active_request_snapshot(),
+                },
+            )
     except Exception:
         pass
 
 
 def ssh_pool_gc_loop():
-    """Compatibility loop: only runs the request-counter watchdog now."""
+    """Background watchdog for request load observability."""
     while True:
-        _watchdog_reset_active_requests()
+        _watchdog_log_active()
         time.sleep(15)

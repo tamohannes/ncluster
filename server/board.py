@@ -1,5 +1,7 @@
 """Shared board snapshot builders for HTTP routes and MCP tools."""
 
+import re
+
 from .config import (
     CLUSTERS,
     _cache_get,
@@ -68,6 +70,90 @@ def _fill_run_ids(cluster, jobs):
             job["run_id"] = row["run_id"]
 
 
+_STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
+
+
+def _output_dir_from_log_path(log_path):
+    import os
+    if not log_path:
+        return None
+    log_dir = os.path.dirname(log_path)
+    output_dir = os.path.dirname(log_dir)
+    if not output_dir or output_dir == log_dir:
+        return None
+    return output_dir
+
+
+def _fill_output_dirs(cluster, jobs):
+    """Fetch log_path from job_history and derive output_dir for each job.
+
+    output_dir is the parent of the log directory and is used by the frontend
+    to group continuation runs (same experiment restarted) into a single entity.
+
+    Two sources are tried in order:
+      1. job_history.log_path  — available once scontrol has been queried
+         (running/completing jobs and completed jobs)
+      2. runs.scontrol_raw StdOut= line  — available for pending jobs whose
+         run metadata has been captured but stdout path not yet written to
+         job_history
+    """
+    jid_map = {}
+    for job in jobs:
+        if job.get("output_dir"):
+            continue
+        jid = str(job.get("jobid") or job.get("job_id") or "").strip()
+        if jid:
+            jid_map.setdefault(jid, []).append(job)
+    if not jid_map:
+        return
+    con = get_db()
+    placeholders = ",".join("?" for _ in jid_map)
+
+    # Pass 1: log_path stored directly on the job.
+    rows = con.execute(
+        f"SELECT job_id, log_path FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
+        (cluster, *jid_map.keys()),
+    ).fetchall()
+    still_missing = {}
+    for row in rows:
+        output_dir = _output_dir_from_log_path(row["log_path"])
+        if output_dir:
+            for job in jid_map.get(row["job_id"], []):
+                job["output_dir"] = output_dir
+        else:
+            for job in jid_map.get(row["job_id"], []):
+                still_missing.setdefault(row["job_id"], []).append(job)
+
+    # Also track jobs that had no job_history row yet (newly pending).
+    seen_jids = {row["job_id"] for row in rows}
+    for jid, job_list in jid_map.items():
+        if jid not in seen_jids:
+            still_missing[jid] = job_list
+
+    if still_missing:
+        # Pass 2: fall back to StdOut= in the run's scontrol_raw for jobs
+        # that have a run_id but no log_path yet (e.g. pending jobs).
+        run_placeholders = ",".join("?" for _ in still_missing)
+        run_rows = con.execute(
+            f"""SELECT jh.job_id, r.scontrol_raw
+                FROM job_history jh
+                JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+                WHERE jh.cluster=? AND jh.job_id IN ({run_placeholders})
+                  AND r.scontrol_raw != ''""",
+            (cluster, *still_missing.keys()),
+        ).fetchall()
+        for row in run_rows:
+            m = _STDOUT_RE.search(row["scontrol_raw"] or "")
+            if not m:
+                continue
+            output_dir = _output_dir_from_log_path(m.group(1))
+            if output_dir:
+                for job in still_missing.get(row["job_id"], []):
+                    job["output_dir"] = output_dir
+
+    con.close()
+
+
 def _apply_job_overlays(cluster, jobs, overlays):
     db_progress = overlays["progress"]
     db_progress_src = overlays["progress_source"]
@@ -133,6 +219,7 @@ def _merge_live_and_pinned_jobs(cluster, live_jobs, pinned_jobs):
 
     _restore_dependency_fields(jobs, parse_dependency)
     _fill_run_ids(cluster, jobs)
+    _fill_output_dirs(cluster, jobs)
     jobs = [normalize_job_times_local(job) for job in jobs]
     return jobs
 

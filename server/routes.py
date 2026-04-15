@@ -16,6 +16,8 @@ from flask import Blueprint, g, jsonify, request, render_template, make_response
 _log = logging.getLogger(__name__)
 _SLOW_REQUEST_MS = 2000
 _shared_pool = ThreadPoolExecutor(max_workers=4)
+_DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".cursor", "debug-41bcda.log")
+_DEBUG_SESSION_ID = "41bcda"
 
 from .config import (
     CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
@@ -67,7 +69,8 @@ def _handle_unhandled(exc):
     _log.exception("Unhandled exception on %s %s", request.method, request.path)
     return jsonify({"status": "error", "error": str(exc)}), 500
 
-_active_requests = 0
+_active_threads = set()
+_active_requests_meta = {}
 _active_lock = threading.Lock()
 _MAX_ACTIVE = 20
 
@@ -77,26 +80,90 @@ _HEAVY_PREFIXES = (
     "/api/log_files/", "/api/log/", "/api/log_full/",
     "/api/jsonl_index/", "/api/jsonl_record/", "/api/ls/",
     "/api/cancel_jobs/", "/api/cancel/",
-    "/api/force_poll/", "/api/run_script/", "/api/stats/", 
+    "/api/force_poll/", "/api/run_script/", "/api/stats/",
     "/api/mount/", "/api/run_info/", "/api/cleanup"
 )
+
+
+def _active_request_count():
+    """Thread-safe active request count that cannot drift.
+
+    Uses a set of thread IDs so dead/recycled threads are automatically
+    excluded — no counter to get out of sync.
+    """
+    alive = {t.ident for t in threading.enumerate()}
+    with _active_lock:
+        stale = _active_threads - alive
+        if stale:
+            _active_threads.difference_update(stale)
+            for tid in stale:
+                _active_requests_meta.pop(tid, None)
+        return len(_active_threads)
+
+
+def _active_request_snapshot(limit=8):
+    now_ms = int(time.time() * 1000)
+    alive = {t.ident for t in threading.enumerate()}
+    with _active_lock:
+        stale = _active_threads - alive
+        if stale:
+            _active_threads.difference_update(stale)
+            for tid in stale:
+                _active_requests_meta.pop(tid, None)
+        items = []
+        for tid in _active_threads:
+            meta = _active_requests_meta.get(tid, {})
+            started_ms = meta.get("started_ms", now_ms)
+            items.append({
+                "thread_id": tid,
+                "method": meta.get("method"),
+                "path": meta.get("path"),
+                "run_id": meta.get("run_id"),
+                "age_ms": max(0, now_ms - started_ms),
+            })
+    items.sort(key=lambda item: item["age_ms"], reverse=True)
+    return items[:limit]
+
+
+def _debug_log(run_id, hypothesis_id, location, message, data):
+    try:
+        payload = {
+            "sessionId": _DEBUG_SESSION_ID,
+            "runId": run_id,
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
 
 
 @api.before_request
 def _start_timer():
     g._req_start = time.monotonic()
     g._counted = False
-    global _active_requests
+    tid = threading.current_thread().ident
     path = request.path
     is_heavy = path.startswith(_HEAVY_PREFIXES)
     with _active_lock:
-        if is_heavy and _active_requests >= _MAX_ACTIVE:
-            count = _active_requests
+        count = len(_active_threads)
+        if is_heavy and count >= _MAX_ACTIVE:
+            shed = True
         else:
-            _active_requests += 1
+            _active_threads.add(tid)
+            _active_requests_meta[tid] = {
+                "method": request.method,
+                "path": request.path,
+                "run_id": request.headers.get("X-Debug-Run-Id"),
+                "started_ms": int(time.time() * 1000),
+            }
             g._counted = True
-            count = None
-    if count is not None:
+            shed = False
+    if shed:
         _log.warning("load shedding: %d active, rejecting %s", count, path)
         return jsonify({"status": "error", "error": "server busy"}), 503
 
@@ -105,9 +172,10 @@ def _start_timer():
 def _release_load(exc):
     if not getattr(g, '_counted', False):
         return
-    global _active_requests
+    tid = threading.current_thread().ident
     with _active_lock:
-        _active_requests = max(0, _active_requests - 1)
+        _active_threads.discard(tid)
+        _active_requests_meta.pop(tid, None)
 
 
 @api.after_request
@@ -133,34 +201,94 @@ def api_jobs():
     from flask import Response
 
     touch_demand()
+    run_id = request.headers.get("X-Debug-Run-Id") or f"api-jobs-{int(time.time() * 1000)}"
+    started = time.monotonic()
 
     version = get_version()
     etag = f'"{version}"'
+    # region agent log
+    _debug_log(
+        run_id,
+        "H1",
+        "server/routes.py:api_jobs:entry",
+        "api_jobs entry",
+        {
+            "if_none_match": request.headers.get("If-None-Match"),
+            "etag": etag,
+            "active_requests": _active_request_count(),
+            "path": request.path,
+        },
+    )
+    # endregion
     if request.headers.get("If-None-Match") == etag:
         return Response(status=304)
+    try:
+        snapshot = build_board_snapshot(schedule_prefetch_active=True)
+        # region agent log
+        _debug_log(
+            run_id,
+            "H1",
+            "server/routes.py:api_jobs:after_snapshot",
+            "api_jobs snapshot built",
+            {
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                "cluster_count": len(snapshot),
+                "updated_clusters": sum(1 for d in snapshot.values() if d.get("updated")),
+                "ok_clusters": sum(1 for d in snapshot.values() if d.get("status") == "ok"),
+            },
+        )
+        # endregion
 
-    snapshot = build_board_snapshot(schedule_prefetch_active=True)
+        def cluster_sort_key(item):
+            name, data = item
+            jobs = data.get("jobs", [])
+            has_running = any(j.get("state") in ("RUNNING", "COMPLETING") for j in jobs if not j.get("_pinned"))
+            has_pending = any(j.get("state") == "PENDING" for j in jobs if not j.get("_pinned"))
+            has_live = any(not j.get("_pinned") for j in jobs)
+            return (name == "local", not has_running, not has_pending, not has_live, name)
 
-    def cluster_sort_key(item):
-        name, data = item
-        jobs = data.get("jobs", [])
-        has_running = any(j.get("state") in ("RUNNING", "COMPLETING") for j in jobs if not j.get("_pinned"))
-        has_pending = any(j.get("state") == "PENDING" for j in jobs if not j.get("_pinned"))
-        has_live = any(not j.get("_pinned") for j in jobs)
-        return (name == "local", not has_running, not has_pending, not has_live, name)
+        ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
 
-    ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
-
-    mounts = all_mount_status()
-    poller_status = get_poller().get_status()
-    for c, d in ordered.items():
-        if c != "local":
-            d["mount"] = mounts.get(c, {"mounted": False, "root": ""})
-        d["poller"] = poller_status.get(c, {})
-    resp = jsonify(ordered)
-    resp.headers["ETag"] = etag
-    resp.headers["Cache-Control"] = "no-cache"
-    return resp
+        mounts = all_mount_status()
+        poller_status = get_poller().get_status()
+        # region agent log
+        _debug_log(
+            run_id,
+            "H2",
+            "server/routes.py:api_jobs:after_mounts",
+            "api_jobs mounts attached",
+            {
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                "mounted_clusters": sum(1 for m in mounts.values() if m.get("mounted")),
+                "poller_clusters": len(poller_status),
+                "active_requests": _active_request_count(),
+            },
+        )
+        # endregion
+        for c, d in ordered.items():
+            if c != "local":
+                d["mount"] = mounts.get(c, {"mounted": False, "root": ""})
+            d["poller"] = poller_status.get(c, {})
+        resp = jsonify(ordered)
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+    except Exception as exc:
+        # region agent log
+        _debug_log(
+            run_id,
+            "H1",
+            "server/routes.py:api_jobs:exception",
+            "api_jobs exception",
+            {
+                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "active_requests": _active_request_count(),
+            },
+        )
+        # endregion
+        raise
 
 
 @api.route("/api/mounts")
@@ -1168,15 +1296,50 @@ def api_jsonl_record(cluster, job_id):
 
 @api.route("/api/force_poll/<cluster>", methods=["POST"])
 def api_force_poll(cluster):
-    """Run one explicit bounded live poll now."""
+    """Queue one explicit live poll now without tying up the request thread."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run_id = request.headers.get("X-Debug-Run-Id") or f"force-poll-{cluster}-{int(time.time() * 1000)}"
+    started = time.monotonic()
+    poller = get_poller()
+    poller_state = poller.get_status().get(cluster, {})
+    # region agent log
+    _debug_log(
+        run_id,
+        "H6",
+        "server/routes.py:api_force_poll:entry",
+        "force poll entry",
+        {
+            "cluster": cluster,
+            "active_requests": _active_request_count(),
+            "inflight": poller_state.get("inflight"),
+        },
+    )
+    # endregion
     touch_demand()
-    result = get_poller().poll_now(cluster)
-    if result.get("status") == "busy":
-        return jsonify(result), 202
-    code = 200 if result.get("status") == "ok" else 503
-    return jsonify(result), code
+    poller.request_priority(cluster)
+    result = {
+        "status": "queued",
+        "cluster": cluster,
+        "queued": True,
+        "inflight": poller_state.get("inflight", False),
+    }
+    # region agent log
+    _debug_log(
+        run_id,
+        "H6",
+        "server/routes.py:api_force_poll:result",
+        "force poll result",
+        {
+            "cluster": cluster,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+            "status": result.get("status"),
+            "active_requests": _active_request_count(),
+            "inflight": result.get("inflight"),
+        },
+    )
+    # endregion
+    return jsonify(result), 202
 
 
 @api.route("/api/health")
@@ -1184,7 +1347,7 @@ def api_health():
     """Lightweight health check with circuit breaker, poller, and load status."""
     return jsonify({
         "status": "ok",
-        "active_requests": _active_requests,
+        "active_requests": _active_request_count(),
         "max_active": _MAX_ACTIVE,
         "circuit_breakers": get_circuit_breaker_status(),
         "poller": get_poller().get_status(),
