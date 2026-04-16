@@ -234,7 +234,7 @@ function _renderHistPage() {
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
       const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
-      const _rowBg = _rowShaded ? `background:${lightenColor(_rowShaded)}` : '';
+      const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)}` : '';
       const _grpHidden = hasMultiple && !isGroupExpanded;
       const _rowDisp = _grpHidden ? 'display:none' : '';
       const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
