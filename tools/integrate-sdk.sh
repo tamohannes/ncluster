@@ -1,0 +1,235 @@
+#!/bin/bash
+# Integrate the Clausius SDK into a NeMo-Skills checkout.
+#
+# Usage:
+#   ~/clausius/tools/integrate-sdk.sh ~/workspace/hle/NeMo-Skills-pr-hle-answer-extraction-v2
+#   ~/clausius/tools/integrate-sdk.sh ~/workspace/artsiv/hovo/NeMo-Skills
+#
+# What it does:
+#   1. Copies the clausius_sdk package from the reference checkout
+#   2. Injects SDK hooks into pipeline entrypoints (idempotent — safe to run multiple times)
+#   3. Patches exp.py with monitor wrapper and env var injection
+
+set -euo pipefail
+
+TARGET="${1:?Usage: $0 <path-to-nemo-skills-checkout>}"
+REFERENCE="$HOME/workspace/profiling/NeMo-Skills"
+
+if [ ! -d "$TARGET/nemo_skills/pipeline" ]; then
+    echo "Error: $TARGET does not look like a NeMo-Skills checkout"
+    exit 1
+fi
+
+echo "=== Clausius SDK Integration ==="
+echo "  Target:    $TARGET"
+echo "  Reference: $REFERENCE"
+echo ""
+
+# ── Step 1: Copy SDK package ─────────────────────────────────────────
+echo "[1/3] Copying clausius_sdk package..."
+rm -rf "$TARGET/nemo_skills/clausius_sdk"
+cp -r "$REFERENCE/nemo_skills/clausius_sdk" "$TARGET/nemo_skills/clausius_sdk"
+# Remove __pycache__ from copied package
+find "$TARGET/nemo_skills/clausius_sdk" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+echo "  Copied $(find "$TARGET/nemo_skills/clausius_sdk" -name "*.py" | wc -l) Python files."
+
+# ── Step 2: Inject hooks into CLI entrypoints ─────────────────────────
+echo "[2/3] Injecting SDK hooks into pipeline entrypoints..."
+
+HOOK_MARKER="clausius_sdk.hooks"
+HOOK_BLOCK='
+    # ── Clausius SDK: start tracking session ─────────────────────
+    try:
+        from nemo_skills.clausius_sdk.hooks import maybe_start_session
+        maybe_start_session(expname=expname, cluster=cluster or "")
+    except Exception:
+        pass
+'
+
+inject_hook() {
+    local file="$1"
+    local after_pattern="$2"
+
+    if [ ! -f "$file" ]; then
+        echo "  SKIP (not found): $file"
+        return
+    fi
+    if grep -q "$HOOK_MARKER" "$file" 2>/dev/null; then
+        echo "  SKIP (already has hook): $(basename "$file")"
+        return
+    fi
+    if ! grep -q "$after_pattern" "$file" 2>/dev/null; then
+        echo "  SKIP (pattern not found): $(basename "$file")"
+        return
+    fi
+
+    # Insert the hook block after the first occurrence of the pattern
+    python3 -c "
+import sys
+content = open('$file').read()
+idx = content.find('$after_pattern')
+if idx < 0:
+    sys.exit(0)
+end_of_line = content.index('\n', idx)
+new_content = content[:end_of_line+1] + '''$HOOK_BLOCK''' + content[end_of_line+1:]
+open('$file', 'w').write(new_content)
+"
+    echo "  DONE: $(basename "$file")"
+}
+
+ENTRYPOINTS=(
+    "run_cmd.py"
+    "eval.py"
+    "generate.py"
+    "convert.py"
+    "prepare_data.py"
+    "nemo_evaluator.py"
+    "megatron_lm/train.py"
+    "nemo_rl/sft.py"
+    "nemo_rl/grpo.py"
+    "verl/ppo.py"
+)
+
+for ep in "${ENTRYPOINTS[@]}"; do
+    inject_hook "$TARGET/nemo_skills/pipeline/$ep" "setup_logging(disable_hydra_logs="
+done
+
+# ── Step 3: Patch exp.py ──────────────────────────────────────────────
+echo "[3/3] Patching exp.py..."
+EXP_FILE="$TARGET/nemo_skills/pipeline/utils/exp.py"
+
+if [ ! -f "$EXP_FILE" ]; then
+    echo "  SKIP: exp.py not found"
+else
+    # Copy the clausius functions from reference if not already present
+    if grep -q "_clausius_monitor_wrap" "$EXP_FILE" 2>/dev/null; then
+        echo "  exp.py already has monitor wrapper. Updating..."
+        # Extract and replace the clausius functions block
+        python3 -c "
+ref = open('$REFERENCE/nemo_skills/pipeline/utils/exp.py').read()
+tgt = open('$EXP_FILE').read()
+
+# Find clausius block in reference
+start_marker = 'def _clausius_env_vars():'
+end_marker = '# TODO: this function has become too cumbersome'
+ref_start = ref.index(start_marker)
+ref_end = ref.index(end_marker)
+ref_block = ref[ref_start:ref_end]
+
+# Replace in target
+tgt_start = tgt.index(start_marker)
+tgt_end = tgt.index(end_marker)
+new_tgt = tgt[:tgt_start] + ref_block + tgt[tgt_end:]
+open('$EXP_FILE', 'w').write(new_tgt)
+print('  Updated clausius functions block.')
+" 2>/dev/null || echo "  Could not update existing block."
+    else
+        # Insert clausius functions before the add_task function
+        python3 -c "
+import re
+ref = open('$REFERENCE/nemo_skills/pipeline/utils/exp.py').read()
+tgt = open('$EXP_FILE').read()
+
+# Extract clausius block from reference
+start_marker = 'def _clausius_env_vars():'
+end_marker = '# TODO: this function has become too cumbersome'
+ref_start = ref.index(start_marker)
+ref_end = ref.index(end_marker)
+ref_block = ref[ref_start:ref_end]
+
+# Insert before the TODO comment in target
+if end_marker in tgt:
+    tgt_insert = tgt.index(end_marker)
+    new_tgt = tgt[:tgt_insert] + ref_block + tgt[tgt_insert:]
+    open('$EXP_FILE', 'w').write(new_tgt)
+    print('  Inserted clausius functions block.')
+else:
+    print('  Could not find insertion point in exp.py. Manual patching needed.')
+" 2>/dev/null || echo "  Could not insert block."
+    fi
+
+    # Patch the add_task command wrapping
+    if ! grep -q "_clausius_monitor_wrap" "$EXP_FILE" 2>/dev/null; then
+        echo "  WARNING: _clausius_monitor_wrap not found after patching. Manual fix needed for add_task()."
+    fi
+
+    # Patch the env_updates line in add_task if not already done
+    if grep -q '_clausius_env_vars' "$EXP_FILE" && ! grep -q 'env_updates.update(_clausius_env_vars())' "$EXP_FILE"; then
+        echo "  NOTE: _clausius_env_vars exists but add_task() env injection may need manual wiring."
+    fi
+
+    # Inject on_task_prepared hook in add_task if not present
+    if ! grep -q "on_task_prepared" "$EXP_FILE" 2>/dev/null; then
+        python3 -c "
+tgt = open('$EXP_FILE').read()
+# Find the exp.add call pattern and inject before it
+marker = 'if len(commands) == 1:'
+if marker in tgt:
+    idx = tgt.index(marker)
+    hook = '''    # ── Clausius SDK: emit job_prepared ─────────────────────────────
+    try:
+        from nemo_skills.clausius_sdk.hooks import on_task_prepared
+        on_task_prepared(
+            task_name=task_name,
+            cluster=cluster_config.get(\"executor\", \"\"),
+            partition=partition or cluster_config.get(\"partition\", \"\"),
+            account=account or cluster_config.get(\"account\", \"\"),
+            num_nodes=num_nodes,
+            num_gpus=num_gpus,
+            num_tasks=num_tasks[0] if isinstance(num_tasks, list) else num_tasks,
+            container=containers[0] if containers else \"\",
+            dependencies=[str(d) for d in (task_dependencies or [])],
+        )
+    except Exception:
+        pass
+
+'''
+    new_tgt = tgt[:idx] + hook + tgt[idx:]
+    open('$EXP_FILE', 'w').write(new_tgt)
+    print('  Injected on_task_prepared hook.')
+" 2>/dev/null || echo "  Could not inject on_task_prepared."
+    else
+        echo "  on_task_prepared hook already present."
+    fi
+
+    # Inject on_run_submitted hook in run_exp if not present
+    if ! grep -q "on_run_submitted" "$EXP_FILE" 2>/dev/null; then
+        python3 -c "
+tgt = open('$EXP_FILE').read()
+marker = 'REUSE_CODE_EXP[cur_tunnel_hash] = exp'
+if marker in tgt:
+    idx = tgt.index(marker) + len(marker)
+    hook = '''
+
+    # ── Clausius SDK: emit job_submitted ──────────────────────────
+    try:
+        from nemo_skills.clausius_sdk.hooks import on_run_submitted
+        on_run_submitted(cluster=cluster_config.get(\"executor\", \"\"), dry_run=dry_run)
+    except Exception:
+        pass'''
+    new_tgt = tgt[:idx] + hook + tgt[idx:]
+    open('$EXP_FILE', 'w').write(new_tgt)
+    print('  Injected on_run_submitted hook.')
+" 2>/dev/null || echo "  Could not inject on_run_submitted."
+    else
+        echo "  on_run_submitted hook already present."
+    fi
+
+    echo "  exp.py patching complete."
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────
+echo ""
+FOUND=$(grep -rl "clausius_sdk" "$TARGET/nemo_skills/pipeline/" 2>/dev/null | wc -l)
+SDK_FILES=$(find "$TARGET/nemo_skills/clausius_sdk" -name "*.py" 2>/dev/null | wc -l)
+echo "=== Integration complete ==="
+echo "  SDK package:  $SDK_FILES Python files"
+echo "  Hooked files: $FOUND pipeline files"
+echo ""
+echo "To verify, run:"
+echo "  cd $TARGET"
+echo "  CLAUSIUS_URL=http://localhost:7272 \\"
+echo "  python -m nemo_skills.pipeline.cli run_cmd \\"
+echo "    --cluster eos --expname test_sdk-verify \\"
+echo "    --num-gpus 0 --num-nodes 1 \\"
+echo '    "echo sdk-ok" --dry-run'

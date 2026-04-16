@@ -327,7 +327,7 @@ def _db_log_context(cluster_name, job_id):
         from .db import get_db
         con = get_db()
         row = con.execute(
-            """SELECT jh.log_path, r.scontrol_raw
+            """SELECT jh.log_path, jh.run_id, r.scontrol_raw
                FROM job_history jh
                LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
                WHERE jh.cluster=? AND jh.job_id=?
@@ -335,8 +335,8 @@ def _db_log_context(cluster_name, job_id):
                LIMIT 1""",
             (cluster_name, str(job_id)),
         ).fetchone()
-        con.close()
         if not row:
+            con.close()
             return {"log_path": "", "output_dir": ""}
         log_path = row["log_path"] or ""
         output_dir = _output_dir_from_log_path(log_path)
@@ -344,10 +344,55 @@ def _db_log_context(cluster_name, job_id):
             m = _STDOUT_RE.search(row["scontrol_raw"] or "")
             if m:
                 output_dir = _output_dir_from_log_path(m.group(1))
+
+        if not log_path and str(job_id).startswith("sdk-"):
+            sibling = _sdk_sibling_log_context(con, cluster_name, job_id, row)
+            if sibling:
+                con.close()
+                return sibling
+
+        con.close()
         return {"log_path": log_path, "output_dir": output_dir}
     except Exception:
         pass
     return {"log_path": "", "output_dir": ""}
+
+
+def _sdk_sibling_log_context(con, cluster_name, job_id, sdk_row):
+    """For SDK-created synthetic jobs, find log paths from sibling real Slurm jobs."""
+    run_id = sdk_row["run_id"] if sdk_row else None
+
+    if run_id:
+        sibling = con.execute(
+            """SELECT log_path FROM job_history
+               WHERE cluster=? AND run_id=? AND job_id != ? AND log_path IS NOT NULL AND log_path != ''
+               ORDER BY id DESC LIMIT 1""",
+            (cluster_name, run_id, str(job_id)),
+        ).fetchone()
+        if sibling and sibling["log_path"]:
+            lp = sibling["log_path"]
+            return {"log_path": lp, "output_dir": _output_dir_from_log_path(lp)}
+
+    run_row = con.execute(
+        "SELECT run_name, run_uuid, primary_output_dir FROM runs WHERE id=?", (run_id,)
+    ).fetchone() if run_id else None
+
+    if run_row and run_row["primary_output_dir"]:
+        return {"log_path": "", "output_dir": run_row["primary_output_dir"]}
+
+    if run_row and run_row["run_name"]:
+        name = run_row["run_name"]
+        sibling = con.execute(
+            """SELECT log_path FROM job_history
+               WHERE cluster=? AND job_name LIKE ? AND log_path IS NOT NULL AND log_path != ''
+               ORDER BY id DESC LIMIT 1""",
+            (cluster_name, f"%{name}%"),
+        ).fetchone()
+        if sibling and sibling["log_path"]:
+            lp = sibling["log_path"]
+            return {"log_path": lp, "output_dir": _output_dir_from_log_path(lp)}
+
+    return None
 
 
 def _append_discovered_dir(dirs, seen_dirs, remote_dir):
@@ -390,7 +435,11 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
 
     If the log directory from the DB path is accessible via mount, list
     files locally. Returns None if mount is unavailable or no files found.
+
+    For SDK-created synthetic jobs (sdk-*), we include all recognized log
+    files in the directory since the job ID won't appear in filenames.
     """
+    is_sdk_job = str(job_id).startswith("sdk-")
     if not db_path and not output_dir:
         return None
     logdir = os.path.dirname(db_path) if db_path else ""
@@ -441,6 +490,11 @@ def get_job_log_files(cluster_name, job_id):
     local = _try_local_discovery(cluster_name, job_id, db_path, output_dir=output_dir)
     if local:
         return local
+
+    if str(job_id).startswith("sdk-"):
+        if db_path or output_dir:
+            return {"files": [], "dirs": _derive_result_dirs([{"path": db_path}]) if db_path else [], "error": ""}
+        return {"files": [], "dirs": [], "error": "SDK run — waiting for Slurm job logs"}
     db_logdir_clause = ""
     if db_path:
         db_logdir = os.path.dirname(db_path).replace("'", "'\\''")

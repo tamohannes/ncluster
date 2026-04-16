@@ -170,7 +170,15 @@ def init_db():
         )
     """)
     for col, default in [("starred", "INTEGER DEFAULT 0"),
-                         ("notes", "TEXT DEFAULT ''")]:
+                         ("notes", "TEXT DEFAULT ''"),
+                         ("run_uuid", "TEXT DEFAULT ''"),
+                         ("source", "TEXT DEFAULT 'legacy'"),
+                         ("submit_command", "TEXT DEFAULT ''"),
+                         ("submit_cwd", "TEXT DEFAULT ''"),
+                         ("git_commit", "TEXT DEFAULT ''"),
+                         ("launcher_hostname", "TEXT DEFAULT ''"),
+                         ("primary_output_dir", "TEXT DEFAULT ''"),
+                         ("sdk_status", "TEXT DEFAULT ''")]:
         try:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} {default}")
         except Exception:
@@ -327,6 +335,20 @@ def init_db():
         )
     """)
     con.execute("CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_store(expires_at)")
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS sdk_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_uuid     TEXT NOT NULL,
+            event_type   TEXT NOT NULL,
+            event_seq    INTEGER NOT NULL,
+            ts           REAL,
+            payload_json TEXT DEFAULT '{}',
+            UNIQUE(run_uuid, event_seq)
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_runs_uuid ON runs(run_uuid)")
 
     con.commit()
     con.close()
@@ -791,12 +813,65 @@ def upsert_run(cluster, root_job_id, run_name="", project=""):
                     (run_name, project, run_id),
                 )
         else:
-            cur = con.execute(
-                "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
-                (cluster, root_job_id, run_name, project),
-            )
-            run_id = cur.lastrowid
+            sdk_run = _find_sdk_run_for_name(con, cluster, run_name) if run_name else None
+            if sdk_run:
+                run_id = sdk_run["id"]
+                con.execute(
+                    "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
+                    "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
+                    (run_name, project, run_id),
+                )
+            else:
+                cur = con.execute(
+                    "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
+                    (cluster, root_job_id, run_name, project),
+                )
+                run_id = cur.lastrowid
         return run_id
+
+
+def _find_sdk_run_for_name(con, cluster, run_name):
+    """Check if an SDK run exists that matches a legacy run's name.
+
+    The SDK expname (e.g. 'hle_test_eval-gpqa4') often appears as a
+    substring in the legacy run_name (e.g. 'profiling_hle_test_eval-gpqa4-gpqa')
+    because the poller appends benchmark/job suffixes and the cluster config
+    adds a job_name_prefix. Try exact, LIKE-substring, and reverse-substring.
+    """
+    if not run_name:
+        return None
+
+    sdk_filter = "source='sdk' AND sdk_status NOT IN ('completed', 'failed')"
+
+    row = con.execute(
+        f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND run_name=? LIMIT 1",
+        (cluster, run_name),
+    ).fetchone()
+    if row:
+        return row
+
+    candidates = [run_name]
+    parts = run_name.split("_", 1)
+    if len(parts) == 2:
+        candidates.append(parts[1])
+
+    for name in candidates:
+        row = con.execute(
+            f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND run_name LIKE ? ORDER BY id DESC LIMIT 1",
+            (cluster, f"%{name}%"),
+        ).fetchone()
+        if row:
+            return row
+
+    for name in candidates:
+        row = con.execute(
+            f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND ? LIKE '%' || run_name || '%' ORDER BY id DESC LIMIT 1",
+            (cluster, name),
+        ).fetchone()
+        if row:
+            return row
+
+    return None
 
 
 def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda_state=""):
@@ -853,6 +928,134 @@ def get_run(cluster, root_job_id):
     ).fetchone()
     con.close()
     return dict(row) if row else None
+
+
+def get_run_by_uuid(run_uuid):
+    """Return run record dict by SDK run_uuid, or None."""
+    con = get_db()
+    row = con.execute("SELECT * FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
+    """Create or update a run from SDK run_started event. Returns run_id."""
+    from datetime import datetime
+    synthetic_job_id = f"sdk-{run_uuid[:12]}"
+
+    argv = provenance.get("argv", [])
+    command = provenance.get("command", "")
+    if argv and (not command or len(command) < len(" ".join(str(a) for a in argv))):
+        command = " ".join(str(a) for a in argv)
+
+    with db_write() as con:
+        row = con.execute("SELECT id FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()
+        if row:
+            run_id = row["id"]
+            con.execute("""
+                UPDATE runs SET
+                    run_name       = COALESCE(NULLIF(?, ''), run_name),
+                    project        = COALESCE(NULLIF(?, ''), project),
+                    submit_command = COALESCE(NULLIF(?, ''), submit_command),
+                    submit_cwd     = COALESCE(NULLIF(?, ''), submit_cwd),
+                    git_commit     = COALESCE(NULLIF(?, ''), git_commit),
+                    launcher_hostname = COALESCE(NULLIF(?, ''), launcher_hostname),
+                    primary_output_dir = COALESCE(NULLIF(?, ''), primary_output_dir),
+                    sdk_status     = CASE WHEN sdk_status IN ('', 'submitting') THEN 'submitting' ELSE sdk_status END
+                WHERE id = ?
+            """, (
+                expname, project,
+                command,
+                provenance.get("cwd", ""),
+                provenance.get("git_commit", ""),
+                provenance.get("hostname", ""),
+                provenance.get("output_dir", ""),
+                run_id,
+            ))
+        else:
+            now = datetime.now().isoformat(timespec="seconds")
+            cur = con.execute("""
+                INSERT INTO runs
+                    (cluster, root_job_id, run_name, project, run_uuid, source,
+                     submit_command, submit_cwd, git_commit, launcher_hostname,
+                     primary_output_dir, sdk_status, started_at, created_at, meta_fetched)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                cluster, synthetic_job_id, expname, project, run_uuid, "sdk",
+                command,
+                provenance.get("cwd", ""),
+                provenance.get("git_commit", ""),
+                provenance.get("hostname", ""),
+                provenance.get("output_dir", ""),
+                "submitting", now, now, 1,
+            ))
+            run_id = cur.lastrowid
+
+        env_json = _json.dumps(provenance.get("env_subset", {}))
+        con.execute("""
+            UPDATE runs SET env_vars = COALESCE(NULLIF(?, ''), env_vars) WHERE id = ?
+        """, (env_json, run_id))
+
+        from .config import extract_project
+        job_project = project or extract_project(expname)
+        now_ts = datetime.now().isoformat(timespec="seconds")
+        con.execute("""
+            INSERT INTO job_history
+                (cluster, job_id, job_name, state, board_visible, project, run_id, submitted, started)
+            VALUES (?, ?, ?, 'SUBMITTING', 1, ?, ?, ?, ?)
+            ON CONFLICT(cluster, job_id) DO UPDATE SET
+                state = CASE WHEN job_history.state IN ('COMPLETED','FAILED','CANCELLED','TIMEOUT','RUNNING','PENDING')
+                             THEN job_history.state ELSE excluded.state END,
+                board_visible = 1,
+                run_id = excluded.run_id,
+                project = COALESCE(NULLIF(excluded.project, ''), job_history.project)
+        """, (cluster, synthetic_job_id, expname, job_project, run_id, now_ts, now_ts))
+
+    return run_id
+
+
+def store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json):
+    """Insert an SDK event, ignoring duplicates."""
+    with db_write() as con:
+        con.execute("""
+            INSERT OR IGNORE INTO sdk_events (run_uuid, event_type, event_seq, ts, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+        """, (run_uuid, event_type, event_seq, ts, payload_json))
+
+
+def finalize_sdk_run(run_uuid, status, ended_at=None):
+    """Mark an SDK run as finished/failed and update the synthetic job."""
+    from datetime import datetime
+    ts = ended_at or datetime.now().isoformat(timespec="seconds")
+    synthetic_job_id = f"sdk-{run_uuid[:12]}"
+    if status == "submitted":
+        with db_write() as con:
+            con.execute(
+                "UPDATE runs SET sdk_status='active' WHERE run_uuid=? AND sdk_status IN ('submitting', '')",
+                (run_uuid,),
+            )
+            con.execute(
+                """UPDATE job_history SET state = CASE WHEN state = 'SUBMITTING' THEN 'PENDING' ELSE state END
+                   WHERE job_id = ? AND cluster = (SELECT cluster FROM runs WHERE run_uuid = ?)""",
+                (synthetic_job_id, run_uuid),
+            )
+        return
+    if status in ("failed", "submit_failed"):
+        final_state = "FAILED"
+    else:
+        final_state = "COMPLETED"
+    with db_write() as con:
+        con.execute("""
+            UPDATE runs SET sdk_status = ?, ended_at = COALESCE(ended_at, ?) WHERE run_uuid = ?
+        """, (status, ts, run_uuid))
+
+        run_row = con.execute("SELECT cluster FROM runs WHERE run_uuid = ?", (run_uuid,)).fetchone()
+        if run_row:
+            con.execute("""
+                UPDATE job_history SET state = ?, ended_at = COALESCE(ended_at, ?)
+                WHERE cluster = ? AND job_id = ?
+            """, (final_state, ts, run_row["cluster"], synthetic_job_id))
+    invalidate_pinned_cache(run_row["cluster"] if run_row else "")
 
 
 def get_run_with_jobs(cluster, root_job_id):

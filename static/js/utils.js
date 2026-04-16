@@ -76,7 +76,7 @@ try {
   navCollapsed = localStorage.getItem('clausius.navCollapsed') === '1';
 } catch (_) {}
 
-const STATE_ORDER = { RUNNING: 0, COMPLETING: 1, PENDING: 2, FAILED: 3, CANCELLED: 4 };
+const STATE_ORDER = { SUBMITTING: -1, RUNNING: 0, COMPLETING: 1, PENDING: 2, FAILED: 3, CANCELLED: 4 };
 const _expandedBackups = new Set();
 const _expandedGroups = new Set();
 
@@ -140,6 +140,7 @@ function isUnneededBackup(job, groupJobs) {
 function stateClass(s, reason) {
   if (isSoftFail(s, reason)) return 's-SOFT_FAIL';
   s = (s || '').toUpperCase().split(' ')[0];
+  if (s === 'SUBMITTING') return 's-SUBMITTING';
   if (s === 'RUNNING')    return 's-RUNNING';
   if (s === 'PENDING')    return 's-PENDING';
   if (s.includes('FAIL')) return 's-FAILED';
@@ -241,7 +242,7 @@ function _countJobStates(jobs) {
     const st = (j.state || '').toUpperCase();
     if (st === 'RUNNING') cnt.run++;
     else if (st === 'COMPLETING') cnt.comp++;
-    else if (st === 'PENDING') cnt.pend++;
+    else if (st === 'PENDING' || st === 'SUBMITTING') cnt.pend++;
     else if (st.startsWith('COMPLETED')) cnt.done++;
     else if (st.startsWith('CANCEL')) cnt.canc++;
     else if (isUnneededBackup(j, jobs)) cnt.done++;
@@ -438,6 +439,16 @@ function fmtElapsedCell(job) {
     return '—';
   }
   return job.elapsed || '—';
+}
+
+function clusterGpuBadge(clusterName) {
+  const info = CLUSTERS[clusterName] || {};
+  const gpuType = info.gpu_type || '';
+  if (!gpuType) return '';
+  const mem = info.gpu_mem_gb;
+  const namePart = mem ? `${gpuType}(${mem}GB)` : gpuType;
+  const gpn = info.gpus_per_node;
+  return gpn ? `${namePart}×${gpn}` : namePart;
 }
 
 function parseGpus(nodes, gres) {
@@ -1440,7 +1451,7 @@ function _renderPppAllocations(data) {
             const src = live.length > 0 ? live : cJobs;
             tjJobs = src.filter(j => {
               const s = (j.state || '').toUpperCase();
-              return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
+              return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING' || s === 'SUBMITTING';
             }).map(j => {
               const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
               const gpn = gm ? parseInt(gm[1], 10) : 8;
@@ -1581,7 +1592,7 @@ function _renderPppAllocations(data) {
     html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'}">
       <div class="ppp-card-head">
         <span class="ppp-card-cluster">${cn}</span>
-        ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
+        ${cd.gpu_type ? `<span class="ppp-card-gpu">${clusterGpuBadge(cn)}</span>` : ''}
         ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
         ${pppCardFreshnessHtml(cn)}
       </div>

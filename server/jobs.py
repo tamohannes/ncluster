@@ -573,13 +573,16 @@ def _detect_and_register_runs(cluster, jobs):
         if cached_ts is None or (time.monotonic() - cached_ts) > _RUN_META_TTL_SEC:
             existing = get_run(cluster, canonical_root_job_id)
             if existing and not existing.get("meta_fetched"):
-                _run_meta_fetched[key] = time.monotonic()
-                t = threading.Thread(
-                    target=_capture_run_metadata,
-                    args=(cluster, canonical_root_job_id, run_id),
-                    daemon=True,
-                )
-                t.start()
+                if existing.get("source") == "sdk":
+                    _run_meta_fetched[key] = time.monotonic()
+                else:
+                    _run_meta_fetched[key] = time.monotonic()
+                    t = threading.Thread(
+                        target=_capture_run_metadata,
+                        args=(cluster, canonical_root_job_id, run_id),
+                        daemon=True,
+                    )
+                    t.start()
 
 
 def _capture_run_metadata(cluster, root_job_id, run_id):
@@ -765,9 +768,38 @@ def create_run_on_demand(cluster, root_job_id):
 
 # ─── Polling ─────────────────────────────────────────────────────────────────
 
+_SDK_POLL_MULTIPLIER = 4
+
+
 def _is_cache_fresh(cluster_name):
     ts = _last_polled.get(cluster_name, 0.0)
-    return (time.monotonic() - ts) < CACHE_FRESH_SEC
+    ttl = CACHE_FRESH_SEC
+    if _cluster_is_sdk_only(cluster_name):
+        ttl = CACHE_FRESH_SEC * _SDK_POLL_MULTIPLIER
+    return (time.monotonic() - ts) < ttl
+
+
+def _cluster_is_sdk_only(cluster_name):
+    """True if all board-visible jobs for this cluster are SDK-tracked."""
+    try:
+        con = get_db()
+        total = con.execute(
+            "SELECT COUNT(*) as c FROM job_history WHERE cluster=? AND board_visible=1",
+            (cluster_name,),
+        ).fetchone()["c"]
+        if total == 0:
+            con.close()
+            return False
+        sdk_count = con.execute(
+            """SELECT COUNT(*) as c FROM job_history jh
+               JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+               WHERE jh.cluster=? AND jh.board_visible=1 AND r.source='sdk'""",
+            (cluster_name,),
+        ).fetchone()["c"]
+        con.close()
+        return sdk_count == total
+    except Exception:
+        return False
 
 
 _poll_inflight = {}            # cluster -> start timestamp
@@ -864,6 +896,45 @@ def _cluster_bookkeeping_worker(cluster):
             log.exception("bookkeeping failed for %s", cluster)
 
 
+def _get_sdk_run_job_ids(cluster, job_ids):
+    """Return the subset of job_ids that belong to an SDK-tracked run."""
+    if not job_ids:
+        return set()
+    try:
+        con = get_db()
+        placeholders = ",".join("?" for _ in job_ids)
+        rows = con.execute(
+            f"""SELECT jh.job_id FROM job_history jh
+                JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+                WHERE jh.cluster=? AND jh.job_id IN ({placeholders}) AND r.source='sdk'""",
+            [cluster] + list(job_ids),
+        ).fetchall()
+        con.close()
+        return {r["job_id"] for r in rows}
+    except Exception:
+        return set()
+
+
+def _get_sdk_run_jobs_for_stdout(cluster, job_ids):
+    """Return job_ids that belong to SDK runs with primary_output_dir already set."""
+    if not job_ids:
+        return set()
+    try:
+        con = get_db()
+        placeholders = ",".join("?" for _ in job_ids)
+        rows = con.execute(
+            f"""SELECT jh.job_id FROM job_history jh
+                JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+                WHERE jh.cluster=? AND jh.job_id IN ({placeholders})
+                  AND r.source='sdk' AND r.primary_output_dir != ''""",
+            [cluster] + list(job_ids),
+        ).fetchall()
+        con.close()
+        return {r["job_id"] for r in rows}
+    except Exception:
+        return set()
+
+
 def _run_cluster_bookkeeping(cluster, context):
     started = time.monotonic()
     live_jobs = list(context.get("live_jobs", []))
@@ -874,8 +945,12 @@ def _run_cluster_bookkeeping(cluster, context):
 
     gone_ids = prev_ids - current_ids
     if gone_ids:
-        sacct_batch = sacct_final_batch(cluster, list(gone_ids)) if cluster != "local" else {}
+        sdk_job_ids = _get_sdk_run_job_ids(cluster, gone_ids) if cluster != "local" else set()
+        non_sdk_gone = [jid for jid in gone_ids if jid not in sdk_job_ids]
+        sacct_batch = sacct_final_batch(cluster, non_sdk_gone) if non_sdk_gone and cluster != "local" else {}
         for job_id in gone_ids:
+            if job_id in sdk_job_ids:
+                continue
             _finalize_gone_job(
                 cluster,
                 job_id,
@@ -893,7 +968,10 @@ def _run_cluster_bookkeeping(cluster, context):
         ]
         uncaptured = [jid for jid in running_ids if (cluster, jid) not in _stdout_captured]
         if uncaptured:
-            _capture_stdout_paths(cluster, uncaptured)
+            sdk_covered = _get_sdk_run_jobs_for_stdout(cluster, uncaptured)
+            non_sdk_uncaptured = [jid for jid in uncaptured if jid not in sdk_covered]
+            if non_sdk_uncaptured:
+                _capture_stdout_paths(cluster, non_sdk_uncaptured)
 
         all_jobs_for_runs = list(live_jobs)
         pinned = get_board_pinned(cluster)

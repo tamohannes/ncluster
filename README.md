@@ -136,6 +136,15 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
 - No SSH, no DB access — wraps the Flask API cleanly
 
+### SDK Experiment Tracking (v3)
+- NeMo-Skills SDK integration: add `CLAUSIUS_URL=http://<host>:7272` to any `ns` command to enable tracking
+- Runs appear on the board in `SUBMITTING` state immediately, before any Slurm job exists
+- Lifecycle: `SUBMITTING` -> `PENDING` (Slurm accepts) -> `RUNNING`/`COMPLETED`/`FAILED`
+- Submit command, git commit, hostname, and working directory captured automatically
+- Ingest endpoint: `POST /api/sdk/events` with optional bearer-token auth (`sdk_ingest_token` in config)
+- If submission fails, the run is auto-marked `FAILED` with "submission interrupted"
+- Run popup shows full provenance: exact command, git SHA, launcher hostname, working directory
+
 ### Performance
 - On-demand architecture: clusters are only contacted when a user or agent requests data
 - Three-lane SSH connection pool with data-copier node routing

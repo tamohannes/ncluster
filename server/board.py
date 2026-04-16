@@ -232,10 +232,27 @@ def _apply_job_overlays(cluster, jobs, overlays):
 def _merge_live_and_pinned_jobs(cluster, live_jobs, pinned_jobs):
     jobs = [_normalize_job_shape(job) for job in live_jobs]
     live_ids = {str(job.get("jobid") or "") for job in jobs}
+
+    sdk_run_ids_with_live_siblings = set()
+    for pinned in pinned_jobs:
+        pinned_id = str(pinned.get("job_id") or pinned.get("jobid") or "")
+        if pinned_id.startswith("sdk-") and pinned.get("run_id"):
+            sdk_run_ids_with_live_siblings.add(pinned["run_id"])
+
+    live_run_ids = set()
+    for job in jobs:
+        rid = job.get("run_id")
+        if rid:
+            live_run_ids.add(int(rid) if isinstance(rid, str) and rid.isdigit() else rid)
+
     for pinned in pinned_jobs:
         pinned_id = str(pinned.get("job_id") or pinned.get("jobid") or "")
         if not pinned_id or pinned_id in live_ids:
             continue
+        if pinned_id.startswith("sdk-"):
+            rid = pinned.get("run_id")
+            if rid and rid in live_run_ids:
+                continue
         jobs.append(_normalize_job_shape({
             **pinned,
             "_pinned": True,

@@ -386,7 +386,7 @@ function computeRefreshIntervalSec(data) {
 
 function _isActivelyCancelableState(state) {
   const s = (state || '').toUpperCase();
-  return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
+  return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING' || s === 'SUBMITTING';
 }
 
 // ── Cluster card rendering ──
@@ -417,7 +417,7 @@ function renderCard(name, data) {
     let cardGpuTotal = 0;
     for (const j of jobs) {
       const s = (j.state || '').toUpperCase();
-      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING') {
+      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING' || s === 'SUBMITTING') {
         cardGpuTotal += jobGpuCount(j.nodes, j.gres);
       }
     }
@@ -631,7 +631,7 @@ function renderCard(name, data) {
     <div class="card-head">
       <div class="card-info-row">
         <span class="card-name">${name}</span>
-        <span class="badge">${info.gpu_type}</span>
+        <span class="badge">${clusterGpuBadge(name)}</span>
         ${quotaBadgesHtml(name)}
         <span class="status-indicator ${statusClass}"></span>
         <span class="job-count-text">${jobCountText}</span>
@@ -686,7 +686,7 @@ function groupClusters(data) {
     const hasActiveJobs = liveJobs.length > 0
       || allJobs.some(j => {
         const s = (j.state || '').toUpperCase();
-        return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
+        return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING' || s === 'SUBMITTING';
       });
     const hasFreshData = !!d.updated;
     if (hasActiveJobs) {
@@ -893,7 +893,7 @@ function _showLoadingSkeleton() {
     <div class="grid">${Object.keys(CLUSTERS).map(name => `
       <div class="card" id="card-${name}">
         <div class="card-head">
-          <div class="card-info-row"><span class="card-name">${name}</span><span class="badge">${CLUSTERS[name].gpu_type}</span><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
+          <div class="card-info-row"><span class="card-name">${name}</span><span class="badge">${clusterGpuBadge(name)}</span><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
         </div>
         <div class="no-jobs" style="color:#bbb">waiting…</div>
       </div>`).join('')}

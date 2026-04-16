@@ -25,11 +25,14 @@
   "aihub_opensearch_url": "",
   "dashboard_url": "",
   "aihub_cache_ttl_sec": 300,
+  "sdk_ingest_token": "",
   "clusters": {
     "my-cluster": {
       "host": "login-node.example.com",
       "port": 22,
       "gpu_type": "H100",
+      "gpu_mem_gb": 80,
+      "gpus_per_node": 8,
       "mount_paths": [
         "/shared/storage/users/$USER"
       ]
@@ -38,6 +41,8 @@
       "host": "login.another.example.com",
       "port": 22,
       "gpu_type": "A100",
+      "gpu_mem_gb": 80,
+      "gpus_per_node": 8,
       "mount_paths": [
         "/lustre/fsw/portfolios/my-team/users/$USER"
       ]

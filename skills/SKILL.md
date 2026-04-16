@@ -224,6 +224,33 @@ Only fall back to SSH if debugging the clausius app itself or the user explicitl
 
 ---
 
+## SDK-Tracked Submissions
+
+To enable Clausius experiment tracking, add two env vars to any NeMo-Skills submission:
+
+```bash
+CLAUSIUS_URL=http://localhost:7272 \
+NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK=1 \
+ns eval --cluster <cluster> --expname "<project>_<campaign>_<run-details>" ...
+```
+
+Works with `ns`, `python -m nemo_skills.pipeline.cli`, experiment scripts, or programmatic `eval()` calls.
+
+### What it does
+- Runs appear on the board in **SUBMITTING** state immediately
+- Transitions to **PENDING** when Slurm accepts the job
+- If submission fails, auto-marks as **FAILED**
+- Captures: exact command, git commit, hostname, working directory
+
+### Environment variables
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `CLAUSIUS_URL` | Yes | Clausius server URL for HTTP event push |
+| `CLAUSIUS_TOKEN` | No | Bearer token if `sdk_ingest_token` is configured |
+| `NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK` | Recommended | Skip git dirty check in NeMo-Skills |
+
+---
+
 ## Modifying the App
 
 Source lives at `~/clausius`. After changes to `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`:

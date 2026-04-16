@@ -345,8 +345,8 @@ function _renderProjPage() {
 
   let html = '';
   for (const [cluster, groups] of Object.entries(byCluster)) {
-    const gpuType = CLUSTERS[cluster]?.gpu_type || '';
-    const gpuBadge = gpuType ? `<span class="avail-gpu-badge">${gpuType}</span>` : '';
+    const gpuLabel = clusterGpuBadge(cluster);
+    const gpuBadge = gpuLabel ? `<span class="avail-gpu-badge">${gpuLabel}</span>` : '';
     const totalJobs = groups.reduce((s, g) => s + g.jobs.length, 0);
 
     html += `<div class="proj-hist-card"><div class="proj-hist-card-head">${cluster} ${gpuBadge} <span class="group-count">${groups.length} runs · ${totalJobs} jobs</span></div>`;

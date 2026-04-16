@@ -43,6 +43,7 @@ AIHUB_OPENSEARCH_URL = _CONFIG.get("aihub_opensearch_url", "")
 DASHBOARD_URL = _CONFIG.get("dashboard_url", "")
 AIHUB_CACHE_TTL = _CONFIG.get("aihub_cache_ttl_sec", 300)
 WDS_SNAPSHOT_INTERVAL = _CONFIG.get("wds_snapshot_interval_sec", 900)
+SDK_INGEST_TOKEN = _CONFIG.get("sdk_ingest_token", "")
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])
 NEMO_RUN_BASES = _CONFIG.get("nemo_run_bases", [])
 MOUNT_LUSTRE_PREFIXES = _CONFIG.get("mount_lustre_prefixes", [])
@@ -59,12 +60,13 @@ for _name, _cfg in _CONFIG.get("clusters", {}).items():
         "key": os.path.expanduser(_cfg.get("key", DEFAULT_SSH_KEY)),
         "port": _cfg.get("port", 22),
         "gpu_type": _cfg.get("gpu_type", ""),
+        "gpu_mem_gb": _cfg.get("gpu_mem_gb", 0),
         "gpus_per_node": _cfg.get("gpus_per_node", 0),
         "account": _cfg.get("account", ""),
     }
 CLUSTERS["local"] = {
     "host": None, "data_host": "", "user": None, "key": None,
-    "port": None, "gpu_type": "local", "gpus_per_node": 0,
+    "port": None, "gpu_type": "local", "gpu_mem_gb": 0, "gpus_per_node": 0,
 }
 
 

@@ -114,7 +114,28 @@ function _renderRunBody(run, cluster) {
       <span class="run-timing-label">Project</span>
       <span class="run-timing-value">${run.project || '—'}</span>
     </div>
+    ${run.source === 'sdk' ? `
+    <div class="run-timing-item">
+      <span class="run-timing-label">Source</span>
+      <span class="run-timing-value" style="color:var(--accent);font-weight:600">SDK</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Git</span>
+      <span class="run-timing-value">${_escHtml(run.git_commit || '—')}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Launcher</span>
+      <span class="run-timing-value">${_escHtml(run.launcher_hostname || '—')}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Working dir</span>
+      <span class="run-timing-value" style="word-break:break-all">${_escHtml(run.submit_cwd || '—')}</span>
+    </div>` : ''}
   </div>`;
+
+  if (run.submit_command) {
+    html += _renderToggleSection('submit-cmd', 'Submit Command', `<pre style="white-space:pre-wrap;word-break:break-all">${_escHtml(run.submit_command)}</pre>`, false);
+  }
 
   if (run.batch_script) {
     html += _renderToggleSection('batch-script', 'Batch Script', `<pre>${_escHtml(run.batch_script)}</pre>`, true);
@@ -133,7 +154,7 @@ function _renderRunBody(run, cluster) {
     html += _renderToggleSection('conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true);
   }
 
-  if (!run.batch_script && !run.scontrol_raw && !run.env_vars && !run.conda_state) {
+  if (!run.submit_command && !run.batch_script && !run.scontrol_raw && !run.env_vars && !run.conda_state) {
     html += '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:12px 0">';
     html += 'No metadata captured yet. ';
     html += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';

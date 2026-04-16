@@ -563,6 +563,8 @@ td.bold { font-weight: 500; }
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 500;
 }
+.s-SUBMITTING { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); animation: submitting-pulse 1.5s ease-in-out infinite; }
+@keyframes submitting-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 .s-RUNNING    { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
 .s-PENDING    { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
 .s-FAILED     { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-bd); }

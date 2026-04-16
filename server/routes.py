@@ -893,6 +893,66 @@ def _compute_run_resources(jobs, cluster="", run_scontrol_raw="", run_batch_scri
     return unique_node_count, total_gpus, gpus_per_node
 
 
+def _resolve_run_via_job(cluster, job_id):
+    """Look up a run by finding the job's run_id, then loading that run with all jobs."""
+    try:
+        from .db import get_db
+        con = get_db()
+        row = con.execute(
+            "SELECT run_id FROM job_history WHERE cluster=? AND job_id=? AND run_id IS NOT NULL",
+            (cluster, str(job_id)),
+        ).fetchone()
+        con.close()
+        if row and row["run_id"]:
+            from .db import get_db as _gdb
+            c2 = _gdb()
+            run_row = c2.execute("SELECT root_job_id FROM runs WHERE id=?", (row["run_id"],)).fetchone()
+            c2.close()
+            if run_row:
+                return get_run_with_jobs(cluster, run_row["root_job_id"])
+    except Exception:
+        pass
+    return None
+
+
+def _inherit_sdk_provenance(run, cluster):
+    """If a legacy run shares a name with an SDK run, copy provenance fields.
+
+    The legacy run_name may have a doubled job_name_prefix (e.g. hle_hle_test_...)
+    so we try both the full name and the name with the first prefix stripped.
+    """
+    run_name = run.get("run_name", "")
+    if not run_name:
+        return
+    try:
+        from .db import get_db
+        con = get_db()
+        candidates = [run_name]
+        parts = run_name.split("_", 1)
+        if len(parts) == 2:
+            candidates.append(parts[1])
+
+        sdk_run = None
+        for name in candidates:
+            sdk_run = con.execute(
+                """SELECT submit_command, submit_cwd, git_commit, launcher_hostname, primary_output_dir, run_uuid
+                   FROM runs WHERE cluster=? AND source='sdk' AND (run_name=? OR run_name LIKE ?) AND submit_command != ''
+                   ORDER BY id DESC LIMIT 1""",
+                (cluster, name, f"%{name}%"),
+            ).fetchone()
+            if sdk_run:
+                break
+        con.close()
+        if sdk_run:
+            for field in ("submit_command", "submit_cwd", "git_commit", "launcher_hostname", "primary_output_dir"):
+                if not run.get(field) and sdk_run[field]:
+                    run[field] = sdk_run[field]
+            if not run.get("source") or run["source"] == "legacy":
+                run["source"] = "sdk+legacy"
+    except Exception:
+        pass
+
+
 @api.route("/api/run_info/<cluster>/<root_job_id>")
 def api_run_info(cluster, root_job_id):
     if cluster not in CLUSTERS:
@@ -902,8 +962,10 @@ def api_run_info(cluster, root_job_id):
         actual_root = create_run_on_demand(cluster, root_job_id)
         if actual_root:
             run = get_run_with_jobs(cluster, actual_root)
-        if not run:
-            return jsonify({"status": "error", "error": "Run not found"}), 404
+    if not run:
+        run = _resolve_run_via_job(cluster, root_job_id)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
     if not run.get("meta_fetched"):
         pass
     for j in run.get("jobs", []):
@@ -924,6 +986,10 @@ def api_run_info(cluster, root_job_id):
     run["unique_nodes"] = unique_nodes
     run["total_gpus"] = total_gpus
     run["gpus_per_node"] = gpus_per_node
+
+    if not run.get("submit_command") and run.get("source") != "sdk":
+        _inherit_sdk_provenance(run, cluster)
+
     return jsonify({"status": "ok", "run": run})
 
 
@@ -1919,3 +1985,236 @@ def api_spotlight():
         "logbook": f_lb.result(),
         "history": f_hist.result(),
     })
+
+
+# ── SDK event ingest ─────────────────────────────────────────────────────────
+
+
+def _adopt_matching_slurm_jobs(cluster, expname, sdk_run_id):
+    """Link existing real Slurm jobs whose name contains the SDK run's expname."""
+    if not cluster or not expname or not sdk_run_id:
+        return
+    try:
+        with db_write() as con:
+            rows = con.execute(
+                """SELECT job_id, log_path FROM job_history
+                   WHERE cluster=? AND job_name LIKE ? AND job_id NOT LIKE 'sdk-%'
+                   AND (run_id IS NULL OR run_id != ?)""",
+                (cluster, f"%{expname}%", sdk_run_id),
+            ).fetchall()
+            if rows:
+                job_ids = [r["job_id"] for r in rows]
+                placeholders = ",".join("?" for _ in job_ids)
+                con.execute(
+                    f"UPDATE job_history SET run_id=? WHERE cluster=? AND job_id IN ({placeholders})",
+                    [sdk_run_id, cluster] + job_ids,
+                )
+                for r in rows:
+                    if r["log_path"]:
+                        con.execute(
+                            "UPDATE runs SET primary_output_dir=? WHERE id=? AND (primary_output_dir IS NULL OR primary_output_dir='')",
+                            (os.path.dirname(os.path.dirname(r["log_path"])), sdk_run_id),
+                        )
+                        break
+    except Exception:
+        pass
+
+@api.route("/api/sdk/events", methods=["POST"])
+def api_sdk_ingest():
+    """Accept batched SDK events and persist runs/jobs/metrics immediately."""
+    from .config import SDK_INGEST_TOKEN, extract_project
+    from .db import (
+        upsert_run_from_sdk,
+        store_sdk_event,
+        finalize_sdk_run,
+        get_run_by_uuid,
+        invalidate_pinned_cache,
+    )
+    from .poller import bump_version
+
+    if SDK_INGEST_TOKEN:
+        auth = request.headers.get("Authorization", "")
+        if auth != f"Bearer {SDK_INGEST_TOKEN}":
+            return jsonify({"status": "error", "error": "unauthorized"}), 401
+
+    events = request.get_json(force=True, silent=True)
+    if not isinstance(events, list):
+        return jsonify({"status": "error", "error": "expected JSON array"}), 400
+
+    accepted = 0
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        run_uuid = ev.get("run_uuid", "")
+        event_type = ev.get("event_type", "")
+        event_seq = ev.get("event_seq", 0)
+        ts = ev.get("ts", 0.0)
+        payload = ev.get("payload", {})
+        if not run_uuid or not event_type:
+            continue
+
+        import json as _j
+        payload_json = _j.dumps(payload, default=str)
+        store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json)
+
+        if event_type == "run_started":
+            expname = payload.get("expname", "")
+            cluster = payload.get("cluster", "")
+            project = extract_project(expname)
+            run_id = upsert_run_from_sdk(run_uuid, cluster, expname, project, payload)
+            _adopt_matching_slurm_jobs(cluster, expname, run_id)
+            bump_version()
+
+        elif event_type in ("job_prepared", "job_submitted"):
+            run = get_run_by_uuid(run_uuid)
+            if run:
+                cluster = payload.get("cluster") or run.get("cluster", "")
+                partition = payload.get("partition", "")
+                account = payload.get("account", "")
+                num_nodes = payload.get("num_nodes", 0)
+                num_gpus = payload.get("num_gpus")
+                synthetic_job_id = f"sdk-{run_uuid[:12]}"
+                with db_write() as con:
+                    sets, params = [], []
+                    if event_type == "job_submitted":
+                        sets.append("state = CASE WHEN state = 'SUBMITTING' THEN 'PENDING' ELSE state END")
+                        con.execute(
+                            "UPDATE runs SET sdk_status='active' WHERE id=? AND sdk_status='submitting'",
+                            (run["id"],),
+                        )
+                    if partition:
+                        sets.append("partition = COALESCE(NULLIF(?, ''), partition)")
+                        params.append(partition)
+                    if account:
+                        sets.append("account = COALESCE(NULLIF(?, ''), account)")
+                        params.append(account)
+                    if num_nodes:
+                        sets.append("nodes = ?")
+                        params.append(str(num_nodes))
+                    if num_gpus is not None:
+                        gres_val = f"gpu:{num_gpus}" if num_gpus else ""
+                        sets.append("gres = COALESCE(NULLIF(?, ''), gres)")
+                        params.append(gres_val)
+                    if sets:
+                        params.extend([cluster, synthetic_job_id])
+                        con.execute(
+                            f"UPDATE job_history SET {', '.join(sets)} WHERE cluster=? AND job_id=?",
+                            params,
+                        )
+                bump_version()
+
+        elif event_type in ("run_finished", "run_failed"):
+            if event_type == "run_failed":
+                status = payload.get("status", "failed")
+            else:
+                status = payload.get("status", "completed")
+            finalize_sdk_run(run_uuid, status)
+            bump_version()
+
+        elif event_type == "job_state":
+            _ingest_job_state(run_uuid, payload)
+            bump_version()
+
+        if event_type == "metric_logged" and payload.get("key") == "gpu_telemetry":
+            _ingest_gpu_telemetry(run_uuid, payload)
+
+        accepted += 1
+
+    return jsonify({"status": "ok", "accepted": accepted})
+
+
+def _ingest_gpu_telemetry(run_uuid, payload):
+    """Write GPU telemetry from the monitor into job_stats_snapshots."""
+    try:
+        from .db import get_run_by_uuid
+        from datetime import datetime
+
+        context = payload.get("context", {})
+        slurm_job_id = context.get("slurm_job_id", "")
+        gpus = payload.get("value", [])
+        if not gpus or not isinstance(gpus, list):
+            return
+
+        run = get_run_by_uuid(run_uuid)
+        if not run:
+            return
+        cluster = run.get("cluster", "")
+        job_id = slurm_job_id or f"sdk-{run_uuid[:12]}"
+
+        utils = [g.get("util", 0) for g in gpus if isinstance(g, dict)]
+        mems_used = [g.get("mem_used", 0) for g in gpus if isinstance(g, dict)]
+        mems_total = [g.get("mem_total", 0) for g in gpus if isinstance(g, dict)]
+
+        gpu_util = round(sum(utils) / len(utils), 1) if utils else None
+        gpu_mem_used = round(sum(mems_used) / len(mems_used), 1) if mems_used else None
+        gpu_mem_total = round(sum(mems_total) / len(mems_total), 1) if mems_total else None
+
+        import json as _j
+        gpu_details = _j.dumps([
+            {"index": str(g.get("index", i)), "name": "", "util": f"{g.get('util', 0)}%",
+             "mem": f"{g.get('mem_used', 0)}/{g.get('mem_total', 0)} MiB"}
+            for i, g in enumerate(gpus) if isinstance(g, dict)
+        ])
+
+        now = datetime.now().isoformat(timespec="seconds")
+        with db_write() as con:
+            con.execute(
+                """INSERT INTO job_stats_snapshots
+                   (cluster, job_id, ts, gpu_util, gpu_mem_used, gpu_mem_total, cpu_util, rss_used, max_rss, gpu_details)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (cluster, job_id, now, gpu_util, gpu_mem_used, gpu_mem_total, "", None, None, gpu_details),
+            )
+    except Exception:
+        pass
+
+
+def _ingest_job_state(run_uuid, payload):
+    """Handle job_state events from the in-container exit-status wrapper.
+
+    Updates the real Slurm job and SDK synthetic job to the terminal state,
+    and finalizes the run if all jobs are done.
+    """
+    try:
+        from .db import get_run_by_uuid, invalidate_pinned_cache
+        from datetime import datetime
+
+        state = payload.get("state", "")
+        exit_code = payload.get("exit_code")
+        slurm_job_id = payload.get("slurm_job_id", "")
+        if not state:
+            return
+
+        run = get_run_by_uuid(run_uuid)
+        if not run:
+            return
+        cluster = run.get("cluster", "")
+        now = datetime.now().isoformat(timespec="seconds")
+
+        with db_write() as con:
+            if slurm_job_id and slurm_job_id != "unknown":
+                con.execute(
+                    """UPDATE job_history SET
+                        state = ?, exit_code = ?, ended_at = COALESCE(ended_at, ?)
+                       WHERE cluster = ? AND job_id = ?""",
+                    (state, str(exit_code) if exit_code is not None else None, now, cluster, slurm_job_id),
+                )
+
+            synthetic_job_id = f"sdk-{run_uuid[:12]}"
+            con.execute(
+                """UPDATE job_history SET
+                    state = CASE WHEN state IN ('SUBMITTING','PENDING','RUNNING') THEN ? ELSE state END,
+                    exit_code = COALESCE(exit_code, ?),
+                    ended_at = COALESCE(ended_at, ?)
+                   WHERE cluster = ? AND job_id = ?""",
+                (state, str(exit_code) if exit_code is not None else None, now, cluster, synthetic_job_id),
+            )
+
+            sdk_status = "completed" if state == "COMPLETED" else "failed"
+            con.execute(
+                "UPDATE runs SET sdk_status = ?, ended_at = COALESCE(ended_at, ?) WHERE run_uuid = ? AND sdk_status NOT IN ('completed', 'failed')",
+                (sdk_status, now, run_uuid),
+            )
+
+        invalidate_pinned_cache(cluster)
+    except Exception:
+        pass
