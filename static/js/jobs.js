@@ -553,6 +553,7 @@ function renderCard(name, data) {
 
       const groupRows = ordered.map(j => {
       const gpuStr = parseGpus(j.nodes, j.gres);
+      const hasGpu = !!gpuStr;
       const resourceCell = gpuStr
         ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
         : `<span class="dim">${j.nodes || '—'}n</span>`;
@@ -603,7 +604,6 @@ function renderCard(name, data) {
       const bkBadge = backupBadgeHtml(backupKind);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-      const hasGpu = !!gpuStr;
       const nameCls = hasGpu ? '' : ' name-cpu';
 
       let backupBtn = '';
@@ -618,7 +618,8 @@ function renderCard(name, data) {
       const _rowBg = _rowShaded ? `background:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
-      return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
+      const cpuCls = isCpuUtility ? ' cpu-row' : '';
+      return `<tr class="${rowClass}${cpuCls}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
         <td>${isUnneeded
