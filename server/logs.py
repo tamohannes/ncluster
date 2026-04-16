@@ -275,16 +275,16 @@ def discover_job_logs_from_mount(cluster_name, job_id):
 
 
 def _derive_result_dirs(files, cluster_name=None):
-    """Find the output directory (parent of log dir) and return it as a
+    """Find the run directory (parent of log dir) and return it as a
     browsable directory. The UI's tree browser handles subdirectory
-    expansion, so we just need the root output path."""
+    expansion, so we just need the root path."""
     if not files:
         return []
     log_dir = os.path.dirname(files[0]["path"])
     output_dir = os.path.dirname(log_dir)
     if not output_dir or output_dir == log_dir:
         return []
-    return [{"label": "output", "path": output_dir}]
+    return [{"label": os.path.basename(output_dir), "path": output_dir}]
 
 
 def fetch_log_tail(cluster_name, log_path, lines=150):
@@ -456,21 +456,12 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
             )
 
     if output_dir:
-        candidate_dirs = [output_dir] + [os.path.join(output_dir, name) for name in RESULT_DIR_NAMES]
-        for remote_dir in candidate_dirs:
-            mounted_dir = resolve_mounted_path(cluster_name, remote_dir, want_dir=True)
-            if not mounted_dir or not os.path.isdir(mounted_dir):
-                continue
-            _append_discovered_dir(dirs, seen_dirs, remote_dir)
-            label_prefix = os.path.basename(remote_dir.rstrip("/")) if remote_dir != output_dir else ""
+        mounted_output = resolve_mounted_path(cluster_name, output_dir, want_dir=True)
+        if mounted_output and os.path.isdir(mounted_output):
+            _append_discovered_dir(dirs, seen_dirs, output_dir)
             _discover_local_dir_files(
-                mounted_dir,
-                remote_dir,
-                job_id,
-                seen_paths,
-                files,
-                include_recognized=(remote_dir == output_dir),
-                label_prefix=label_prefix,
+                mounted_output, output_dir, job_id, seen_paths, files,
+                include_recognized=True,
             )
 
     if not files and not dirs:

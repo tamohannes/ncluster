@@ -1023,6 +1023,30 @@ def store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json):
         """, (run_uuid, event_type, event_seq, ts, payload_json))
 
 
+def cancel_sdk_job(synthetic_job_id):
+    """Cancel an SDK synthetic job by its job_id (sdk-xxxx). Updates job + run."""
+    from datetime import datetime
+    ts = datetime.now().isoformat(timespec="seconds")
+    with db_write() as con:
+        row = con.execute(
+            "SELECT cluster, run_id FROM job_history WHERE job_id=?", (synthetic_job_id,)
+        ).fetchone()
+        if not row:
+            return
+        cluster = row["cluster"]
+        run_id = row["run_id"]
+        con.execute(
+            "UPDATE job_history SET state='CANCELLED', ended_at=COALESCE(ended_at, ?), board_visible=1 WHERE job_id=?",
+            (ts, synthetic_job_id),
+        )
+        if run_id:
+            con.execute(
+                "UPDATE runs SET sdk_status='failed', ended_at=COALESCE(ended_at, ?) WHERE id=?",
+                (ts, run_id),
+            )
+    invalidate_pinned_cache(cluster)
+
+
 def finalize_sdk_run(run_uuid, status, ended_at=None):
     """Mark an SDK run as finished/failed and update the synthetic job."""
     from datetime import datetime

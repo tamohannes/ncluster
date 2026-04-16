@@ -92,6 +92,7 @@ async function openProject(projectName, fromTab) {
     _renderAppTabs();
     _persistTabs();
   }
+  if (typeof _setHash === 'function') _setHash(`#/project/${encodeURIComponent(projectName)}`);
   _highlightProjectBtn(projectName);
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';

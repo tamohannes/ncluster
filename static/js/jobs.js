@@ -46,6 +46,52 @@ let _appTabs = [{ id: 1, type: 'live', label: 'Live', project: null }];
 let _activeTabId = 1;
 let _nextTabId = 2;
 
+// ── Hash-based URL routing ──────────────────────────────────────────
+let _hashNavigating = false;
+
+function _setHash(h) {
+  _hashNavigating = true;
+  location.hash = h;
+  setTimeout(() => { _hashNavigating = false; }, 0);
+}
+
+function _hashForView(type, extra) {
+  if (type === 'live') return '#/live';
+  if (type === 'history') return '#/history';
+  if (type === 'clusters') return '#/compute';
+  if (type === 'logbook') {
+    const proj = extra || (typeof _lbProject !== 'undefined' ? _lbProject : '');
+    return proj ? `#/logbook/${proj}` : '#/logbook';
+  }
+  if (type === 'project' && extra) return `#/project/${extra}`;
+  return '#/live';
+}
+
+function _onHashChange() {
+  if (_hashNavigating) return;
+  const raw = location.hash.replace(/^#\/?/, '');
+  if (!raw) return;
+  const parts = raw.split('/');
+  const view = parts[0];
+
+  if (view === 'live') showTab('live');
+  else if (view === 'history') showTab('history');
+  else if (view === 'compute') showTab('clusters');
+  else if (view === 'logbook') {
+    if (parts[1] && typeof _lbProject !== 'undefined') _lbProject = decodeURIComponent(parts[1]);
+    showTab('logbook');
+  }
+  else if (view === 'project' && parts[1]) openProject(decodeURIComponent(parts[1]));
+  else if (view === 'explorer' && parts.length >= 4) {
+    const cluster = decodeURIComponent(parts[1]);
+    const jobId = decodeURIComponent(parts[2]);
+    const path = decodeURIComponent(parts.slice(3).join('/'));
+    openExplorer(cluster, jobId, path, path.split('/').pop());
+  }
+}
+
+window.addEventListener('hashchange', _onHashChange);
+
 function _activateView(tab) {
   currentTab = tab;
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
@@ -82,6 +128,7 @@ function showTab(tab) {
   }
   _renderAppTabs();
   _persistTabs();
+  _setHash(_hashForView(tab));
 }
 
 function switchAppTab(id) {
@@ -100,6 +147,7 @@ function switchAppTab(id) {
   }
   _renderAppTabs();
   _persistTabs();
+  _setHash(_hashForView(t.type, t.project || t.lbProject));
 }
 
 function _updateActiveTabExtra(fields) {

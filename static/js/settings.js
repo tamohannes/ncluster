@@ -1182,9 +1182,14 @@ loadBgSuffixes();
 fetchAll();
 loadProjectButtons();
 
-// Restore tabs across refreshes
+// Restore tabs across refreshes, prefer hash over localStorage
 (function restoreTab() {
-  if (!_restoreTabs()) {
+  const hash = location.hash.replace(/^#\/?/, '');
+  if (hash) {
+    if (!_restoreTabs()) _renderAppTabs();
+    _hashNavigating = false;
+    _onHashChange();
+  } else if (!_restoreTabs()) {
     _renderAppTabs();
     showTab('live');
   }

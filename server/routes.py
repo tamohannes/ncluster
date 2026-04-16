@@ -577,6 +577,12 @@ def api_team_jobs():
 def api_cancel(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if str(job_id).startswith("sdk-"):
+        from .db import cancel_sdk_job
+        cancel_sdk_job(str(job_id))
+        from .poller import bump_version
+        bump_version()
+        return jsonify({"status": "ok", "note": "SDK run cancelled"})
     try:
         if cluster == "local":
             os.kill(int(job_id), 15)
@@ -599,9 +605,26 @@ def api_cancel_jobs(cluster):
     job_ids = payload.get("job_ids", [])
     if not job_ids or not isinstance(job_ids, list):
         return jsonify({"status": "error", "error": "job_ids list required"}), 400
-    sanitized = [str(jid).strip() for jid in job_ids if str(jid).strip().isdigit()]
-    if not sanitized:
+    sdk_ids = [str(jid).strip() for jid in job_ids if str(jid).strip().startswith("sdk-")]
+    slurm_ids = [str(jid).strip() for jid in job_ids
+                 if str(jid).strip() and not str(jid).strip().startswith("sdk-")
+                 and any(c.isdigit() for c in str(jid))]
+
+    sdk_cancelled = 0
+    if sdk_ids:
+        from .db import cancel_sdk_job
+        from .poller import bump_version as _bv
+        for sid in sdk_ids:
+            cancel_sdk_job(sid)
+            sdk_cancelled += 1
+        _bv()
+
+    if not slurm_ids and not sdk_ids:
         return jsonify({"status": "error", "error": "No valid job IDs"}), 400
+    if not slurm_ids:
+        return jsonify({"status": "ok", "cancelled": sdk_cancelled})
+
+    sanitized = slurm_ids
     try:
         if cluster == "local":
             errors = []
@@ -611,11 +634,11 @@ def api_cancel_jobs(cluster):
                 except Exception as e:
                     errors.append(f"{jid}: {e}")
             if errors:
-                return jsonify({"status": "partial", "cancelled": len(sanitized) - len(errors), "errors": errors})
-            return jsonify({"status": "ok", "cancelled": len(sanitized)})
+                return jsonify({"status": "partial", "cancelled": len(sanitized) + sdk_cancelled - len(errors), "errors": errors})
+            return jsonify({"status": "ok", "cancelled": len(sanitized) + sdk_cancelled})
 
         result = cancel_jobs_with_report(cluster, sanitized, timeout_sec=20, chunk_size=25)
-        cancelled = len(result["cancelled_ids"])
+        cancelled = len(result["cancelled_ids"]) + sdk_cancelled
         errors = [
             f'{err["job_id"]}: {err["error"]}'
             for err in result["errors"]
@@ -624,11 +647,11 @@ def api_cancel_jobs(cluster):
             return jsonify({
                 "status": "partial",
                 "cancelled": cancelled,
-                "cancelled_ids": result["cancelled_ids"],
+                "cancelled_ids": result["cancelled_ids"] + sdk_ids,
                 "failed_ids": [err["job_id"] for err in result["errors"]],
                 "errors": errors,
             })
-        return jsonify({"status": "ok", "cancelled": cancelled, "cancelled_ids": result["cancelled_ids"]})
+        return jsonify({"status": "ok", "cancelled": cancelled, "cancelled_ids": result["cancelled_ids"] + sdk_ids})
     except Exception as e:
         _log.exception("cancel_jobs %s failed", cluster)
         return jsonify({"status": "error", "error": str(e)})

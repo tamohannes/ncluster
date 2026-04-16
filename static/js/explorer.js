@@ -27,6 +27,8 @@ function openExplorer(cluster, jobId, path, filename) {
   document.getElementById('project-view').classList.remove('active');
   document.getElementById('explorer-page').classList.add('open');
 
+  if (typeof _setHash === 'function') _setHash(`#/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(jobId)}/${encodeURIComponent(path)}`);
+
   const isJsonl = /\.jsonl(?:-async)?$/i.test(path);
   if (isJsonl && _expView === 'formatted') {
     _loadExplorerJsonl();
@@ -62,6 +64,7 @@ async function _loadExplorerTree() {
       _expPage = 0;
       _expRawContent = '';
       document.getElementById('exp-filename').textContent = path.split('/').pop();
+      if (typeof _setHash === 'function') _setHash(`#/explorer/${encodeURIComponent(_expCluster)}/${encodeURIComponent(_expJobId)}/${encodeURIComponent(path)}`);
       setExpView('formatted');
     };
     
@@ -115,6 +118,8 @@ function closeExplorer() {
   document.getElementById('explorer-page').classList.remove('open');
   showTab(currentTab);
 }
+
+// Explorer state is now persisted via URL hash (#/explorer/cluster/jobId/path)
 
 function setExpView(mode) {
   _expView = mode;
