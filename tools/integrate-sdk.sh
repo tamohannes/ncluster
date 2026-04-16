@@ -148,14 +148,28 @@ else:
 " 2>/dev/null || echo "  Could not insert block."
     fi
 
-    # Patch the add_task command wrapping
-    if ! grep -q "_clausius_monitor_wrap" "$EXP_FILE" 2>/dev/null; then
-        echo "  WARNING: _clausius_monitor_wrap not found after patching. Manual fix needed for add_task()."
-    fi
-
-    # Patch the env_updates line in add_task if not already done
-    if grep -q '_clausius_env_vars' "$EXP_FILE" && ! grep -q 'env_updates.update(_clausius_env_vars())' "$EXP_FILE"; then
-        echo "  NOTE: _clausius_env_vars exists but add_task() env injection may need manual wiring."
+    # Wire _clausius_env_vars() and _clausius_monitor_wrap() into add_task()
+    if ! grep -q 'env_updates.update(_clausius_env_vars())' "$EXP_FILE" 2>/dev/null; then
+        python3 -c "
+tgt = open('$EXP_FILE').read()
+old = '''            with temporary_env_update(cluster_config, {\"NEMO_SKILLS_SANDBOX_PORT\": sandbox_port}):
+                cur_cmd = install_packages_wrap(cur_cmd, installation_command)
+                commands.append(cur_cmd)'''
+new = '''            env_updates = {\"NEMO_SKILLS_SANDBOX_PORT\": sandbox_port}
+            env_updates.update(_clausius_env_vars())
+            with temporary_env_update(cluster_config, env_updates):
+                cur_cmd = install_packages_wrap(cur_cmd, installation_command)
+                cur_cmd = _clausius_monitor_wrap(cur_cmd)
+                commands.append(cur_cmd)'''
+if old in tgt:
+    tgt = tgt.replace(old, new, 1)
+    open('$EXP_FILE', 'w').write(tgt)
+    print('  Wired _clausius_env_vars + _clausius_monitor_wrap into add_task().')
+else:
+    print('  add_task() wiring pattern not found (may already be wired or different version).')
+" 2>/dev/null || echo "  Could not wire add_task() automatically."
+    else
+        echo "  add_task() env injection already wired."
     fi
 
     # Inject on_task_prepared hook in add_task if not present
