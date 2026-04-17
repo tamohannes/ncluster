@@ -691,7 +691,8 @@ function renderCard(name, data) {
     ? `<button class="icon-btn" onclick="mountCluster('${name}')">mount</button>`
     : '';
 
-  return `<div class="${cardClass}" id="card-${name}">
+  const staleBadge = data._stale ? `<span class="card-stale-badge" title="This cluster's data is stale - retrying in background">stale</span>` : '';
+  return `<div class="${cardClass}${data._stale ? ' card-stale' : ''}" id="card-${name}">
     <div class="card-head">
       <div class="card-info-row">
         <span class="card-name">${name}</span>
@@ -699,6 +700,7 @@ function renderCard(name, data) {
         ${quotaBadgesHtml(name)}
         <span class="status-indicator ${statusClass}"></span>
         <span class="job-count-text">${jobCountText}</span>
+        ${staleBadge}
         ${mountBadge}
         <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
       </div>
@@ -1005,7 +1007,7 @@ async function _doFetchAll() {
   try {
     const headers = {};
     if (_lastEtag) headers['If-None-Match'] = _lastEtag;
-    const res = await fetchWithTimeout('/api/jobs', { headers });
+    const res = await fetchWithTimeout('/api/jobs', { headers }, 6000);
 
     if (res.status === 304) {
       _fetchFailCount = 0;
@@ -1019,27 +1021,60 @@ async function _doFetchAll() {
     _lastEtag = res.headers.get('ETag');
     _lastBoardVersion = (_lastEtag || '').replace(/"/g, '');
     const fresh = await res.json();
-    const hasData = Object.values(fresh).some(d => d.updated);
-    if (hasData) {
-      allData = fresh;
-      _fillMissing();
-      _renderAll();
-      _clearErrorBannerKey('jobs');
-      _clearErrorBannerKey('clusters');
-    }
+    allData = fresh;
+    _fillMissing();
+    _renderAll();
+    _clearErrorBannerKey('jobs');
+    _clearErrorBannerKey('clusters');
     _fetchFailCount = 0;
   } catch (e) {
     _fetchFailCount++;
-    console.warn('Job fetch failed:', e);
-    if (!Object.keys(allData).length) {
-      _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
-    }
+    console.warn('Job fetch failed, falling back to per-cluster fanout:', e);
+    await _fanoutPerCluster();
   }
 
   if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
 
   _saveProgressCache();
   prefetchAndUpdateProgress(allData);
+}
+
+async function _fanoutPerCluster() {
+  const names = Object.keys(CLUSTERS);
+  const failedClusters = [];
+  let anySuccess = false;
+
+  await Promise.allSettled(names.map(async (name) => {
+    try {
+      const res = await fetchWithTimeout(`/api/jobs/${name}`, {}, 5000);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      allData[name] = data;
+      anySuccess = true;
+    } catch (e) {
+      failedClusters.push(name);
+      if (!allData[name]) {
+        allData[name] = {
+          status: 'error', error: e.message || 'unreachable',
+          jobs: [], _stale: true,
+        };
+      } else {
+        allData[name]._stale = true;
+      }
+    }
+  }));
+
+  _fillMissing();
+  _renderAll();
+
+  if (anySuccess && failedClusters.length === 0) {
+    _clearErrorBannerKey('jobs');
+    _clearErrorBannerKey('clusters');
+  } else if (failedClusters.length === names.length) {
+    _setErrorBanner('jobs', `Server unreachable — retrying`);
+  } else if (failedClusters.length > 0) {
+    _setErrorBanner('clusters', `${failedClusters.length} cluster${failedClusters.length > 1 ? 's' : ''} stale: ${failedClusters.join(', ')}`);
+  }
 }
 
 async function _forceRefreshAll() {

@@ -456,6 +456,16 @@ main { padding: 14px 16px 40px; }
 .badge-accent { background: var(--accent-bg); border-color: var(--accent-bd); color: var(--accent); }
 
 .card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.card-stale-badge {
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 7px;
+  background: var(--amber-bg); color: var(--amber);
+  border: 1px solid var(--amber-bd);
+  animation: stale-pulse 2s ease-in-out infinite;
+}
+@keyframes stale-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+.card.card-stale { opacity: 0.85; }
+
 .mount-badge {
   font-family: var(--mono); font-size: 10px;
   padding: 2px 8px; border-radius: 7px;

@@ -19,6 +19,8 @@ _mount_ok_ts = {}
 _MOUNT_OK_TTL = 30
 _mount_ok_locks = {}
 _mount_ok_locks_lock = threading.Lock()
+_mount_refresh_inflight = set()
+_mount_refresh_lock = threading.Lock()
 
 def _get_mount_ok_lock(cluster_name):
     with _mount_ok_locks_lock:
@@ -27,50 +29,63 @@ def _get_mount_ok_lock(cluster_name):
         return _mount_ok_locks[cluster_name]
 
 
-def _is_cluster_mount_ok(cluster_name):
-    """Fast non-blocking check: is this cluster's mount known-healthy?
+def _refresh_mount_ok_async(cluster_name, roots):
+    """Run _test_mount_alive in a background thread; never blocks the caller."""
+    with _mount_refresh_lock:
+        if cluster_name in _mount_refresh_inflight:
+            return
+        _mount_refresh_inflight.add(cluster_name)
 
-    Caches the result for _MOUNT_OK_TTL seconds.  On cache miss it checks
-    /proc/mounts (never blocks) then runs _test_mount_alive (subprocess
-    with 4 s timeout) to avoid hanging on stale FUSE.
+    def _worker():
+        try:
+            ok = _test_mount_alive(roots[0])
+            _mount_ok[cluster_name] = ok
+            _mount_ok_ts[cluster_name] = time.monotonic()
+            if not ok:
+                log.warning("Mount for %s is stale (background check)", cluster_name)
+        except Exception as e:
+            log.debug("Mount refresh for %s failed: %s", cluster_name, e)
+        finally:
+            with _mount_refresh_lock:
+                _mount_refresh_inflight.discard(cluster_name)
+
+    threading.Thread(target=_worker, daemon=True, name=f"mount-refresh-{cluster_name}").start()
+
+
+def _is_cluster_mount_ok(cluster_name):
+    """Strictly non-blocking check: is this cluster's mount known-healthy?
+
+    Never blocks the request thread. Returns the last known cached value
+    immediately. If the cache is stale or absent, schedules a background
+    refresh for next time. On the very first call (no cache yet) we use an
+    optimistic estimate from /proc/mounts only — the actual `ls` test
+    happens in the background.
     """
-    now = time.monotonic()
+    cached = _mount_ok.get(cluster_name)
     ts = _mount_ok_ts.get(cluster_name, 0)
-    if now - ts < _MOUNT_OK_TTL:
-        return _mount_ok.get(cluster_name, False)
+    age = time.monotonic() - ts
 
     roots = MOUNT_MAP.get(cluster_name, [])
     if not roots:
-        _mount_ok[cluster_name] = False
-        _mount_ok_ts[cluster_name] = now
         return False
 
     mps = _proc_mount_points()
     any_mounted = any(_resolve(r) in mps for r in roots)
+
     if not any_mounted:
         _mount_ok[cluster_name] = False
-        _mount_ok_ts[cluster_name] = now
+        _mount_ok_ts[cluster_name] = time.monotonic()
         return False
 
-    lock = _get_mount_ok_lock(cluster_name)
-    if not lock.acquire(blocking=False):
-        # Another thread is already testing the mount. Return the last known state
-        # immediately to prevent thread exhaustion (thundering herd).
-        return _mount_ok.get(cluster_name, False)
+    if cached is not None and age < _MOUNT_OK_TTL:
+        return cached
 
-    try:
-        # Check cache again inside lock
-        if time.monotonic() - _mount_ok_ts.get(cluster_name, 0) < _MOUNT_OK_TTL:
-            return _mount_ok.get(cluster_name, False)
+    if cached is None or age >= _MOUNT_OK_TTL:
+        _refresh_mount_ok_async(cluster_name, roots)
 
-        ok = _test_mount_alive(roots[0])
-        _mount_ok[cluster_name] = ok
-        _mount_ok_ts[cluster_name] = time.monotonic()
-        if not ok:
-            log.warning("Mount for %s is stale, falling back to SSH", cluster_name)
-        return ok
-    finally:
-        lock.release()
+    if cached is None:
+        return True
+    return cached
 
 
 def _proc_mount_points():
