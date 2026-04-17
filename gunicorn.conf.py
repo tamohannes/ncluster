@@ -22,8 +22,8 @@ bind = f"0.0.0.0:{APP_PORT}"
 workers = 1
 worker_class = "gthread"
 threads = 32
-timeout = 30
-graceful_timeout = 10
+timeout = 120
+graceful_timeout = 15
 keepalive = 5
 
 max_requests = 4000

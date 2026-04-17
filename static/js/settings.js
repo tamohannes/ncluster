@@ -703,7 +703,10 @@ function startCountdown() {
     countdown--;
     document.getElementById('cd').textContent = countdown;
     if (countdown <= 0) {
-      countdown = refreshIntervalSec;
+      const backoff = typeof _fetchFailCount !== 'undefined' && _fetchFailCount > 0
+        ? Math.min(_fetchFailCount * 2, 10)
+        : 1;
+      countdown = Math.round(refreshIntervalSec * backoff);
       fetchAll();
       if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
         refreshPppAllocations();
