@@ -979,20 +979,15 @@ let _fetchAllRunning = false;
 let _lastEtag = null;
 let _lastBoardVersion = null;
 
+let _fetchFailCount = 0;
+
 async function fetchAll() {
-  if (_fetchAllRunning || document.hidden) {
-    const debugRunId = `jobs-skip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // #region agent log
-    fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H5',location:'static/js/jobs.js:fetchAll:skip',message:'fetchAll skipped',data:{fetchAllRunning:_fetchAllRunning,hidden:document.hidden,gridChildren:document.getElementById('grid')?.children?.length||0},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    return;
-  }
+  if (_fetchAllRunning || document.hidden) return;
   _fetchAllRunning = true;
   try { await _doFetchAll(); } finally { _fetchAllRunning = false; }
 }
 async function _doFetchAll() {
   const grid = document.getElementById('grid');
-  const debugRunId = `jobs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   if (!grid.children.length) _showLoadingSkeleton();
 
@@ -1008,20 +1003,13 @@ async function _doFetchAll() {
     });
   }
 
-  // Single conditional fetch — replaces bulk + N per-cluster requests
   try {
     const headers = {};
     if (_lastEtag) headers['If-None-Match'] = _lastEtag;
-    headers['X-Debug-Run-Id'] = debugRunId;
-    // #region agent log
-    fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H3',location:'static/js/jobs.js:_doFetchAll:start',message:'jobs fetch start',data:{lastEtag:_lastEtag,allDataKeys:Object.keys(allData).length,gridChildren:grid.children.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     const res = await fetchWithTimeout('/api/jobs', { headers });
-    // #region agent log
-    fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H3',location:'static/js/jobs.js:_doFetchAll:response',message:'jobs fetch response',data:{status:res.status,ok:res.ok,etag:res.headers.get('ETag')},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     if (res.status === 304) {
+      _fetchFailCount = 0;
       _clearErrorBannerKey('jobs');
       _clearErrorBannerKey('clusters');
       grid.classList.remove('grid-loading');
@@ -1033,24 +1021,17 @@ async function _doFetchAll() {
     _lastBoardVersion = (_lastEtag || '').replace(/"/g, '');
     const fresh = await res.json();
     const hasData = Object.values(fresh).some(d => d.updated);
-    // #region agent log
-    fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H4',location:'static/js/jobs.js:_doFetchAll:parsed',message:'jobs payload parsed',data:{clusterKeys:Object.keys(fresh||{}).length,updatedClusters:Object.values(fresh||{}).filter(d=>d&&d.updated).length,hasData},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (hasData) {
       allData = fresh;
       _fillMissing();
       _renderAll();
-      // #region agent log
-      fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H4',location:'static/js/jobs.js:_doFetchAll:rendered',message:'jobs render complete',data:{allDataKeys:Object.keys(allData).length,gridChildren:grid.children.length},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       _clearErrorBannerKey('jobs');
       _clearErrorBannerKey('clusters');
     }
+    _fetchFailCount = 0;
   } catch (e) {
+    _fetchFailCount++;
     console.warn('Job fetch failed:', e);
-    // #region agent log
-    fetch('http://localhost:7812/ingest/20aa2267-7a00-4d7a-a8e0-160ef713eecd',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'41bcda'},body:JSON.stringify({sessionId:'41bcda',runId:debugRunId,hypothesisId:'H3',location:'static/js/jobs.js:_doFetchAll:catch',message:'jobs fetch failed',data:{name:e?.name||null,message:e?.message||String(e),allDataKeys:Object.keys(allData).length,gridChildren:grid.children.length},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
     if (!Object.keys(allData).length) {
       _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
     }
@@ -1064,10 +1045,9 @@ async function _doFetchAll() {
 
 async function _forceRefreshAll() {
   const grid = document.getElementById('grid');
-  const debugRunId = `force-all-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   grid.classList.add('grid-loading');
   const promises = Object.keys(CLUSTERS).map(name =>
-    fetch(`/api/force_poll/${name}`, { method: 'POST', headers: { 'X-Debug-Run-Id': debugRunId } }).catch(() => {})
+    fetch(`/api/force_poll/${name}`, { method: 'POST' }).catch(() => {})
   );
   await Promise.allSettled(promises);
   _lastEtag = null;

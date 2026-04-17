@@ -126,21 +126,10 @@ def _active_request_snapshot(limit=8):
 
 
 def _debug_log(run_id, hypothesis_id, location, message, data):
-    try:
-        payload = {
-            "sessionId": _DEBUG_SESSION_ID,
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
+    pass
 
+
+_SHED_EXEMPT = ("/api/health", "/api/sdk/events")
 
 @api.before_request
 def _start_timer():
@@ -148,10 +137,10 @@ def _start_timer():
     g._counted = False
     tid = threading.current_thread().ident
     path = request.path
-    is_heavy = path.startswith(_HEAVY_PREFIXES)
+    exempt = path in _SHED_EXEMPT or not path.startswith("/api/")
     with _active_lock:
         count = len(_active_threads)
-        if is_heavy and count >= _MAX_ACTIVE:
+        if not exempt and count >= _MAX_ACTIVE:
             shed = True
         else:
             _active_threads.add(tid)
@@ -201,43 +190,13 @@ def api_jobs():
     from flask import Response
 
     touch_demand()
-    run_id = request.headers.get("X-Debug-Run-Id") or f"api-jobs-{int(time.time() * 1000)}"
-    started = time.monotonic()
 
     version = get_version()
     etag = f'"{version}"'
-    # region agent log
-    _debug_log(
-        run_id,
-        "H1",
-        "server/routes.py:api_jobs:entry",
-        "api_jobs entry",
-        {
-            "if_none_match": request.headers.get("If-None-Match"),
-            "etag": etag,
-            "active_requests": _active_request_count(),
-            "path": request.path,
-        },
-    )
-    # endregion
     if request.headers.get("If-None-Match") == etag:
         return Response(status=304)
     try:
         snapshot = build_board_snapshot(schedule_prefetch_active=True)
-        # region agent log
-        _debug_log(
-            run_id,
-            "H1",
-            "server/routes.py:api_jobs:after_snapshot",
-            "api_jobs snapshot built",
-            {
-                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-                "cluster_count": len(snapshot),
-                "updated_clusters": sum(1 for d in snapshot.values() if d.get("updated")),
-                "ok_clusters": sum(1 for d in snapshot.values() if d.get("status") == "ok"),
-            },
-        )
-        # endregion
 
         def cluster_sort_key(item):
             name, data = item
@@ -251,20 +210,6 @@ def api_jobs():
 
         mounts = all_mount_status()
         poller_status = get_poller().get_status()
-        # region agent log
-        _debug_log(
-            run_id,
-            "H2",
-            "server/routes.py:api_jobs:after_mounts",
-            "api_jobs mounts attached",
-            {
-                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-                "mounted_clusters": sum(1 for m in mounts.values() if m.get("mounted")),
-                "poller_clusters": len(poller_status),
-                "active_requests": _active_request_count(),
-            },
-        )
-        # endregion
         for c, d in ordered.items():
             if c != "local":
                 d["mount"] = mounts.get(c, {"mounted": False, "root": ""})
@@ -273,21 +218,7 @@ def api_jobs():
         resp.headers["ETag"] = etag
         resp.headers["Cache-Control"] = "no-cache"
         return resp
-    except Exception as exc:
-        # region agent log
-        _debug_log(
-            run_id,
-            "H1",
-            "server/routes.py:api_jobs:exception",
-            "api_jobs exception",
-            {
-                "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-                "type": type(exc).__name__,
-                "message": str(exc),
-                "active_requests": _active_request_count(),
-            },
-        )
-        # endregion
+    except Exception:
         raise
 
 
@@ -1431,47 +1362,16 @@ def api_force_poll(cluster):
     """Queue one explicit live poll now without tying up the request thread."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    run_id = request.headers.get("X-Debug-Run-Id") or f"force-poll-{cluster}-{int(time.time() * 1000)}"
-    started = time.monotonic()
     poller = get_poller()
     poller_state = poller.get_status().get(cluster, {})
-    # region agent log
-    _debug_log(
-        run_id,
-        "H6",
-        "server/routes.py:api_force_poll:entry",
-        "force poll entry",
-        {
-            "cluster": cluster,
-            "active_requests": _active_request_count(),
-            "inflight": poller_state.get("inflight"),
-        },
-    )
-    # endregion
     touch_demand()
     poller.request_priority(cluster)
-    result = {
+    return jsonify({
         "status": "queued",
         "cluster": cluster,
         "queued": True,
         "inflight": poller_state.get("inflight", False),
-    }
-    # region agent log
-    _debug_log(
-        run_id,
-        "H6",
-        "server/routes.py:api_force_poll:result",
-        "force poll result",
-        {
-            "cluster": cluster,
-            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-            "status": result.get("status"),
-            "active_requests": _active_request_count(),
-            "inflight": result.get("inflight"),
-        },
-    )
-    # endregion
-    return jsonify(result), 202
+    }), 202
 
 
 @api.route("/api/health")
