@@ -938,15 +938,44 @@ def get_run_by_uuid(run_uuid):
     return dict(row) if row else None
 
 
+def _build_full_submit_command(provenance):
+    """Reconstruct a full reproducible shell command from SDK provenance."""
+    lines = []
+
+    cwd = provenance.get("cwd", "")
+    conda_env = provenance.get("conda_env", "")
+    env_vars_set = provenance.get("env_vars_set", [])
+    argv = provenance.get("argv", [])
+    command = provenance.get("command", "")
+
+    if argv and (not command or len(command) < len(" ".join(str(a) for a in argv))):
+        command = " ".join(str(a) for a in argv)
+
+    if conda_env and conda_env != "base":
+        lines.append(f"conda activate {conda_env}")
+    elif not conda_env:
+        venv = provenance.get("env_subset", {}).get("VIRTUAL_ENV", "")
+        if venv:
+            lines.append(f"source {venv}/bin/activate")
+
+    if cwd:
+        lines.append(f"cd {cwd}")
+
+    if env_vars_set:
+        cmd_line = " \\\n  ".join(env_vars_set) + " \\\n  " + command
+    else:
+        cmd_line = command
+
+    lines.append(cmd_line)
+    return "\n".join(lines)
+
+
 def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
     """Create or update a run from SDK run_started event. Returns run_id."""
     from datetime import datetime
     synthetic_job_id = f"sdk-{run_uuid[:12]}"
 
-    argv = provenance.get("argv", [])
-    command = provenance.get("command", "")
-    if argv and (not command or len(command) < len(" ".join(str(a) for a in argv))):
-        command = " ".join(str(a) for a in argv)
+    command = _build_full_submit_command(provenance)
 
     with db_write() as con:
         row = con.execute("SELECT id FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()

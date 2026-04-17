@@ -856,15 +856,29 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   flex: 1;
 }
 .run-timing {
-  display: flex; gap: 20px; flex-wrap: wrap;
-  font-family: var(--mono); font-size: 12px;
-  margin-bottom: 18px; padding: 10px 14px;
+  display: flex; gap: 14px; flex-wrap: wrap;
+  font-family: var(--gpu-font), var(--mono), monospace; font-size: 11px;
+  margin-bottom: 8px; padding: 8px 12px;
   background: var(--surface2); border-radius: 8px;
   border: 1px solid var(--border);
 }
-.run-timing-item { display: flex; flex-direction: column; gap: 2px; }
-.run-timing-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); font-weight: 600; }
-.run-timing-value { font-weight: 500; color: var(--text); }
+.run-timing-item { display: flex; flex-direction: column; gap: 1px; }
+.run-timing-label { font-size: 8px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); font-weight: 600; font-family: var(--mono); }
+.run-timing-value { font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+.run-resource-bar {
+  display: flex; align-items: center; flex-wrap: wrap;
+  margin-bottom: 14px; padding: 6px 14px;
+  background: var(--surface2); border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.run-dur-ring { color: var(--green); flex-shrink: 0; }
+.run-dur-ring .ring-bg { stroke: currentColor; opacity: 0.2; }
+.run-dur-ring .ring-fg { stroke: currentColor; stroke-linecap: round; }
+.run-dur-ring.ring-over { color: var(--red); }
+.run-dur-ring.ring-live .ring-fg { animation: dur-pulse 2s ease-in-out infinite; }
+@keyframes dur-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 .run-section {
   border: 1px solid var(--border); border-radius: 8px;

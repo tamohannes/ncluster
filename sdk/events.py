@@ -70,6 +70,9 @@ class RunProvenance:
     env_subset: dict[str, str] = field(default_factory=dict)
     cluster: str = ""
     config_overrides: dict[str, Any] = field(default_factory=dict)
+    conda_env: str = ""
+    python_executable: str = ""
+    env_vars_set: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -81,6 +81,9 @@ function _renderRunBody(run, cluster) {
     </div>
   </div>`;
 
+  const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
+  const _durationRing = _runDurationRing(earliest, latest);
+
   html += `<div class="run-timing">
     <div class="run-timing-item">
       <span class="run-timing-label">Started</span>
@@ -92,23 +95,7 @@ function _renderRunBody(run, cluster) {
     </div>
     <div class="run-timing-item">
       <span class="run-timing-label">Duration</span>
-      <span class="run-timing-value">${duration}</span>
-    </div>
-    <div class="run-timing-item">
-      <span class="run-timing-label">Jobs</span>
-      <span class="run-timing-value">${jobs.length}</span>
-    </div>
-    <div class="run-timing-item">
-      <span class="run-timing-label">GPUs/node</span>
-      <span class="run-timing-value">${gpusPerNode ?? '—'}</span>
-    </div>
-    <div class="run-timing-item">
-      <span class="run-timing-label">Nodes</span>
-      <span class="run-timing-value">${uniqueNodes ?? '—'}</span>
-    </div>
-    <div class="run-timing-item">
-      <span class="run-timing-label">Total GPUs (Nodes x GPUs/node)</span>
-      <span class="run-timing-value">${totalGpus ?? '—'}</span>
+      <span class="run-timing-value" style="display:inline-flex;align-items:center;gap:5px">${_durationRing}${duration}</span>
     </div>
     <div class="run-timing-item">
       <span class="run-timing-label">Project</span>
@@ -133,8 +120,17 @@ function _renderRunBody(run, cluster) {
     </div>` : ''}
   </div>`;
 
+  html += `<div class="run-resource-bar">
+    <span class="job-count-text">${_jobStates}</span>
+  </div>`;
+
   if (run.submit_command) {
-    html += _renderToggleSection('submit-cmd', 'Submit Command', `<pre style="white-space:pre-wrap;word-break:break-all">${_escHtml(run.submit_command)}</pre>`, false);
+    const cmdId = 'submit-cmd-pre-' + (run.root_job_id || '0');
+    const cmdContent = `<div style="position:relative">
+      <pre id="${cmdId}" style="white-space:pre-wrap;word-break:break-all;padding-right:36px">${_escHtml(run.submit_command)}</pre>
+      <button onclick="navigator.clipboard.writeText(document.getElementById('${cmdId}').textContent).then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)})" style="position:absolute;top:6px;right:6px;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;line-height:1">⧉</button>
+    </div>`;
+    html += _renderToggleSection('submit-cmd', 'Submit Command', cmdContent, false);
   }
 
   if (run.batch_script) {
@@ -164,10 +160,10 @@ function _renderRunBody(run, cluster) {
   if (jobs.length > 0) {
     html += `<div class="run-section" style="margin-top:14px">
       <div class="run-section-head" onclick="toggleRunSection('run-jobs-sec')">
-        <span>Jobs in this run</span>
-        <span class="run-section-chevron" id="run-jobs-sec-chevron">▼</span>
+        <span>Jobs in this run (${jobs.length})</span>
+        <span class="run-section-chevron collapsed" id="run-jobs-sec-chevron">▼</span>
       </div>
-      <div class="run-section-body" id="run-jobs-sec">
+      <div class="run-section-body hidden" id="run-jobs-sec">
         <table class="run-jobs-table">
           <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Nodes</th></tr></thead>
           <tbody>${(() => {
@@ -210,6 +206,74 @@ function _renderRunBody(run, cluster) {
   body.innerHTML = html;
 }
 
+function _runDurationRing(start, end) {
+  if (!start) return '';
+  const MAX_MS = 4 * 3600 * 1000;
+  const now = end || new Date();
+  const elapsed = now - start;
+  const pct = Math.min(100, Math.max(0, (elapsed / MAX_MS) * 100));
+  const r = 7, c = 2 * Math.PI * r;
+  const dash = (pct / 100) * c;
+  const isOver = elapsed >= MAX_MS;
+  const isLive = !end;
+  const colorCls = isOver ? 'ring-over' : isLive ? 'ring-live' : '';
+  return `<svg class="progress-ring run-dur-ring ${colorCls}" width="18" height="18" viewBox="0 0 18 18" role="img">
+    <title>${Math.round(pct)}% of 4h</title>
+    <circle class="ring-bg" cx="9" cy="9" r="${r}" fill="none" stroke-width="2"/>
+    <circle class="ring-fg" cx="9" cy="9" r="${r}" fill="none" stroke-width="2"
+      stroke-dasharray="${dash.toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 9 9)"/>
+  </svg>`;
+}
+
+function _computeJobStateSummary(jobs, gpusPerNode) {
+  const byId = {};
+  for (const j of jobs) { if (j.job_id || j.jobid) byId[j.job_id || j.jobid] = j; }
+
+  function _jobGpus(j) {
+    const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
+    const part = (j.partition || '').toLowerCase();
+    const isCpu = part.startsWith('cpu') || part === 'defq' || part === 'fake';
+    const gpn = gm ? parseInt(gm[1], 10) : ((!isCpu && (gpusPerNode || 0) > 0) ? gpusPerNode : 0);
+    return (parseInt(j.nodes, 10) || 0) * gpn;
+  }
+
+  let runC = 0, runG = 0, pendC = 0, pendG = 0, depC = 0, depG = 0, bkpC = 0, bkpG = 0;
+  let compC = 0, compG = 0, doneC = 0, failC = 0, failG = 0, toC = 0, toG = 0, cancC = 0;
+  const otherCounts = {};
+  const otherGpus = {};
+
+  for (const j of jobs) {
+    const st = (j.state || 'UNKNOWN').toUpperCase();
+    const g = _jobGpus(j);
+    if (st === 'RUNNING' || st === 'COMPLETING') { runC++; runG += g; }
+    else if (st === 'PENDING' || st === 'SUBMITTING') {
+      if (typeof _isBackupDep === 'function' && _isBackupDep(j, byId)) { bkpC++; bkpG += g; }
+      else if (typeof _isDependentJob === 'function' && _isDependentJob(j)) { depC++; depG += g; }
+      else { pendC++; pendG += g; }
+    }
+    else if (st === 'COMPLETED') { doneC++; }
+    else if (st.includes('FAIL')) { failC++; failG += g; }
+    else if (st === 'TIMEOUT') { toC++; toG += g; }
+    else if (st.startsWith('CANCEL')) { cancC++; }
+    else { otherCounts[st] = (otherCounts[st] || 0) + 1; otherGpus[st] = (otherGpus[st] || 0) + g; }
+  }
+
+  const parts = [];
+  if (runC)  parts.push(`<span class="ss-run">${runC} running (<span class="gpu-num">${runG}</span> GPU)</span>`);
+  if (pendC) parts.push(`<span class="ss-pend">${pendC} pending (<span class="gpu-num">${pendG}</span> GPU)</span>`);
+  if (depC)  parts.push(`<span class="ss-dep">${depC} dep (<span class="gpu-num">${depG}</span>)</span>`);
+  if (bkpC)  parts.push(`<span class="ss-bkp">${bkpC} backup (<span class="gpu-num">${bkpG}</span>)</span>`);
+  if (doneC) parts.push(`<span class="ss-done">${doneC} done</span>`);
+  if (failC) parts.push(`<span class="ss-fail">${failC} failed (<span class="gpu-num">${failG}</span> GPU)</span>`);
+  if (toC)   parts.push(`<span class="ss-fail">${toC} timeout (<span class="gpu-num">${toG}</span> GPU)</span>`);
+  if (cancC) parts.push(`<span class="ss-canc">${cancC} cancelled</span>`);
+  for (const st of Object.keys(otherCounts)) {
+    parts.push(`<span class="ss-canc">${otherCounts[st]} ${st.toLowerCase()} (<span class="gpu-num">${otherGpus[st]}</span>)</span>`);
+  }
+
+  return parts.join(' · ');
+}
+
 function _renderToggleSection(id, title, contentHtml, collapsed) {
   const chevronCls = collapsed ? 'collapsed' : '';
   const bodyCls = collapsed ? 'hidden' : '';
@@ -231,16 +295,31 @@ function toggleRunSection(sectionId) {
 }
 
 function _renderEnvTable(envStr) {
-  const lines = envStr.split('\n').filter(l => l.trim());
-  if (!lines.length) return `<pre>${_escHtml(envStr)}</pre>`;
-  const rows = lines.map(line => {
-    const eq = line.indexOf('=');
-    if (eq < 0) return `<tr><td colspan="2">${_escHtml(line)}</td></tr>`;
-    const key = line.slice(0, eq);
-    const val = line.slice(eq + 1);
-    return `<tr><td>${_escHtml(key)}</td><td>${_escHtml(val)}</td></tr>`;
-  }).join('');
-  return `<table class="env-table">${rows}</table>`;
+  let pairs = [];
+  const trimmed = envStr.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed);
+      pairs = Object.entries(obj).sort((a, b) => a[0].localeCompare(b[0]));
+    } catch { /* fall through to line-based parsing */ }
+  }
+  if (!pairs.length) {
+    const lines = trimmed.split('\n').filter(l => l.trim());
+    if (!lines.length) return `<pre>${_escHtml(envStr)}</pre>`;
+    pairs = lines.map(line => {
+      const eq = line.indexOf('=');
+      return eq < 0 ? [line, ''] : [line.slice(0, eq), line.slice(eq + 1)];
+    });
+  }
+  const filterId = 'env-filter-' + Math.random().toString(36).slice(2, 8);
+  const tableId = 'env-tbl-' + filterId;
+  const filterInput = pairs.length > 8
+    ? `<input id="${filterId}" type="text" placeholder="Filter variables…" oninput="(function(v){var rows=document.getElementById('${tableId}').querySelectorAll('tr');for(var i=0;i<rows.length;i++){rows[i].style.display=rows[i].textContent.toLowerCase().includes(v)?'':'none'}})(this.value.toLowerCase())" style="width:100%;padding:4px 8px;margin-bottom:6px;font-family:var(--mono);font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:4px;color:var(--text);outline:none">`
+    : '';
+  const rows = pairs.map(([k, v]) =>
+    `<tr><td>${_escHtml(k)}</td><td style="word-break:break-all">${_escHtml(String(v))}</td></tr>`
+  ).join('');
+  return `${filterInput}<table class="env-table" id="${tableId}">${rows}</table>`;
 }
 
 function _escHtml(s) {
@@ -274,8 +353,11 @@ function _latestTime(jobs, field) {
 
 function _fmtRunTime(d) {
   if (!d) return '—';
-  return d.toLocaleDateString([], {month: 'short', day: 'numeric', year: 'numeric'})
-    + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const date = d.toLocaleDateString([], {month: 'short', day: 'numeric', ...(sameYear ? {} : {year: 'numeric'})});
+  const time = d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false});
+  return `${date}, ${time}`;
 }
 
 function _formatDuration(start, end) {

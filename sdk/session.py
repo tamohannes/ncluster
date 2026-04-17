@@ -40,20 +40,19 @@ LOG = logging.getLogger(__name__)
 _BATCH_SIZE = 20
 _FLUSH_INTERVAL_SEC = 10.0
 
-_ENV_ALLOWLIST = {
-    "USER",
-    "HOME",
-    "HOSTNAME",
-    "SLURM_JOB_ID",
-    "SLURM_JOB_NAME",
-    "SLURM_JOB_NODELIST",
-    "SLURM_NNODES",
-    "CUDA_VISIBLE_DEVICES",
-    "NEMO_SKILLS_CONFIG",
-    "HF_HOME",
-    "WANDB_PROJECT",
-    "WANDB_RUN_ID",
+_ENV_DENYLIST_SUBSTRINGS = {
+    "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL", "API_KEY",
+    "PRIVATE_KEY", "AUTH",
 }
+_ENV_DENYLIST_EXACT = {
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "HF_TOKEN",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NGC_API_KEY",
+    "CLAUSIUS_TOKEN",
+    "LS_COLORS", "LSCOLORS",
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_AGENT_INFO",
+}
+_ENV_MAX_VALUE_LEN = 1024
 
 
 def _git_sha() -> str:
@@ -70,8 +69,48 @@ def _git_sha() -> str:
         return ""
 
 
+def _is_env_safe(key: str) -> bool:
+    upper = key.upper()
+    if upper in _ENV_DENYLIST_EXACT:
+        return False
+    return not any(s in upper for s in _ENV_DENYLIST_SUBSTRINGS)
+
+
 def _safe_env_subset() -> dict[str, str]:
-    return {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
+    out = {}
+    for k, v in sorted(os.environ.items()):
+        if not _is_env_safe(k):
+            continue
+        if len(v) > _ENV_MAX_VALUE_LEN:
+            v = v[:_ENV_MAX_VALUE_LEN] + "…"
+        out[k] = v
+    return out
+
+
+def _detect_conda_env() -> str:
+    """Return active conda/venv environment name, or empty string."""
+    if os.environ.get("CONDA_DEFAULT_ENV"):
+        return os.environ["CONDA_DEFAULT_ENV"]
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv:
+        return os.path.basename(venv)
+    return ""
+
+
+_SUBMIT_ENV_VARS = {
+    "CLAUSIUS_URL",
+    "CLAUSIUS_TOKEN",
+    "NEMO_SKILLS_DISABLE_UNCOMMITTED_CHANGES_CHECK",
+    "CUDA_VISIBLE_DEVICES",
+    "NEMO_SKILLS_CONFIG",
+    "HF_HOME",
+    "WANDB_PROJECT",
+}
+
+
+def _detect_env_vars_set() -> list[str]:
+    """Return env var assignments that were set at launch time (for reproducing)."""
+    return [f"{k}={os.environ[k]}" for k in sorted(_SUBMIT_ENV_VARS) if k in os.environ]
 
 
 class ClausiusSession:
@@ -244,6 +283,9 @@ class ClausiusSession:
             env_subset=_safe_env_subset(),
             cluster=cluster,
             config_overrides=config_overrides or {},
+            conda_env=_detect_conda_env(),
+            python_executable=sys.executable,
+            env_vars_set=_detect_env_vars_set(),
         )
         session.emit_run_started(provenance)
         return session
