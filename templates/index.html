@@ -35,7 +35,7 @@
   <aside class="side-nav" id="side-nav">
     <div class="nav-tabs-wrap">
       <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')"><span class="nav-tab-icon">⚡</span> Live</button>
-      <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','History')"><span class="nav-tab-icon">📋</span> History</button>
+      <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','Runs')"><span class="nav-tab-icon">📋</span> Runs</button>
       <button class="nav-tab" id="tab-logbook" onclick="navClick(event,'logbook','Logbook')"><span class="nav-tab-icon">📓</span> Logbook</button>
       <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Compute')"><span class="nav-tab-icon">🖥</span> Compute</button>
     </div>
@@ -489,7 +489,7 @@
           <label class="settings-row"><span>Keep last N backups</span><input type="number" id="set-backup-max" min="1" max="90" value="7" style="width:60px"></label>
           <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveAdvancedSettings()">save</button></div>
           <div class="settings-sub-label" style="margin-top:16px">Display</div>
-          <label class="settings-row"><span>History page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
+          <label class="settings-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>JSONL load mode</span>
             <select id="set-jsonl-mode" style="font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:5px;border:1px solid var(--border)" onchange="saveLocalSettings()">

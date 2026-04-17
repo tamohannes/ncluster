@@ -6,7 +6,7 @@ let _spotlightItems = [];
 
 const _quickActions = [
   { icon: '⚡', title: 'Go to Live',      sub: 'View active jobs',         action: () => showTab('live') },
-  { icon: '⏱',  title: 'Go to History',   sub: 'View job history',         action: () => showTab('history') },
+  { icon: '⏱',  title: 'Go to Runs',      sub: 'View run history',         action: () => showTab('history') },
   { icon: '📓', title: 'Go to Logbook',   sub: 'View project notes',       action: () => showTab('logbook') },
   { icon: '🖥', title: 'Go to Compute',  sub: 'GPU allocations and usage', action: () => showTab('clusters') },
   { icon: '⚙',  title: 'Settings',        sub: 'Open settings panel',      action: () => openSettingsModal() },

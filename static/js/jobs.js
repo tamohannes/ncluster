@@ -120,7 +120,7 @@ function showTab(tab) {
   const at = _appTabs.find(t => t.id === _activeTabId);
   if (at) {
     at.type = tab;
-    at.label = { live: 'Live', history: 'History', logbook: 'Logbook', clusters: 'Compute' }[tab] || tab;
+    at.label = { live: 'Live', history: 'Runs', logbook: 'Logbook', clusters: 'Compute' }[tab] || tab;
     at.project = null;
     if (tab === 'logbook' && typeof _lbProject !== 'undefined' && _lbProject) {
       at.lbProject = _lbProject;
@@ -706,7 +706,7 @@ function renderCard(name, data) {
       </div>
       <div class="card-actions-row">
         ${mountBtn}
-        <button class="icon-btn" onclick="showClusterHistory('${name}')">history</button>
+        <button class="icon-btn" onclick="showClusterHistory('${name}')">runs</button>
         ${clearCompletedBtn}
         ${clearCancelledBtn}
         ${clearFailedBtn}
