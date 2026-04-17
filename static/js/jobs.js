@@ -982,11 +982,90 @@ let _lastBoardVersion = null;
 
 let _fetchFailCount = 0;
 
+// ── Server reconnect state machine ─────────────────────────────────────────
+// When /api/jobs AND every per-cluster fanout fail, we assume the gunicorn
+// worker is wedged (or restarting) and enter probing mode:
+//   1. Abort every in-flight fetch so the client stops piling on the worker.
+//   2. Poll the load-shed-exempt /api/health every few seconds until it
+//      responds 200 (this works even when the main thread pool is saturated,
+//      and as soon as the arbiter respawns the worker it starts responding).
+//   3. On the first healthy probe, reset counters, clear the banner, and
+//      fire a fresh fetchAll() so the UI catches up immediately.
+// The normal polling loop is suspended while we probe so retries can't
+// refill the worker with stuck requests mid-restart.
+let _reconnectState = 'idle';  // 'idle' | 'probing'
+let _reconnectStartedAt = 0;
+let _lastReconnectAt = 0;
+const _RECONNECT_DEBOUNCE_MS = 15000;
+const _RECONNECT_MAX_MS = 180000;
+const _RECONNECT_PROBE_INTERVAL_MS = 3000;
+const _RECONNECT_PROBE_TIMEOUT_MS = 2500;
+
+function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function _triggerServerReconnect(reason) {
+  const now = Date.now();
+  if (_reconnectState !== 'idle') return;
+  if (now - _lastReconnectAt < _RECONNECT_DEBOUNCE_MS) return;
+
+  _reconnectState = 'probing';
+  _reconnectStartedAt = now;
+  _lastReconnectAt = now;
+
+  const dropped = (typeof dropAllInFlight === 'function')
+    ? dropAllInFlight(`reconnect: ${reason}`)
+    : 0;
+
+  const suffix = dropped ? ` — dropped ${dropped} stuck request${dropped === 1 ? '' : 's'}` : '';
+  _setErrorBanner('jobs', `Server unreachable — reconnecting${suffix}`);
+  try { console.warn(`[clausius] server reconnect triggered: ${reason} (dropped ${dropped})`); } catch (_) {}
+
+  while (Date.now() - _reconnectStartedAt < _RECONNECT_MAX_MS) {
+    if (document.hidden) break;
+    let ok = false;
+    try {
+      const res = await fetchWithTimeout('/api/health', { cache: 'no-store' }, _RECONNECT_PROBE_TIMEOUT_MS);
+      ok = !!(res && res.ok);
+    } catch (_) { ok = false; }
+
+    if (ok) {
+      _reconnectState = 'idle';
+      _clearErrorBannerKey('jobs');
+      _clearErrorBannerKey('clusters');
+      _fetchFailCount = 0;
+      _lastEtag = null;
+      try { console.info('[clausius] server reconnect: healthy, resuming'); } catch (_) {}
+      try { await fetchAll(); } catch (_) {}
+      return;
+    }
+    await _sleep(_RECONNECT_PROBE_INTERVAL_MS);
+  }
+
+  _reconnectState = 'idle';
+  try { console.warn('[clausius] server reconnect: gave up, still unreachable'); } catch (_) {}
+}
+
 async function fetchAll() {
   if (_fetchAllRunning || document.hidden) return;
+  if (_reconnectState === 'probing') return;
   _fetchAllRunning = true;
   try { await _doFetchAll(); } finally { _fetchAllRunning = false; }
 }
+
+// Test / debug hook: lets external code inspect and reset the reconnect
+// state machine without reaching into script-local `let` bindings.
+window._clausiusReconnect = {
+  get state() { return _reconnectState; },
+  set state(v) { _reconnectState = v; },
+  get lastAt() { return _lastReconnectAt; },
+  set lastAt(v) { _lastReconnectAt = v; },
+  reset() {
+    _reconnectState = 'idle';
+    _lastReconnectAt = 0;
+    _reconnectStartedAt = 0;
+  },
+  trigger(reason) { return _triggerServerReconnect(reason); },
+};
 async function _doFetchAll() {
   const grid = document.getElementById('grid');
 
@@ -1072,6 +1151,7 @@ async function _fanoutPerCluster() {
     _clearErrorBannerKey('clusters');
   } else if (failedClusters.length === names.length) {
     _setErrorBanner('jobs', `Server unreachable — retrying`);
+    _triggerServerReconnect('all clusters failed');
   } else if (failedClusters.length > 0) {
     _setErrorBanner('clusters', `${failedClusters.length} cluster${failedClusters.length > 1 ? 's' : ''} stale: ${failedClusters.join(', ')}`);
   }

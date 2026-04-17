@@ -2,18 +2,89 @@ const CLUSTERS = JSON.parse(document.getElementById('cluster-data').textContent 
 const USERNAME = (document.getElementById('username-data')?.textContent || '').trim();
 const TEAM = (document.getElementById('team-data')?.textContent || '').trim();
 
-const _nativeFetch = window.fetch;
-window.fetch = function(input, init) {
-  init = init || {};
-  if (!init.signal) {
-    init.signal = AbortSignal.timeout(20000);
+// ── In-flight connection registry ──────────────────────────────────────────
+// Every wrapped fetch registers its AbortController here. When the server
+// wedges (gunicorn worker watchdog SIGTERMs itself on 20+ stuck threads) we
+// can call `dropAllInFlight()` to abort every pending request at once. This
+// stops the client from piling more stuck requests onto a restarting worker
+// and lets the UI reconnect cleanly once /api/health is reachable again.
+const _inFlightControllers = new Set();
+
+function _trackController(controller) {
+  _inFlightControllers.add(controller);
+  return () => _inFlightControllers.delete(controller);
+}
+
+function _makeTimeoutError() {
+  if (typeof DOMException === 'function') {
+    return new DOMException('signal timed out', 'TimeoutError');
   }
-  return _nativeFetch.call(window, input, init);
+  const err = new Error('signal timed out');
+  err.name = 'TimeoutError';
+  return err;
+}
+
+function dropAllInFlight(reason = 'client-reconnect') {
+  const n = _inFlightControllers.size;
+  if (!n) return 0;
+  const reasonErr = (typeof DOMException === 'function')
+    ? new DOMException(`dropped: ${reason}`, 'AbortError')
+    : reason;
+  for (const c of Array.from(_inFlightControllers)) {
+    try { c.abort(reasonErr); } catch (_) {}
+  }
+  _inFlightControllers.clear();
+  try { console.info(`[clausius] dropped ${n} in-flight fetches (${reason})`); } catch (_) {}
+  return n;
+}
+
+// Keep the unwrapped browser fetch on a window property so tests (and any
+// debug tooling) can swap it out without touching the wrapper.
+window._clausiusNativeFetch = window.fetch.bind(window);
+
+function _wrapFetchTracked(input, init, timeoutMs) {
+  const opts = init ? { ...init } : {};
+  const userSignal = opts.signal || null;
+  const controller = new AbortController();
+  const release = _trackController(controller);
+
+  if (userSignal) {
+    if (userSignal.aborted) {
+      try { controller.abort(userSignal.reason); } catch (_) {}
+    } else {
+      userSignal.addEventListener('abort', () => {
+        try { controller.abort(userSignal.reason); } catch (_) {}
+      }, { once: true });
+    }
+  }
+
+  let tid = null;
+  if (timeoutMs && timeoutMs > 0) {
+    tid = setTimeout(() => {
+      try { controller.abort(_makeTimeoutError()); } catch (_) {}
+    }, timeoutMs);
+  }
+
+  opts.signal = controller.signal;
+  return window._clausiusNativeFetch(input, opts).finally(() => {
+    if (tid !== null) clearTimeout(tid);
+    release();
+  });
+}
+
+window.fetch = function(input, init) {
+  const hasUserSignal = !!(init && init.signal);
+  const ms = hasUserSignal ? 0 : 20000;
+  return _wrapFetchTracked(input, init, ms);
 };
 
 function fetchWithTimeout(url, opts = {}, ms = 15000) {
-  return fetch(url, { signal: AbortSignal.timeout(ms), ...opts });
+  return _wrapFetchTracked(url, opts, ms);
 }
+
+// Expose drop helper for debugging and for the reconnect state machine.
+window.dropAllInFlight = dropAllInFlight;
+window._inFlightCount = () => _inFlightControllers.size;
 
 /** Escape a string for use in an HTML double-quoted attribute value */
 function escAttr(s) {
