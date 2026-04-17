@@ -8,6 +8,8 @@ because those still protect the web app under cluster failures.
 
 import atexit
 import logging
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -347,35 +349,86 @@ atexit.register(close_all_clients)
 
 
 # -- Watchdog loop -----------------------------------------------------------
+#
+# Two jobs:
+#   1. Observability: when many request threads are in flight, log a snapshot
+#      (method/path/age) of the oldest stuck requests so the next wedge is
+#      diagnosable from journalctl alone.
+#   2. Self-recovery: if the active count stays at the load-shedding ceiling
+#      for two consecutive ticks (~30s), assume something is permanently
+#      wedged inside a request thread and SIGTERM ourselves so gunicorn's
+#      arbiter respawns the worker.  This converts an indefinite outage into
+#      a ~15 s blip (graceful_timeout=15 in gunicorn.conf.py).
+
+_WATCHDOG_TICK_SEC = 15
+_WATCHDOG_LOG_THRESHOLD = 16
+_WATCHDOG_RESET_THRESHOLD = 10  # streak resets when active drops well below cap
+
+_watchdog_high_streak = 0
+_watchdog_restart_pending = False
+
+
+def _format_active_snapshot(snapshot):
+    parts = []
+    for item in snapshot:
+        method = item.get("method") or "?"
+        path = item.get("path") or "?"
+        age_s = (item.get("age_ms") or 0) / 1000.0
+        parts.append(f"{method} {path} age={age_s:.1f}s")
+    return " | ".join(parts) if parts else "(empty)"
+
 
 def _watchdog_log_active():
-    """Log when active request count is unusually high.
+    """Log stuck-request snapshot and self-restart on persistent wedge.
 
     The set-based _active_threads in routes.py self-heals (dead threads are
-    pruned on read), so no manual reset is needed.  This loop just provides
-    observability.
+    pruned on read), but it cannot help when threads are alive-but-blocked
+    (e.g. stuck inside a hung FUSE syscall).  For that case the snapshot
+    tells us *what* was stuck and the SIGTERM gets us moving again.
     """
+    global _watchdog_high_streak, _watchdog_restart_pending
+
+    if _watchdog_restart_pending:
+        return
+
     try:
         from . import routes
+
         count = routes._active_request_count()
-        if count >= 16:
-            log.warning('watchdog: %d active requests', count)
-            routes._debug_log(
-                f"watchdog-{int(time.time() * 1000)}",
-                "H6",
-                "server/ssh.py:_watchdog_log_active",
-                "high active request snapshot",
-                {
-                    "active_requests": count,
-                    "requests": routes._active_request_snapshot(),
-                },
+        max_active = getattr(routes, "_MAX_ACTIVE", 20)
+
+        if count >= max_active:
+            _watchdog_high_streak += 1
+        elif count <= _WATCHDOG_RESET_THRESHOLD:
+            _watchdog_high_streak = 0
+
+        if count >= _WATCHDOG_LOG_THRESHOLD:
+            snapshot = routes._active_request_snapshot(limit=8)
+            log.warning(
+                "watchdog: %d active requests (streak=%d) — oldest: %s",
+                count,
+                _watchdog_high_streak,
+                _format_active_snapshot(snapshot),
             )
+
+        if _watchdog_high_streak >= 2:
+            log.error(
+                "watchdog: wedge confirmed (%d active for %d ticks); "
+                "SIGTERM self for arbiter respawn",
+                count,
+                _watchdog_high_streak,
+            )
+            _watchdog_restart_pending = True
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception:
+                log.exception("watchdog: SIGTERM failed")
     except Exception:
-        pass
+        log.exception("watchdog tick failed")
 
 
 def ssh_pool_gc_loop():
-    """Background watchdog for request load observability."""
+    """Background watchdog for request load observability and self-recovery."""
     while True:
         _watchdog_log_active()
-        time.sleep(15)
+        time.sleep(_WATCHDOG_TICK_SEC)

@@ -129,7 +129,7 @@ def _debug_log(run_id, hypothesis_id, location, message, data):
     pass
 
 
-_SHED_EXEMPT = ("/api/health", "/api/sdk/events")
+_SHED_EXEMPT = ("/api/health", "/api/sdk/events", "/api/_diag/active")
 
 @api.before_request
 def _start_timer():
@@ -165,6 +165,17 @@ def _release_load(exc):
     with _active_lock:
         _active_threads.discard(tid)
         _active_requests_meta.pop(tid, None)
+
+
+@api.route("/api/_diag/active")
+def api_diag_active():
+    """Snapshot of in-flight request threads. Exempt from load shedding so
+    it remains reachable when the worker is wedged."""
+    return jsonify({
+        "active_requests": _active_request_count(),
+        "max_active": _MAX_ACTIVE,
+        "snapshot": _active_request_snapshot(limit=32),
+    })
 
 
 @api.after_request
