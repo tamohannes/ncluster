@@ -512,14 +512,16 @@ function renderCard(name, data) {
       const safeGk = gk.replace(/'/g, "\\'");
       const _campaign = groupJobs[0]?.campaign || '';
       const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
+      const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
       const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
       const attemptBadge = groupKeyCounts[gk] > 1 ? runAttemptBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
+      const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
         : highlightedGk;
 
       // Compute dependency depth for indentation.
@@ -618,8 +620,7 @@ function renderCard(name, data) {
       const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
-      const cpuCls = isCpuUtility ? ' cpu-row' : '';
-      return `<tr class="${rowClass}${cpuCls}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
+      return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
         <td>${isUnneeded

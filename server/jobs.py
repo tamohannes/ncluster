@@ -1987,11 +1987,11 @@ def fetch_team_jobs(cluster):
         job_name = parts[7].strip()
         timelimit = parts[8].strip()
 
-        gpu_count = _parse_gres_gpu_count(gres_str)
+        gpu_per_node = _parse_gres_gpu_count(gres_str)
         is_cpu = partition.startswith("cpu")
-        if not is_cpu and gpu_count == 0:
-            gpu_count = nodes * gpus_per_node
-        gpus = gpu_count if not is_cpu else 0
+        if not is_cpu and gpu_per_node == 0:
+            gpu_per_node = gpus_per_node
+        gpus = gpu_per_node * nodes if not is_cpu else 0
 
         is_dependent = state == "PENDING" and "depend" in reason.lower()
 

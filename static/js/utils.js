@@ -784,7 +784,7 @@ function projectBadgeStyle(hex) {
   if (!hex) return '';
   const bg = projectBadgeBg(hex);
   const text = contrastTextColor(bg);
-  return ` style="background:${bg};border-color:${bg};color:${text}"`;
+  return ` style="background-color:${bg};border-color:${bg};color:${text}"`;
 }
 
 /* ── Campaign shade (sub-project color differentiation) ── */

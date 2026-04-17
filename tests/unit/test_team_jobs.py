@@ -58,7 +58,7 @@ class TestFetchTeamJobsParsing:
         j = result["jobs"][0]
         assert j["user"] == "alice"
         assert j["state"] == "RUNNING"
-        assert j["gpus"] == 8
+        assert j["gpus"] == 16  # 2 nodes × 8 GPUs per node
         assert j["is_gpu"] is True
 
     @pytest.mark.unit
@@ -113,6 +113,26 @@ class TestFetchTeamJobsParsing:
         assert s["total_dependent"] == 32
         assert s["by_user"]["alice"]["running"] == 16
         assert s["by_user"]["bob"]["dependent"] == 32
+
+    @pytest.mark.unit
+    def test_multi_node_gpu_count(self, mock_ssh, mock_cluster, monkeypatch):
+        """Multi-node jobs must report total GPUs = nodes × per-node GRES."""
+        monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
+        monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
+        lines = (
+            "alice|RUNNING|None|128|gres/gpu:4|batch|acct|train-big|4:00:00\n"
+            "bob|PENDING|Priority|2|gres/gpu:4|batch|acct|eval-2n|4:00:00\n"
+        )
+        mock_ssh.set(mock_cluster, "squeue", (lines, ""))
+
+        from server.jobs import fetch_team_jobs, _team_jobs_cache
+        _team_jobs_cache.clear()
+        result = fetch_team_jobs(mock_cluster)
+
+        assert result["jobs"][0]["gpus"] == 512   # 128 × 4
+        assert result["jobs"][1]["gpus"] == 8     # 2 × 4
+        assert result["summary"]["total_running"] == 512
+        assert result["summary"]["total_pending"] == 8
 
     @pytest.mark.unit
     def test_local_cluster_returns_none(self):
