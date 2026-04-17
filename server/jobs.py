@@ -1953,7 +1953,7 @@ def fetch_team_jobs(cluster):
     gpus_per_node = cfg.get("gpus_per_node", 8) or 8
     team_set = set(TEAM_MEMBERS) if TEAM_MEMBERS else None
 
-    fmt = "%u|%T|%r|%D|%b|%P|%a|%j|%l"
+    fmt = "%i|%u|%T|%r|%D|%b|%P|%a|%j|%l|%E"
     try:
         out, _ = ssh_run_with_timeout(
             cluster,
@@ -1963,29 +1963,27 @@ def fetch_team_jobs(cluster):
     except Exception:
         return None
 
-    jobs = []
-    by_user = {}
-    by_account = {}
-    total_running = total_pending = total_dependent = 0
-
+    # --- Pass 1: parse all lines, build job-name index ---
+    parsed = []
+    name_by_id = {}
     for line in out.splitlines():
         parts = line.strip().split("|")
-        if len(parts) < 9:
+        if len(parts) < 10:
             continue
-        user = parts[0].strip()
-
-
-        state = parts[1].strip().upper()
-        reason = parts[2].strip()
+        jobid = parts[0].strip()
+        user = parts[1].strip()
+        state = parts[2].strip().upper()
+        reason = parts[3].strip()
         try:
-            nodes = int(parts[3].strip())
+            nodes = int(parts[4].strip())
         except ValueError:
             nodes = 1
-        gres_str = parts[4].strip()
-        partition = parts[5].strip()
-        account = parts[6].strip()
-        job_name = parts[7].strip()
-        timelimit = parts[8].strip()
+        gres_str = parts[5].strip()
+        partition = parts[6].strip()
+        account = parts[7].strip()
+        job_name = parts[8].strip()
+        timelimit = parts[9].strip()
+        dep_expr = parts[10].strip() if len(parts) > 10 else ""
 
         gpu_per_node = _parse_gres_gpu_count(gres_str)
         is_cpu = partition.startswith("cpu")
@@ -1994,10 +1992,40 @@ def fetch_team_jobs(cluster):
         gpus = gpu_per_node * nodes if not is_cpu else 0
 
         is_dependent = state == "PENDING" and "depend" in reason.lower()
+        dep_details = parse_dependency(dep_expr) if dep_expr else []
+
+        name_by_id[jobid] = job_name
+        parsed.append((user, state, reason, nodes, gpus, is_cpu, partition,
+                        account, job_name, timelimit, is_dependent, dep_details))
+
+    # --- Pass 2: classify dependent vs backup using name index ---
+    jobs = []
+    by_user = {}
+    by_account = {}
+    total_running = total_pending = total_dependent = 0
+
+    for (user, state, reason, nodes, gpus, is_cpu, partition,
+         account, job_name, timelimit, is_dependent, dep_details) in parsed:
+
+        is_backup = False
+        if is_dependent and dep_details:
+            is_backup = all(
+                d["type"] == "afternotok"
+                or (d["type"] == "afterany"
+                    and name_by_id.get(d["job_id"]) == job_name)
+                for d in dep_details
+            )
+
+        if is_backup:
+            job_state = "BACKUP"
+        elif is_dependent:
+            job_state = "DEPENDENT"
+        else:
+            job_state = state
 
         jobs.append({
             "user": user,
-            "state": "DEPENDENT" if is_dependent else state,
+            "state": job_state,
             "reason": reason if state == "PENDING" else "",
             "nodes": nodes,
             "gpus": gpus,
@@ -2009,8 +2037,10 @@ def fetch_team_jobs(cluster):
         })
 
         if user not in by_user:
-            by_user[user] = {"running": 0, "pending": 0, "dependent": 0}
-        if is_dependent:
+            by_user[user] = {"running": 0, "pending": 0, "dependent": 0, "backup": 0}
+        if is_backup:
+            by_user[user]["backup"] += gpus
+        elif is_dependent:
             by_user[user]["dependent"] += gpus
             total_dependent += gpus
         elif state == "RUNNING":
@@ -2022,8 +2052,10 @@ def fetch_team_jobs(cluster):
 
         acct_short = account.split("_")[-1] if "_" in account else account
         if acct_short not in by_account:
-            by_account[acct_short] = {"running": 0, "pending": 0, "dependent": 0}
-        if is_dependent:
+            by_account[acct_short] = {"running": 0, "pending": 0, "dependent": 0, "backup": 0}
+        if is_backup:
+            by_account[acct_short]["backup"] += gpus
+        elif is_dependent:
             by_account[acct_short]["dependent"] += gpus
         elif state == "RUNNING":
             by_account[acct_short]["running"] += gpus

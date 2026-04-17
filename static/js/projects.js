@@ -188,18 +188,25 @@ async function _fetchProjectHistory(showToast = true) {
 }
 
 function _renderProjStats(clusterActivity) {
-  const all = [..._projLiveJobs.map(j => j.state), ..._projData.map(r => r.state || '')];
-  const running = all.filter(s => s === 'RUNNING' || s === 'COMPLETING').length;
-  const pending = all.filter(s => s === 'PENDING').length;
-  const failed = all.filter(s => (s || '').toUpperCase().includes('FAIL')).length;
-  const completed = all.filter(s => (s || '').toUpperCase().startsWith('COMPLETED')).length;
-  const cancelled = all.filter(s => (s || '').toUpperCase().startsWith('CANCEL')).length;
-  const totalGpus = _projLiveJobs.reduce((sum, j) => {
-    const g = parseGpus(j.nodes, j.gres);
-    if (!g) return sum;
-    const m = g.match(/(\d+)\s*GPU/);
-    return sum + (m ? parseInt(m[1]) : 0);
-  }, 0);
+  const all = [..._projLiveJobs, ..._projData];
+  const byId = {};
+  for (const j of all) { if (j.jobid) byId[j.jobid] = j; }
+  let running = 0, pending = 0, dep = 0, bkp = 0, failed = 0, completed = 0, cancelled = 0;
+  let runGpus = 0, pendGpus = 0, depGpus = 0, bkpGpus = 0;
+  for (const j of all) {
+    const s = (j.state || '').toUpperCase();
+    const g = jobGpuCount(j.nodes, j.gres);
+    if (s === 'RUNNING' || s === 'COMPLETING') { running++; runGpus += g; }
+    else if (s === 'PENDING' || s === 'SUBMITTING') {
+      if (_isBackupDep(j, byId)) { bkp++; bkpGpus += g; }
+      else if (_isDependentJob(j)) { dep++; depGpus += g; }
+      else { pending++; pendGpus += g; }
+    }
+    else if (s.includes('FAIL')) failed++;
+    else if (s.startsWith('COMPLETED')) completed++;
+    else if (s.startsWith('CANCEL')) cancelled++;
+  }
+  const activeGpus = runGpus + pendGpus;
 
   const clusters = Object.entries(clusterActivity).map(([c, a]) => {
     const hasActive = a.running > 0 || a.pending > 0;
@@ -208,13 +215,14 @@ function _renderProjStats(clusterActivity) {
   }).join(' ');
 
   document.getElementById('proj-stats-bar').innerHTML = `
-    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--green)">${running}</span><span class="proj-stat-lbl">running</span></span>
-    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--yellow)">${pending}</span><span class="proj-stat-lbl">pending</span></span>
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--green)">${running}</span><span class="proj-stat-lbl">running${runGpus ? ' (<span class="gpu-num">' + runGpus + '</span> GPU)' : ''}</span></span>
+    <span class="proj-stat"><span class="proj-stat-val" style="color:var(--yellow)">${pending}</span><span class="proj-stat-lbl">pending${pendGpus ? ' (<span class="gpu-num">' + pendGpus + '</span> GPU)' : ''}</span></span>
+    ${dep ? `<span class="proj-stat"><span class="proj-stat-val ss-dep">${dep}</span><span class="proj-stat-lbl">dep${depGpus ? ' (<span class="gpu-num">' + depGpus + '</span> GPU)' : ''}</span></span>` : ''}
+    ${bkp ? `<span class="proj-stat"><span class="proj-stat-val ss-bkp">${bkp}</span><span class="proj-stat-lbl">backup${bkpGpus ? ' (<span class="gpu-num">' + bkpGpus + '</span>)' : ''}</span></span>` : ''}
     <span class="proj-stat"><span class="proj-stat-val" style="color:var(--red)">${failed}</span><span class="proj-stat-lbl">failed</span></span>
     <span class="proj-stat"><span class="proj-stat-val">${completed}</span><span class="proj-stat-lbl">completed</span></span>
     <span class="proj-stat"><span class="proj-stat-val">${cancelled}</span><span class="proj-stat-lbl">cancelled</span></span>
-    ${totalGpus ? `<span class="proj-stat"><span class="proj-stat-val" style="color:var(--accent)">${totalGpus}</span><span class="proj-stat-lbl">GPUs</span></span>` : ''}
-    <span class="proj-stat"><span class="proj-stat-val">${_projData.length + _projLiveJobs.length}</span><span class="proj-stat-lbl">total</span></span>
+    <span class="proj-stat"><span class="proj-stat-val">${all.length}</span><span class="proj-stat-lbl">total</span></span>
     ${clusters ? `<span style="margin-left:4px">${clusters}</span>` : ''}
   `;
 }
@@ -374,7 +382,9 @@ function _renderProjPage() {
       const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, cluster);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
+      const groupGpus = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
+      const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}${gpuSuffix}</span></span>`;
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 

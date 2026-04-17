@@ -236,13 +236,46 @@ function isCompletedState(s) {
   return (s || '').toUpperCase().startsWith('COMPLETED');
 }
 
+function _isDependentJob(j) {
+  const st = (j.state || '').toUpperCase();
+  if (st === 'DEPENDENT' || st === 'BACKUP') return true;
+  if (st !== 'PENDING' && st !== 'SUBMITTING') return false;
+  const r = (j.reason || '').toLowerCase();
+  if (r.includes('depend')) return true;
+  if ((j.depends_on || []).length > 0) return true;
+  return false;
+}
+
+/** Backup dependent: only runs if parent fails (afternotok / same-name afterany). */
+function _isBackupDep(j, byId) {
+  const st = (j.state || '').toUpperCase();
+  if (st === 'BACKUP') return true;
+  if (!_isDependentJob(j)) return false;
+  const deps = j.dep_details || [];
+  if (!deps.length) return false;
+  return deps.every(d => {
+    if (d.type === 'afternotok') return true;
+    if (d.type === 'afterany' && byId) {
+      const parent = byId[d.job_id];
+      if (parent && parent.name === j.name) return true;
+    }
+    return false;
+  });
+}
+
 function _countJobStates(jobs) {
-  const cnt = { run: 0, comp: 0, pend: 0, fail: 0, canc: 0, done: 0 };
+  const cnt = { run: 0, comp: 0, pend: 0, dep: 0, bkp: 0, fail: 0, canc: 0, done: 0 };
+  const byId = {};
+  for (const j of jobs) { if (j.jobid) byId[j.jobid] = j; }
   for (const j of jobs) {
     const st = (j.state || '').toUpperCase();
     if (st === 'RUNNING') cnt.run++;
     else if (st === 'COMPLETING') cnt.comp++;
-    else if (st === 'PENDING' || st === 'SUBMITTING') cnt.pend++;
+    else if (st === 'PENDING' || st === 'SUBMITTING' || st === 'DEPENDENT') {
+      if (_isBackupDep(j, byId)) cnt.bkp++;
+      else if (_isDependentJob(j)) cnt.dep++;
+      else cnt.pend++;
+    }
     else if (st.startsWith('COMPLETED')) cnt.done++;
     else if (st.startsWith('CANCEL')) cnt.canc++;
     else if (isUnneededBackup(j, jobs)) cnt.done++;
@@ -262,6 +295,8 @@ function statusDonut(jobs) {
     [cnt.run,  'var(--green)'],
     [cnt.comp, 'var(--cyan)'],
     [cnt.pend, 'var(--yellow)'],
+    [cnt.dep,  'var(--yellow-muted, rgba(255,193,7,0.35))'],
+    [cnt.bkp,  'var(--border)'],
     [cnt.fail, 'var(--red)'],
     [cnt.canc, 'var(--muted)'],
     [cnt.done, 'var(--done)'],
@@ -277,6 +312,8 @@ function statusDonut(jobs) {
   if (cnt.run)  tip.push(`${cnt.run} running`);
   if (cnt.comp) tip.push(`${cnt.comp} completing`);
   if (cnt.pend) tip.push(`${cnt.pend} pending`);
+  if (cnt.dep)  tip.push(`${cnt.dep} dependent`);
+  if (cnt.bkp)  tip.push(`${cnt.bkp} backup`);
   if (cnt.fail) tip.push(`${cnt.fail} failed`);
   if (cnt.canc) tip.push(`${cnt.canc} cancelled`);
   if (cnt.done) tip.push(`${cnt.done} completed`);
@@ -285,8 +322,24 @@ function statusDonut(jobs) {
 
 function statusSummaryHtml(jobs, clusterName) {
   const cnt = _countJobStates(jobs);
+  const byId = {};
+  for (const j of jobs) { if (j.jobid) byId[j.jobid] = j; }
+  let runGpus = 0, pendGpus = 0, depGpus = 0, bkpGpus = 0;
+  for (const j of jobs) {
+    const g = jobGpuCount(j.nodes, j.gres);
+    const st = (j.state || '').toUpperCase();
+    if (st === 'RUNNING' || st === 'COMPLETING') runGpus += g;
+    else if (st === 'PENDING' || st === 'SUBMITTING' || st === 'DEPENDENT') {
+      if (_isBackupDep(j, byId)) bkpGpus += g;
+      else if (_isDependentJob(j)) depGpus += g;
+      else pendGpus += g;
+    }
+  }
   const parts = [];
-  if (cnt.run)  parts.push(`<span class="ss-run">${cnt.run} running</span>`);
+  if (cnt.run) {
+    const gpuLabel = runGpus > 0 ? ` (<span class="ss-gpu-count">${runGpus}</span>)` : '';
+    parts.push(`<span class="ss-run">${cnt.run} running${gpuLabel}</span>`);
+  }
   if (cnt.comp) parts.push(`<span class="ss-comp">${cnt.comp} completing</span>`);
   if (cnt.pend) {
     let waitHint = '';
@@ -294,7 +347,16 @@ function statusSummaryHtml(jobs, clusterName) {
       const badge = _wdsWaitBadge(clusterName);
       if (badge) waitHint = ` <span class="ss-wait ${badge.cls}">${badge.label}</span>`;
     }
-    parts.push(`<span class="ss-pend">${cnt.pend} pending${waitHint}</span>`);
+    const gpuLabel = pendGpus > 0 ? ` (<span class="ss-gpu-count">${pendGpus}</span>)` : '';
+    parts.push(`<span class="ss-pend">${cnt.pend} pending${gpuLabel}${waitHint}</span>`);
+  }
+  if (cnt.dep) {
+    const gpuLabel = depGpus > 0 ? ` (<span class="ss-gpu-count">${depGpus}</span>)` : '';
+    parts.push(`<span class="ss-dep">${cnt.dep} dep${gpuLabel}</span>`);
+  }
+  if (cnt.bkp) {
+    const gpuLabel = bkpGpus > 0 ? ` (<span class="ss-gpu-count">${bkpGpus}</span>)` : '';
+    parts.push(`<span class="ss-bkp">${cnt.bkp} backup${gpuLabel}</span>`);
   }
   if (cnt.fail) parts.push(`<span class="ss-fail">${cnt.fail} failed</span>`);
   if (cnt.canc) parts.push(`<span class="ss-canc">${cnt.canc} cancelled</span>`);
@@ -1699,17 +1761,23 @@ function _renderPppAllocations(data) {
       let segments = '';
       const pendingScale = teamScale ? 1 : 0.3;
       if (hasJobSplit) {
-        let myRunning = 0, myPending = 0, teamRunGpus = 0, teamPendGpus = 0;
+        let myRunning = 0, myPending = 0, myDep = 0, myBackup = 0, teamRunGpus = 0, teamPendGpus = 0;
         for (const j of acctJobs) {
           const g = j.gpus || 0;
+          const st = (j.state || '').toUpperCase();
           if (j.user === currentUser) {
-            if (j.state === 'RUNNING') myRunning += g; else myPending += g;
+            if (st === 'RUNNING') myRunning += g;
+            else if (st === 'BACKUP') myBackup += g;
+            else if (st === 'DEPENDENT') myDep += g;
+            else myPending += g;
           } else if (teamMembers.length && teamMembers.includes(j.user)) {
-            if (j.state === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
+            if (st === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
           }
         }
         const myRunGpus = Math.min(myRunning, myTotal);
         const myPendGpus = Math.min(myPending, myTotal * pendingScale);
+        const myDepGpus = Math.min(myDep, myTotal * pendingScale);
+        const myBkpGpus = Math.min(myBackup, myTotal * pendingScale);
 
         const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
         const teamPendW = Math.min(teamPendGpus, teamOthersTotal * pendingScale);
@@ -1738,6 +1806,10 @@ function _renderPppAllocations(data) {
             segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRunGpus)}%"></div>`;
           if (showMe && myPendGpus > 0)
             segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPendGpus)}%"></div>`;
+          if (showMe && myDepGpus > 0)
+            segments += `<div class="ppp-seg ppp-seg-me-dep" style="width:${toPct(myDepGpus)}%"></div>`;
+          if (showMe && myBkpGpus > 0)
+            segments += `<div class="ppp-seg ppp-seg-me-bkp" style="width:${toPct(myBkpGpus)}%"></div>`;
         }
         if (showTeamUsage && teamRunW > 0)
           segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRunW)}%"></div>`;
@@ -1971,14 +2043,20 @@ async function openUserBreakdown(cluster, account) {
     const acctJobsByUser = {};
     for (const j of allJobs) {
       if (j.account !== account) continue;
-      if (!acctJobsByUser[j.user]) acctJobsByUser[j.user] = { running: 0, pending: 0, cpu_running: 0, cpu_pending: 0 };
+      if (!acctJobsByUser[j.user]) acctJobsByUser[j.user] = { running: 0, pending: 0, dependent: 0, backup: 0, cpu_running: 0, cpu_pending: 0 };
       const d = acctJobsByUser[j.user];
+      const st = (j.state || '').toUpperCase();
       if (j.is_gpu === false) {
-        if (j.state === 'RUNNING') d.cpu_running += (j.nodes || 1);
+        if (st === 'RUNNING') d.cpu_running += (j.nodes || 1);
         else d.cpu_pending += (j.nodes || 1);
+      } else if (st === 'RUNNING') {
+        d.running += (j.gpus || 0);
+      } else if (st === 'BACKUP') {
+        d.backup += (j.gpus || 0);
+      } else if (st === 'DEPENDENT') {
+        d.dependent += (j.gpus || 0);
       } else {
-        if (j.state === 'RUNNING') d.running += (j.gpus || 0);
-        else d.pending += (j.gpus || 0);
+        d.pending += (j.gpus || 0);
       }
     }
 
@@ -1996,13 +2074,17 @@ async function openUserBreakdown(cluster, account) {
     const renderUserRow = (user, isMe, isTeam, barPct, tj) => {
       const running = tj.running || 0;
       const pending = tj.pending || 0;
+      const dep = tj.dependent || 0;
+      const bkp = tj.backup || 0;
       const cpuR = tj.cpu_running || 0;
       const cpuP = tj.cpu_pending || 0;
-      const hasLive = running > 0 || pending > 0 || cpuR > 0 || cpuP > 0;
+      const hasLive = running > 0 || pending > 0 || dep > 0 || bkp > 0 || cpuR > 0 || cpuP > 0;
       let statParts = [];
       if (hasLive) {
-        if (running > 0) statParts.push(`<span class="ub-live-run">${running} run</span>`);
-        if (pending > 0) statParts.push(`<span class="ub-live-pend">${pending} pend</span>`);
+        if (running > 0) statParts.push(`<span class="ub-live-run">run (<span class="gpu-num">${running}</span>)</span>`);
+        if (pending > 0) statParts.push(`<span class="ub-live-pend">pend (<span class="gpu-num">${pending}</span>)</span>`);
+        if (dep > 0) statParts.push(`<span class="ub-live-dep">dep (<span class="gpu-num">${dep}</span>)</span>`);
+        if (bkp > 0) statParts.push(`<span class="ub-live-bkp">backup (<span class="gpu-num">${bkp}</span>)</span>`);
         if (cpuR > 0 || cpuP > 0) statParts.push(`<span class="ub-live-cpu">${cpuR + cpuP} cpu</span>`);
       } else {
         statParts.push(`<span class="ub-live-avg">${Math.round(barPct > 0 ? barPct : 0)} avg</span>`);
@@ -2062,7 +2144,7 @@ async function openUserBreakdown(cluster, account) {
     const summaryAlloc = totalAllocated ? ` / ${totalAllocated}` : '';
     const sourceLabel = aihubUsers ? '' : ' <span style="opacity:0.5">(live squeue data)</span>';
     const header = `<div class="ub-summary">
-      <span>Total: <strong>${summaryConsumed}</strong>${summaryAlloc} GPUs${sourceLabel}</span>
+      <span>Total: <strong class="gpu-num">${summaryConsumed}</strong>${summaryAlloc} GPUs${sourceLabel}</span>
       <span>${userCount} user${userCount !== 1 ? 's' : ''}</span>
     </div>`;
 

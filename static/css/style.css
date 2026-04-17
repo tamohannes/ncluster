@@ -21,6 +21,7 @@
   --gray-bg:  #f3f4f6; --gray-bd:  #e5e7eb;
   --mono: 'JetBrains Mono', monospace;
   --sans: 'Inter', sans-serif;
+  --gpu-font: 'Space Grotesk', sans-serif;
   --radius: 10px;
 
   --nav-bg:           rgba(255,255,255,0.92);
@@ -508,6 +509,9 @@ main { padding: 14px 16px 40px; }
 @keyframes grid-bar { 0%{left:0;width:30%} 50%{left:40%;width:40%} 100%{left:100%;width:10%} }
 
 .job-count-text { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.gpu-num { font-family: var(--gpu-font); font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
+.card-queued-gpus { opacity: 0.5; }
+.card-queued-gpus .gpu-num { color: inherit; }
 .card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .icon-btn {
   font-family: var(--mono); font-size: 10px;
@@ -750,10 +754,17 @@ tr.bg-job:hover td { opacity: 0.7; }
 .ss-wait.moderate { background: var(--amber-bg); color: var(--amber); }
 .ss-wait.slow     { background: var(--amber-bg); color: var(--amber); }
 .ss-wait.long     { background: var(--red-bg);   color: var(--red); }
+.ss-dep  { color: var(--yellow); opacity: 0.45; }
+.ss-bkp  { color: var(--muted); }
 .ss-fail { color: var(--red); }
 .ss-canc { color: var(--muted); }
 .ss-done { color: var(--done); }
 .ss-sep  { color: var(--muted); margin: 0 3px; }
+.ss-gpu-count { font-family: var(--gpu-font); font-weight: 700; font-size: 0.95em; margin-left: 3px; letter-spacing: -0.02em; }
+.ss-run:has(.ss-gpu-count),
+.ss-pend:has(.ss-gpu-count),
+.ss-dep:has(.ss-gpu-count),
+.ss-bkp:has(.ss-gpu-count) { font-weight: 300; }
 .cancel-group-btn {
   font-size: 9px !important; padding: 1px 7px !important;
   opacity: 0; transition: opacity 0.15s;
@@ -3370,8 +3381,14 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   white-space: nowrap;
 }
 .ub-sep { color: var(--border); margin: 0 3px; }
-.ub-live-run { color: var(--green); font-weight: 700; }
-.ub-live-pend { color: var(--amber); font-weight: 600; }
+.ub-live-run { color: var(--green); font-weight: 400; }
+.ub-live-run .gpu-num { font-weight: 700; }
+.ub-live-pend { color: var(--amber); font-weight: 400; }
+.ub-live-pend .gpu-num { font-weight: 700; }
+.ub-live-dep { color: var(--amber); opacity: 0.45; font-weight: 400; }
+.ub-live-dep .gpu-num { font-weight: 700; }
+.ub-live-bkp { color: var(--muted); font-weight: 400; }
+.ub-live-bkp .gpu-num { font-weight: 600; }
 .ub-live-cpu { color: var(--muted); font-style: italic; }
 .ub-live-avg { color: var(--muted); }
 
@@ -3419,6 +3436,19 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   );
   border-right: 1px solid var(--surface);
 }
+.ppp-seg-me-dep {
+  background: repeating-linear-gradient(
+    -45deg, var(--accent), var(--accent) 3px,
+    transparent 3px, transparent 6px
+  );
+  opacity: 0.35;
+}
+.ppp-seg-me-bkp {
+  background: repeating-linear-gradient(
+    45deg, var(--muted), var(--muted) 3px,
+    transparent 3px, transparent 6px
+  );
+}
 .ppp-seg-ppp-rest { background: #888; opacity: 0.45; }
 .ppp-seg-others { background: #555; }
 .ppp-seg-dim { opacity: 0.35; }
@@ -3437,6 +3467,13 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .ppp-legend-swatch.swatch-team { background: #F5A623; }
 .ppp-legend-swatch.swatch-team-pend {
   background: repeating-linear-gradient(-45deg, #F5A623, #F5A623 2px, transparent 2px, transparent 4px);
+}
+.ppp-legend-swatch.swatch-me-dep {
+  background: repeating-linear-gradient(-45deg, var(--accent), var(--accent) 2px, transparent 2px, transparent 4px);
+  opacity: 0.35;
+}
+.ppp-legend-swatch.swatch-me-bkp {
+  background: repeating-linear-gradient(45deg, var(--muted), var(--muted) 2px, transparent 2px, transparent 4px);
 }
 .ppp-legend-swatch.swatch-ppp-rest { background: #888; }
 .ppp-no-alloc {

@@ -47,7 +47,7 @@ class TestFetchTeamJobsParsing:
         monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["test_acct"])
         monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
         mock_ssh.set(mock_cluster, "squeue",
-                     ("alice|RUNNING|None|2|gpu:8|batch|test_acct|train-v1|4:00:00\n", ""))
+                     ("100|alice|RUNNING|None|2|gpu:8|batch|test_acct|train-v1|4:00:00|(null)\n", ""))
 
         from server.jobs import fetch_team_jobs, _team_jobs_cache
         _team_jobs_cache.clear()
@@ -66,7 +66,7 @@ class TestFetchTeamJobsParsing:
         monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["test_acct"])
         monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
         mock_ssh.set(mock_cluster, "squeue",
-                     ("bob|PENDING|Dependency|1||batch|test_acct|eval-v2|2:00:00\n", ""))
+                     ("200|bob|PENDING|Dependency|1||batch|test_acct|eval-v2|2:00:00|afterok:100\n", ""))
 
         from server.jobs import fetch_team_jobs, _team_jobs_cache
         _team_jobs_cache.clear()
@@ -82,7 +82,7 @@ class TestFetchTeamJobsParsing:
         monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["test_acct"])
         monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
         mock_ssh.set(mock_cluster, "squeue",
-                     ("carol|RUNNING|None|1||cpu_long|test_acct|preprocess|8:00:00\n", ""))
+                     ("300|carol|RUNNING|None|1||cpu_long|test_acct|preprocess|8:00:00|(null)\n", ""))
 
         from server.jobs import fetch_team_jobs, _team_jobs_cache
         _team_jobs_cache.clear()
@@ -97,9 +97,9 @@ class TestFetchTeamJobsParsing:
         monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
         monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
         lines = (
-            "alice|RUNNING|None|2||batch|acct|job1|4:00:00\n"
-            "alice|PENDING|Resources|1||batch|acct|job2|4:00:00\n"
-            "bob|PENDING|Dependency|4||batch|acct|job3|4:00:00\n"
+            "100|alice|RUNNING|None|2||batch|acct|job1|4:00:00|(null)\n"
+            "200|alice|PENDING|Resources|1||batch|acct|job2|4:00:00|(null)\n"
+            "300|bob|PENDING|Dependency|4||batch|acct|job3|4:00:00|afterok:100\n"
         )
         mock_ssh.set(mock_cluster, "squeue", (lines, ""))
 
@@ -120,8 +120,8 @@ class TestFetchTeamJobsParsing:
         monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
         monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
         lines = (
-            "alice|RUNNING|None|128|gres/gpu:4|batch|acct|train-big|4:00:00\n"
-            "bob|PENDING|Priority|2|gres/gpu:4|batch|acct|eval-2n|4:00:00\n"
+            "100|alice|RUNNING|None|128|gres/gpu:4|batch|acct|train-big|4:00:00|(null)\n"
+            "200|bob|PENDING|Priority|2|gres/gpu:4|batch|acct|eval-2n|4:00:00|(null)\n"
         )
         mock_ssh.set(mock_cluster, "squeue", (lines, ""))
 
@@ -133,6 +133,61 @@ class TestFetchTeamJobsParsing:
         assert result["jobs"][1]["gpus"] == 8     # 2 × 4
         assert result["summary"]["total_running"] == 512
         assert result["summary"]["total_pending"] == 8
+
+    @pytest.mark.unit
+    def test_backup_afternotok(self, mock_ssh, mock_cluster, monkeypatch):
+        """Jobs with afternotok deps are classified as BACKUP."""
+        monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
+        monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
+        lines = (
+            "100|alice|RUNNING|None|1|gpu:4|batch|acct|train-v1|4:00:00|(null)\n"
+            "200|alice|PENDING|Dependency|1|gpu:4|batch|acct|train-v1|4:00:00|afternotok:100\n"
+            "300|alice|PENDING|Dependency|1|gpu:4|batch|acct|eval-v1|4:00:00|afterok:100\n"
+        )
+        mock_ssh.set(mock_cluster, "squeue", (lines, ""))
+
+        from server.jobs import fetch_team_jobs, _team_jobs_cache
+        _team_jobs_cache.clear()
+        result = fetch_team_jobs(mock_cluster)
+
+        states = [j["state"] for j in result["jobs"]]
+        assert states == ["RUNNING", "BACKUP", "DEPENDENT"]
+        assert result["summary"]["by_user"]["alice"]["backup"] == 4
+        assert result["summary"]["by_user"]["alice"]["dependent"] == 4
+
+    @pytest.mark.unit
+    def test_backup_afterany_same_name(self, mock_ssh, mock_cluster, monkeypatch):
+        """afterany with same job name = backup (checkpoint-restart chain)."""
+        monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
+        monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
+        lines = (
+            "100|alice|RUNNING|None|1|gpu:4|batch|acct|train-v1|4:00:00|(null)\n"
+            "200|alice|PENDING|Dependency|1|gpu:4|batch|acct|train-v1|4:00:00|afterany:100\n"
+        )
+        mock_ssh.set(mock_cluster, "squeue", (lines, ""))
+
+        from server.jobs import fetch_team_jobs, _team_jobs_cache
+        _team_jobs_cache.clear()
+        result = fetch_team_jobs(mock_cluster)
+
+        assert result["jobs"][1]["state"] == "BACKUP"
+
+    @pytest.mark.unit
+    def test_afterany_different_name_is_dependent(self, mock_ssh, mock_cluster, monkeypatch):
+        """afterany with different job name = DEPENDENT (pipeline continuation)."""
+        monkeypatch.setattr("server.config.PPP_ACCOUNTS", ["acct"])
+        monkeypatch.setattr("server.config.TEAM_MEMBERS", [])
+        lines = (
+            "100|alice|RUNNING|None|1|gpu:4|batch|acct|eval-gen|4:00:00|(null)\n"
+            "200|alice|PENDING|Dependency|1|gpu:4|batch|acct|eval-judge|4:00:00|afterany:100\n"
+        )
+        mock_ssh.set(mock_cluster, "squeue", (lines, ""))
+
+        from server.jobs import fetch_team_jobs, _team_jobs_cache
+        _team_jobs_cache.clear()
+        result = fetch_team_jobs(mock_cluster)
+
+        assert result["jobs"][1]["state"] == "DEPENDENT"
 
     @pytest.mark.unit
     def test_local_cluster_returns_none(self):

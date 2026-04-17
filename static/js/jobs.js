@@ -354,20 +354,26 @@ function setupSidebarResizer() {
 
 // ── Summary ──
 function updateSummary(data) {
-  let running = 0, pending = 0, failed = 0, completed = 0, reach = 0, totalGpus = 0, mounted = 0;
+  let running = 0, pending = 0, dependent = 0, backup = 0, failed = 0, completed = 0, reach = 0, totalGpus = 0, mounted = 0;
   for (const [name, d] of Object.entries(data)) {
     if (d.status === 'ok') reach++;
     if (d.mount && d.mount.mounted) mounted++;
-    for (const j of d.jobs || []) {
+    const allJobs = d.jobs || [];
+    const byId = {};
+    for (const j of allJobs) { if (j.jobid) byId[j.jobid] = j; }
+    for (const j of allJobs) {
       const s = (j.state || '').toUpperCase();
       if (s === 'RUNNING' || s === 'COMPLETING') {
         running++;
-        const gm = (j.gres || '').match(/gpu[^:]*:(?:[^:]+:)?(\d+)/);
-        if (gm) totalGpus += (parseInt(gm[1]) || 0) * (parseInt(j.nodes) || 1);
+        totalGpus += jobGpuCount(j.nodes, j.gres);
       }
-      else if (s === 'PENDING') pending++;
+      else if (s === 'PENDING') {
+        if (_isBackupDep(j, byId)) backup++;
+        else if (_isDependentJob(j)) dependent++;
+        else pending++;
+      }
       else if (s.includes('FAIL')) {
-        if (isUnneededBackup(j, d.jobs || [])) completed++;
+        if (isUnneededBackup(j, allJobs)) completed++;
         else failed++;
       }
       else if (s.startsWith('COMPLETED')) completed++;
@@ -383,10 +389,12 @@ function updateSummary(data) {
   const ts = document.getElementById('topbar-stat');
   if (ts) {
     const parts = [];
-    if (running) parts.push(`${running} running`);
+    if (running) parts.push(`${running} running (<span class="gpu-num">${totalGpus}</span> GPU)`);
     if (pending) parts.push(`${pending} pending`);
+    if (dependent) parts.push(`${dependent} dep`);
+    if (backup) parts.push(`${backup} backup`);
     if (failed) parts.push(`${failed} failed`);
-    ts.textContent = parts.join(' · ') || '—';
+    ts.innerHTML = parts.join(' · ') || '—';
   }
 }
 
@@ -456,21 +464,25 @@ function renderCard(name, data) {
   const isStale = staleness != null && staleness > 60;
   const isRetrying = pollerState === 'backoff' || pollerState === 'retrying';
   const statusClass = (isErr && failCount >= 3 && !jobs.length) ? 'error' : isStale ? 'stale' : 'ok';
-  const runCount = jobs.filter(j => (j.state || '').toUpperCase() === 'RUNNING' || (j.state || '').toUpperCase() === 'COMPLETING').length;
-  const pendCount = jobs.filter(j => (j.state || '').toUpperCase() === 'PENDING').length;
-  const jobParts = [];
-  if (runCount) jobParts.push(`${runCount} running`);
-  if (pendCount) jobParts.push(`${pendCount} pending`);
-  if (runCount || pendCount) {
-    let cardGpuTotal = 0;
-    for (const j of jobs) {
-      const s = (j.state || '').toUpperCase();
-      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING' || s === 'SUBMITTING') {
-        cardGpuTotal += jobGpuCount(j.nodes, j.gres);
-      }
+  const byId = {};
+  for (const j of jobs) { if (j.jobid) byId[j.jobid] = j; }
+  let cardRunGpus = 0, cardPendGpus = 0, cardDepGpus = 0, cardBkpGpus = 0;
+  let runCount = 0, pendCount = 0, depCount = 0, bkpCount = 0;
+  for (const j of jobs) {
+    const s = (j.state || '').toUpperCase();
+    const g = jobGpuCount(j.nodes, j.gres);
+    if (s === 'RUNNING' || s === 'COMPLETING') { runCount++; cardRunGpus += g; }
+    else if (s === 'PENDING' || s === 'SUBMITTING') {
+      if (_isBackupDep(j, byId)) { bkpCount++; cardBkpGpus += g; }
+      else if (_isDependentJob(j)) { depCount++; cardDepGpus += g; }
+      else { pendCount++; cardPendGpus += g; }
     }
-    jobParts.push(`${cardGpuTotal} GPU${cardGpuTotal !== 1 ? 's' : ''}`);
   }
+  const jobParts = [];
+  if (runCount) jobParts.push(`${runCount} running (<span class="gpu-num">${cardRunGpus}</span> GPU)`);
+  if (pendCount) jobParts.push(`${pendCount} pending (<span class="gpu-num">${cardPendGpus}</span> GPU)`);
+  if (depCount) jobParts.push(`<span class="card-queued-gpus">${depCount} dep (<span class="gpu-num">${cardDepGpus}</span>)</span>`);
+  if (bkpCount) jobParts.push(`<span class="card-queued-gpus">${bkpCount} backup (<span class="gpu-num">${cardBkpGpus}</span>)</span>`);
   let jobCountText;
   if (isErr && failCount >= 3 && !jobs.length) {
     jobCountText = 'unreachable';
