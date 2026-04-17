@@ -124,6 +124,9 @@ function _renderRunBody(run, cluster) {
     <span class="job-count-text">${_jobStates}</span>
   </div>`;
 
+  const paramsHtml = _renderRunParams(run.params, run.root_job_id);
+  if (paramsHtml) html += paramsHtml;
+
   if (run.submit_command) {
     const cmdId = 'submit-cmd-pre-' + (run.root_job_id || '0');
     const cmdContent = `<div style="position:relative">
@@ -204,6 +207,166 @@ function _renderRunBody(run, cluster) {
   }
 
   body.innerHTML = html;
+}
+
+// ── Run Parameters block ──────────────────────────────────────────────────
+// Renders a compact key/value grid of pipeline kwargs captured by the SDK
+// hook (model, benchmarks, num_samples, judge_model, …). Only rows whose
+// source value is present are rendered; a fully empty params dict yields
+// an empty string so the caller can skip inserting the block entirely.
+function _renderRunParams(params, rootJobId) {
+  if (!params || typeof params !== 'object') return '';
+
+  const rows = [];
+
+  const push = (label, valueHtml, opts) => {
+    if (valueHtml == null || valueHtml === '') return;
+    const copy = opts && opts.copy;
+    const title = opts && opts.title ? ` title="${escAttr(opts.title)}"` : '';
+    const copyBtn = copy
+      ? ` <button class="run-params-copy" data-copy="${escAttr(String(copy))}" onclick="_copyText(this)" title="Copy">⧉</button>`
+      : '';
+    rows.push(`<div class="run-params-row">
+        <span class="run-params-label">${label}</span>
+        <span class="run-params-value"${title}>${valueHtml}${copyBtn}</span>
+      </div>`);
+  };
+
+  const modelStr = _paramStr(params.model);
+  if (modelStr) push('Model', _truncateMid(modelStr, 60), { copy: modelStr, title: modelStr });
+
+  const serverParts = [];
+  if (params.server_type) serverParts.push(_escHtml(String(params.server_type)));
+  const serverGpus = _paramInt(params.server_gpus);
+  const serverNodes = _paramInt(params.server_nodes);
+  if (serverGpus != null) serverParts.push(`${serverGpus}&thinsp;GPU${serverGpus === 1 ? '' : 's'}`);
+  if (serverNodes != null && serverNodes !== 1) serverParts.push(`&times; ${serverNodes}&thinsp;node${serverNodes === 1 ? '' : 's'}`);
+  if (serverParts.length) push('Server', serverParts.join(' · '));
+
+  const benchHtml = _fmtBenchmarks(params.benchmarks);
+  if (benchHtml) push('Benchmarks', benchHtml);
+
+  const splitStr = _paramStr(params.split);
+  if (splitStr) push('Split', _escHtml(splitStr));
+
+  const samplesHtml = _fmtNumSamples(params.num_samples);
+  if (samplesHtml) push('Samples', samplesHtml);
+
+  const chunks = _paramInt(params.num_chunks);
+  if (chunks != null && chunks > 1) push('Chunks', String(chunks));
+
+  if (params.with_sandbox === true) push('Sandbox', 'yes');
+
+  const judgeStr = _paramStr(params.judge_model);
+  if (judgeStr) {
+    const judgeExtras = [];
+    if (params.judge_server_type) judgeExtras.push(_escHtml(String(params.judge_server_type)));
+    const judgeGpus = _paramInt(params.judge_server_gpus);
+    if (judgeGpus != null && judgeGpus > 0) judgeExtras.push(`${judgeGpus}&thinsp;GPU${judgeGpus === 1 ? '' : 's'}`);
+    const judgeValue = _escHtml(judgeStr) + (judgeExtras.length ? ` <span class="run-params-muted">· ${judgeExtras.join(' · ')}</span>` : '');
+    push('Judge', judgeValue, { copy: judgeStr, title: judgeStr });
+  }
+
+  const promptParts = [];
+  if (params.prompt_config) promptParts.push(`config=${_escHtml(String(params.prompt_config))}`);
+  if (params.prompt_template) promptParts.push(`template=${_escHtml(String(params.prompt_template))}`);
+  if (params.prompt_format) promptParts.push(`format=${_escHtml(String(params.prompt_format))}`);
+  if (promptParts.length) push('Prompt', promptParts.join(' · '));
+
+  const datasetStr = _paramStr(params.dataset);
+  if (datasetStr) push('Dataset', _escHtml(datasetStr));
+
+  const inputStr = _paramStr(params.input_file) || _paramStr(params.input_dir);
+  if (inputStr) push('Input', _truncateMid(inputStr, 60), { copy: inputStr, title: inputStr });
+
+  const depJobs = _paramInt(params.dependent_jobs);
+  if (depJobs != null && depJobs > 0) push('Dependent jobs', String(depJobs));
+
+  if (!rows.length) return '';
+  return `<div class="run-params" data-run-root="${escAttr(String(rootJobId || ''))}">
+    <div class="run-params-head">Run Parameters</div>
+    <div class="run-params-grid">${rows.join('')}</div>
+  </div>`;
+}
+
+function _paramStr(v) {
+  if (v == null) return '';
+  const s = String(v).trim();
+  return s && s.toLowerCase() !== 'none' ? s : '';
+}
+
+function _paramInt(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function _truncateMid(s, max) {
+  if (!s) return '';
+  const str = String(s);
+  if (str.length <= max) return _escHtml(str);
+  const head = Math.ceil((max - 1) / 2);
+  const tail = Math.floor((max - 1) / 2);
+  return _escHtml(str.slice(0, head)) + '…' + _escHtml(str.slice(-tail));
+}
+
+// Benchmarks may arrive as a string ("hle:3,gpqa_diamond:5"), a list of
+// such strings, or a list of {name, seeds} dicts. Render each as a chip
+// "<name> ×<seeds>" (seeds omitted when 1 or absent). Degrades to escaped
+// raw text for anything we don't recognise so the user still sees something.
+function _fmtBenchmarks(raw) {
+  if (raw == null || raw === '') return '';
+  const entries = [];
+  const addSpec = (spec) => {
+    const s = String(spec).trim();
+    if (!s) return;
+    const m = s.match(/^([^:\s]+)(?::(\d+))?/);
+    if (m) {
+      const name = m[1];
+      const seeds = m[2] ? parseInt(m[2], 10) : null;
+      entries.push({ name, seeds });
+    } else {
+      entries.push({ name: s, seeds: null });
+    }
+  };
+  if (typeof raw === 'string') {
+    for (const part of raw.split(',')) addSpec(part);
+  } else if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === 'string') addSpec(item);
+      else if (item && typeof item === 'object') {
+        const name = item.name || item.benchmark || '';
+        const seeds = item.seeds || item.num_seeds || null;
+        if (name) entries.push({ name: String(name), seeds: seeds == null ? null : parseInt(seeds, 10) });
+      }
+    }
+  } else {
+    return _escHtml(String(raw));
+  }
+  if (!entries.length) return '';
+  return entries.map(({ name, seeds }) => {
+    const seedPart = seeds && seeds > 1 ? ` <span class="run-params-muted">&times;${seeds}</span>` : '';
+    return `<span class="run-params-chip">${_escHtml(name)}${seedPart}</span>`;
+  }).join(' ');
+}
+
+function _fmtNumSamples(v) {
+  if (v == null || v === '') return '';
+  const n = _paramInt(v);
+  if (n == null) return _escHtml(String(v));
+  if (n <= 0) return 'full dataset';
+  return `first ${n.toLocaleString()} per benchmark`;
+}
+
+function _copyText(btn) {
+  const text = btn && btn.getAttribute && btn.getAttribute('data-copy');
+  if (!text) return;
+  try {
+    navigator.clipboard.writeText(String(text));
+    const prev = btn.textContent;
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = prev; }, 1200);
+  } catch (_) {}
 }
 
 function _runDurationRing(start, end) {

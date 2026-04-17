@@ -44,11 +44,17 @@ def maybe_start_session(
     output_dir: str = "",
     cluster: str = "",
     config_overrides: dict | None = None,
+    params: dict | None = None,
 ) -> ClausiusSession | None:
     """Start or return the global Clausius session if tracking is configured.
 
     Returns None if CLAUSIUS_URL and CLAUSIUS_SPOOL_DIR are both unset.
     Safe to call multiple times; only the first call creates the session.
+
+    ``params`` is a free-form dict of pipeline kwargs (model, benchmarks,
+    num_samples, judge_model, ...) captured at the hook call site. It is
+    serialised into the run_started event payload and rendered in the
+    "Run Parameters" block in the UI.
     """
     if not _tracking_enabled():
         return None
@@ -59,6 +65,7 @@ def maybe_start_session(
             output_dir=output_dir,
             cluster=cluster,
             config_overrides=config_overrides,
+            params=params,
         )
     except Exception as exc:
         LOG.debug("clausius: failed to start session: %s", exc)

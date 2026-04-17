@@ -36,14 +36,37 @@ echo "  Copied $(find "$TARGET/nemo_skills/clausius_sdk" -name "*.py" | wc -l) P
 # ── Step 2: Inject hooks into CLI entrypoints ─────────────────────────
 echo "[2/3] Injecting SDK hooks into pipeline entrypoints..."
 
-HOOK_MARKER="clausius_sdk.hooks"
+# Sentinel-bounded hook block. One uniform block works for every pipeline
+# entrypoint because we reflect over locals() to capture whatever subset of
+# the known pipeline kwargs is in scope (model, benchmarks, num_samples,
+# judge_model, …). When we re-run this script we delete anything between
+# the sentinels and inject a fresh copy so the hook is always current.
+HOOK_START_SENTINEL='# CLAUSIUS_SDK_HOOK_START'
+HOOK_END_SENTINEL='# CLAUSIUS_SDK_HOOK_END'
 HOOK_BLOCK='
-    # ── Clausius SDK: start tracking session ─────────────────────
+    # CLAUSIUS_SDK_HOOK_START
     try:
         from nemo_skills.clausius_sdk.hooks import maybe_start_session
-        maybe_start_session(expname=expname, cluster=cluster or "")
+        _cl_local = locals()
+        _cl_keys = (
+            "model", "server_type", "server_gpus", "server_nodes", "server_args",
+            "benchmarks", "split", "num_samples", "num_chunks", "with_sandbox",
+            "judge_model", "judge_server_type", "judge_server_gpus", "judge_server_args",
+            "dependent_jobs", "input_file", "input_dir", "dataset",
+            "prompt_format", "prompt_config", "prompt_template",
+            "preprocess_cmd", "sandbox_container", "container",
+        )
+        _cl_ctx = _cl_local.get("ctx")
+        maybe_start_session(
+            expname=expname,
+            command=" ".join(getattr(_cl_ctx, "args", []) or []),
+            output_dir=_cl_local.get("output_dir") or "",
+            cluster=cluster or "",
+            params={k: _cl_local[k] for k in _cl_keys if k in _cl_local},
+        )
     except Exception:
         pass
+    # CLAUSIUS_SDK_HOOK_END
 '
 
 inject_hook() {
@@ -54,26 +77,47 @@ inject_hook() {
         echo "  SKIP (not found): $file"
         return
     fi
-    if grep -q "$HOOK_MARKER" "$file" 2>/dev/null; then
-        echo "  SKIP (already has hook): $(basename "$file")"
-        return
-    fi
     if ! grep -q "$after_pattern" "$file" 2>/dev/null; then
         echo "  SKIP (pattern not found): $(basename "$file")"
         return
     fi
 
-    # Insert the hook block after the first occurrence of the pattern
-    python3 -c "
-import sys
-content = open('$file').read()
-idx = content.find('$after_pattern')
+    # Strip any existing hook block (sentinel-bounded OR the legacy
+    # pre-sentinel "# ── Clausius SDK: start tracking session" form), then
+    # inject a fresh copy. This keeps the script idempotent across SDK
+    # upgrades — users re-run integrate-sdk.sh after pulling/rebasing.
+    FILE_PATH="$file" \
+        AFTER_PATTERN="$after_pattern" \
+        HOOK_START="$HOOK_START_SENTINEL" \
+        HOOK_END="$HOOK_END_SENTINEL" \
+        HOOK_BLOCK="$HOOK_BLOCK" \
+        python3 <<'PY'
+import os, re, sys
+path = os.environ["FILE_PATH"]
+after = os.environ["AFTER_PATTERN"]
+start = os.environ["HOOK_START"]
+end = os.environ["HOOK_END"]
+block = os.environ["HOOK_BLOCK"]
+content = open(path).read()
+# Drop sentinel-bounded hook if present.
+content = re.sub(
+    r"\n[ \t]*" + re.escape(start) + r"[\s\S]*?" + re.escape(end) + r"[ \t]*\n",
+    "\n",
+    content,
+)
+# Drop legacy pre-sentinel hook (marker: the banner comment).
+content = re.sub(
+    r"\n[ \t]*# ── Clausius SDK: start tracking session[\s\S]*?except Exception:\s*\n[ \t]*pass\s*\n",
+    "\n",
+    content,
+)
+idx = content.find(after)
 if idx < 0:
     sys.exit(0)
-end_of_line = content.index('\n', idx)
-new_content = content[:end_of_line+1] + '''$HOOK_BLOCK''' + content[end_of_line+1:]
-open('$file', 'w').write(new_content)
-"
+end_of_line = content.index("\n", idx)
+new_content = content[: end_of_line + 1] + block + content[end_of_line + 1 :]
+open(path, "w").write(new_content)
+PY
     echo "  DONE: $(basename "$file")"
 }
 

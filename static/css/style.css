@@ -898,6 +898,49 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   border: 1px solid var(--border);
 }
 
+.run-params {
+  margin-bottom: 14px; padding: 10px 14px 12px;
+  background: var(--surface2); border-radius: 8px;
+  border: 1px solid var(--border);
+  font-family: var(--gpu-font), var(--mono), monospace; font-size: 11px;
+}
+.run-params-head {
+  font-size: 8px; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--muted); font-weight: 600; font-family: var(--mono);
+  margin-bottom: 6px;
+}
+.run-params-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: 14px; row-gap: 4px;
+  align-items: baseline;
+}
+.run-params-row { display: contents; }
+.run-params-label {
+  color: var(--muted); font-weight: 500;
+  white-space: nowrap;
+}
+.run-params-value {
+  color: var(--text); font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 4px 6px;
+}
+.run-params-muted { color: var(--muted); font-weight: 400; }
+.run-params-chip {
+  display: inline-flex; align-items: center;
+  padding: 1px 6px; border-radius: 4px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 10px; font-weight: 500;
+}
+.run-params-copy {
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); border-radius: 4px;
+  padding: 0 4px; font-size: 11px; line-height: 1.3;
+  cursor: pointer;
+}
+.run-params-copy:hover { color: var(--text); border-color: var(--muted); }
+
 .run-dur-ring { color: var(--green); flex-shrink: 0; }
 .run-dur-ring .ring-bg { stroke: currentColor; opacity: 0.2; }
 .run-dur-ring .ring-fg { stroke: currentColor; stroke-linecap: round; }

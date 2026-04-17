@@ -22,23 +22,34 @@ diff --git a/nemo_skills/pipeline/eval.py b/nemo_skills/pipeline/eval.py
 index 37e9c380..84222bb7 100644
 --- a/nemo_skills/pipeline/eval.py
 +++ b/nemo_skills/pipeline/eval.py
-@@ -317,6 +317,20 @@ def eval(
+@@ -317,6 +317,30 @@ def eval(
      (need to be prefixed with ++, since we use Hydra for that script).
      """
      setup_logging(disable_hydra_logs=False, use_rich=True)
 +
-+    # ── Clausius SDK: start tracking session ─────────────────────
++    # CLAUSIUS_SDK_HOOK_START
 +    try:
 +        from nemo_skills.clausius_sdk.hooks import maybe_start_session
-+
++        _cl_local = locals()
++        _cl_keys = (
++            "model", "server_type", "server_gpus", "server_nodes", "server_args",
++            "benchmarks", "split", "num_samples", "num_chunks", "with_sandbox",
++            "judge_model", "judge_server_type", "judge_server_gpus", "judge_server_args",
++            "dependent_jobs", "input_file", "input_dir", "dataset",
++            "prompt_format", "prompt_config", "prompt_template",
++            "preprocess_cmd", "sandbox_container", "container",
++        )
++        _cl_ctx = _cl_local.get("ctx")
 +        maybe_start_session(
 +            expname=expname,
-+            command=" ".join(ctx.args),
-+            output_dir=output_dir,
++            command=" ".join(getattr(_cl_ctx, "args", []) or []),
++            output_dir=_cl_local.get("output_dir") or "",
 +            cluster=cluster or "",
++            params={k: _cl_local[k] for k in _cl_keys if k in _cl_local},
 +        )
 +    except Exception:
 +        pass
++    # CLAUSIUS_SDK_HOOK_END
 +
      extra_arguments = f"{' '.join(ctx.args)}"
      LOG.info("Starting evaluation job")

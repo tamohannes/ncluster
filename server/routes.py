@@ -925,7 +925,7 @@ def _inherit_sdk_provenance(run, cluster):
         sdk_run = None
         for name in candidates:
             sdk_run = con.execute(
-                """SELECT submit_command, submit_cwd, git_commit, launcher_hostname, primary_output_dir, run_uuid
+                """SELECT submit_command, submit_cwd, git_commit, launcher_hostname, primary_output_dir, params_json, run_uuid
                    FROM runs WHERE cluster=? AND source='sdk' AND (run_name=? OR run_name LIKE ?) AND submit_command != ''
                    ORDER BY id DESC LIMIT 1""",
                 (cluster, name, f"%{name}%"),
@@ -934,7 +934,10 @@ def _inherit_sdk_provenance(run, cluster):
                 break
         con.close()
         if sdk_run:
-            for field in ("submit_command", "submit_cwd", "git_commit", "launcher_hostname", "primary_output_dir"):
+            for field in (
+                "submit_command", "submit_cwd", "git_commit",
+                "launcher_hostname", "primary_output_dir", "params_json",
+            ):
                 if not run.get(field) and sdk_run[field]:
                     run[field] = sdk_run[field]
             if not run.get("source") or run["source"] == "legacy":
@@ -979,6 +982,18 @@ def api_run_info(cluster, root_job_id):
 
     if not run.get("submit_command") and run.get("source") != "sdk":
         _inherit_sdk_provenance(run, cluster)
+
+    # Hydrate structured pipeline params (model, benchmarks, …) captured at
+    # the SDK hook. Stored as JSON to survive schema-less evolution; parsed
+    # here so the frontend can render the Run Parameters block directly.
+    raw_params = run.pop("params_json", "") or ""
+    if raw_params:
+        try:
+            run["params"] = json.loads(raw_params)
+        except (ValueError, TypeError):
+            run["params"] = {}
+    else:
+        run["params"] = {}
 
     return jsonify({"status": "ok", "run": run})
 

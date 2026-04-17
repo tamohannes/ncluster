@@ -643,9 +643,10 @@ def _detect_and_register_runs(cluster, jobs):
         if cached_ts is None or (time.monotonic() - cached_ts) > _RUN_META_TTL_SEC:
             existing = get_run(cluster, canonical_root_job_id)
             if existing and not existing.get("meta_fetched"):
-                if existing.get("source") == "sdk":
-                    _run_meta_fetched[key] = time.monotonic()
-                else:
+                # SDK runs initially hold a synthetic "sdk-<uuid>" root; skip
+                # the scontrol/sacct capture until adoption swaps it for a
+                # real Slurm id, at which point this check will re-fire.
+                if str(canonical_root_job_id).isdigit():
                     _run_meta_fetched[key] = time.monotonic()
                     t = threading.Thread(
                         target=_capture_run_metadata,

@@ -113,6 +113,41 @@ def _detect_env_vars_set() -> list[str]:
     return [f"{k}={os.environ[k]}" for k in sorted(_SUBMIT_ENV_VARS) if k in os.environ]
 
 
+_PARAMS_MAX_DEPTH = 3
+_PARAMS_MAX_STR_LEN = 2048
+_PARAMS_MAX_ITEMS = 64
+
+
+def _sanitize_params(raw: Any, depth: int = 0) -> Any:
+    """Coerce pipeline kwargs into a JSON-safe shape with size limits.
+
+    Drops non-primitive values that can't be represented (e.g. live objects,
+    callables), truncates very long strings, and caps container sizes so a
+    misbehaving caller can't blow up the event payload.
+    """
+    if raw is None or isinstance(raw, (bool, int, float)):
+        return raw
+    if isinstance(raw, str):
+        if len(raw) > _PARAMS_MAX_STR_LEN:
+            return raw[:_PARAMS_MAX_STR_LEN] + "…"
+        return raw
+    if depth >= _PARAMS_MAX_DEPTH:
+        return str(raw)[:_PARAMS_MAX_STR_LEN]
+    if isinstance(raw, dict):
+        out: dict[str, Any] = {}
+        for k, v in list(raw.items())[:_PARAMS_MAX_ITEMS]:
+            if not isinstance(k, str):
+                k = str(k)
+            out[k] = _sanitize_params(v, depth + 1)
+        return out
+    if isinstance(raw, (list, tuple, set)):
+        return [_sanitize_params(v, depth + 1) for v in list(raw)[:_PARAMS_MAX_ITEMS]]
+    try:
+        return str(raw)[:_PARAMS_MAX_STR_LEN]
+    except Exception:
+        return None
+
+
 class ClausiusSession:
     """Tracks a single NeMo-Skills run from launch through completion.
 
@@ -261,15 +296,16 @@ class ClausiusSession:
         output_dir: str = "",
         cluster: str = "",
         config_overrides: dict | None = None,
+        params: dict | None = None,
     ) -> ClausiusSession:
         """Create or return the global session, capturing launch provenance."""
         with cls._instance_lock:
             if cls._instance is not None and cls._instance.active:
                 return cls._instance
 
-            transports = _build_transports(output_dir)
-            session = cls(transports)
-            cls._instance = session
+        transports = _build_transports(output_dir)
+        session = cls(transports)
+        cls._instance = session
 
         full_command = " ".join(sys.argv)
         provenance = RunProvenance(
@@ -286,6 +322,7 @@ class ClausiusSession:
             conda_env=_detect_conda_env(),
             python_executable=sys.executable,
             env_vars_set=_detect_env_vars_set(),
+            params=_sanitize_params(params or {}),
         )
         session.emit_run_started(provenance)
         return session

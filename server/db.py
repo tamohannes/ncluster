@@ -178,7 +178,8 @@ def init_db():
                          ("git_commit", "TEXT DEFAULT ''"),
                          ("launcher_hostname", "TEXT DEFAULT ''"),
                          ("primary_output_dir", "TEXT DEFAULT ''"),
-                         ("sdk_status", "TEXT DEFAULT ''")]:
+                         ("sdk_status", "TEXT DEFAULT ''"),
+                         ("params_json", "TEXT DEFAULT ''")]:
         try:
             con.execute(f"ALTER TABLE runs ADD COLUMN {col} {default}")
         except Exception:
@@ -976,6 +977,8 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
     synthetic_job_id = f"sdk-{run_uuid[:12]}"
 
     command = _build_full_submit_command(provenance)
+    params_obj = provenance.get("params") or {}
+    params_json = _json.dumps(params_obj) if params_obj else ""
 
     with db_write() as con:
         row = con.execute("SELECT id FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()
@@ -990,6 +993,7 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                     git_commit     = COALESCE(NULLIF(?, ''), git_commit),
                     launcher_hostname = COALESCE(NULLIF(?, ''), launcher_hostname),
                     primary_output_dir = COALESCE(NULLIF(?, ''), primary_output_dir),
+                    params_json    = COALESCE(NULLIF(?, ''), params_json),
                     sdk_status     = CASE WHEN sdk_status IN ('', 'submitting') THEN 'submitting' ELSE sdk_status END
                 WHERE id = ?
             """, (
@@ -999,6 +1003,7 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 provenance.get("git_commit", ""),
                 provenance.get("hostname", ""),
                 provenance.get("output_dir", ""),
+                params_json,
                 run_id,
             ))
         else:
@@ -1007,8 +1012,9 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 INSERT INTO runs
                     (cluster, root_job_id, run_name, project, run_uuid, source,
                      submit_command, submit_cwd, git_commit, launcher_hostname,
-                     primary_output_dir, sdk_status, started_at, created_at, meta_fetched)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     primary_output_dir, params_json, sdk_status,
+                     started_at, created_at, meta_fetched)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 cluster, synthetic_job_id, expname, project, run_uuid, "sdk",
                 command,
@@ -1016,6 +1022,7 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 provenance.get("git_commit", ""),
                 provenance.get("hostname", ""),
                 provenance.get("output_dir", ""),
+                params_json,
                 "submitting", now, now, 1,
             ))
             run_id = cur.lastrowid

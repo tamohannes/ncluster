@@ -73,6 +73,11 @@ class RunProvenance:
     conda_env: str = ""
     python_executable: str = ""
     env_vars_set: list[str] = field(default_factory=list)
+    # Pipeline kwargs captured at the hook call site (model, benchmarks,
+    # num_samples, judge_model, ...). Populated by the SDK hooks per entry
+    # point — kept as a free-form dict so new kwargs don't need schema
+    # changes. JSON-serialised values must be primitives, lists, or dicts.
+    params: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
