@@ -934,7 +934,20 @@ function computeNameHighlight(names) {
   return { prefix, suffix };
 }
 
-function highlightJobName(name, prefix, suffix) {
+function highlightJobName(name, prefix, suffix, campaign, shadedColor) {
+  if (campaign) {
+    const first_ = name.indexOf('_');
+    if (first_ >= 0) {
+      const second_ = name.indexOf('_', first_ + 1);
+      if (second_ > first_ && name.slice(first_ + 1, second_) === campaign) {
+        const projPart = name.slice(0, first_ + 1);
+        const campPart = name.slice(first_ + 1, second_);
+        const rest = name.slice(second_);
+        return '<span class="jn-dim">' + projPart + '</span><span class="jn-campaign">' + campPart + '</span>' + rest;
+      }
+    }
+  }
+
   if (!prefix && !suffix) return name;
   const end = suffix ? name.length - suffix.length : name.length;
   const mid = name.slice(prefix.length, end);

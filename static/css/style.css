@@ -458,7 +458,7 @@ main { padding: 14px 16px 40px; }
 .card-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .mount-badge {
   font-family: var(--mono); font-size: 10px;
-  padding: 2px 8px; border-radius: 999px;
+  padding: 2px 8px; border-radius: 7px;
   border: 1px solid var(--gray-bd);
   color: var(--muted); background: var(--surface);
   white-space: nowrap;
@@ -524,6 +524,20 @@ main { padding: 14px 16px 40px; }
 .icon-btn.danger:hover { border-color: var(--red); color: var(--red); background: var(--red-bg); }
 .icon-btn:disabled { opacity: 0.45; cursor: default; }
 
+.clear-btn {
+  font-family: var(--mono); font-size: 9px; font-weight: 500;
+  padding: 2px 7px; border-radius: 7px;
+  border: none; cursor: pointer;
+  transition: all 0.15s; white-space: nowrap;
+  background: transparent;
+}
+.clear-done  { color: var(--green); }
+.clear-failed { color: var(--red); }
+.clear-canc  { color: var(--muted); }
+.clear-done:hover  { background: var(--green-bg); }
+.clear-failed:hover { background: var(--red-bg); }
+.clear-canc:hover  { background: var(--gray-bg); }
+
 /* ── Job table ── */
 .card-body { overflow-x: auto; }
 .no-jobs {
@@ -556,8 +570,9 @@ td.acct-cell { font-size: 10px; }
 td.bold { font-weight: 500; }
 .name-cpu { color: var(--muted); font-weight: 400; }
 
-.jn-dim { opacity: 0.35; font-weight: 400; }
+.jn-dim { color: var(--jn-dim-color, color-mix(in srgb, var(--text) 35%, transparent)); font-weight: 400; }
 .jn-hi { font-weight: 600; }
+.jn-campaign { font-weight: 700; }
 
 .est-inline {
   font-weight: 400; opacity: 0.85; font-size: 9px;
@@ -760,7 +775,7 @@ tr.bg-job:hover td { opacity: 0.7; }
 .ss-canc { color: var(--muted); }
 .ss-done { color: var(--done); }
 .ss-sep  { color: var(--muted); margin: 0 3px; }
-.ss-gpu-count { font-family: var(--gpu-font); font-weight: 700; font-size: 0.95em; margin-left: 3px; letter-spacing: -0.02em; }
+.ss-gpu-count { font-family: var(--gpu-font); font-weight: 700; font-size: 0.95em; letter-spacing: -0.02em; }
 .ss-run:has(.ss-gpu-count),
 .ss-pend:has(.ss-gpu-count),
 .ss-dep:has(.ss-gpu-count),
@@ -795,10 +810,10 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   display: inline-block;
   padding: 2px 10px;
   border: 1.5px solid var(--border);
-  border-radius: 12px;
+  border-radius: 7px;
   cursor: pointer;
   transition: all 0.15s;
-  font-weight: 600;
+  font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
   font-size: 11px;
@@ -1887,7 +1902,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .mount-name { font-family: var(--mono); font-size: 11px; font-weight: 600; }
 .mount-state {
   font-family: var(--mono); font-size: 10px;
-  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+  padding: 1px 6px; border-radius: 7px; border: 1px solid var(--border);
   color: var(--muted); background: var(--surface);
 }
 .mount-state.ok { color: var(--green); border-color: var(--green-bd); background: var(--green-bg); }
@@ -2012,7 +2027,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .source-pill {
   font-family: var(--mono); font-size: 10px; font-weight: 500;
-  border: 1px solid var(--border); border-radius: 999px;
+  border: 1px solid var(--border); border-radius: 7px;
   padding: 3px 10px; color: var(--muted); background: var(--surface);
 }
 .source-pill.mount { color: var(--pill-mount-text); border-color: var(--pill-mount-bd); background: var(--pill-mount-bg); }
@@ -2957,7 +2972,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .team-gpu-status {
   font-family: var(--mono); font-size: 9px; font-weight: 600;
-  padding: 1px 6px; border-radius: 999px; margin-left: auto;
+  padding: 1px 6px; border-radius: 7px; margin-left: auto;
 }
 .team-gpu-status.green { color: var(--green); background: var(--green-bg); border: 1px solid var(--green-bd); }
 .team-gpu-status.amber { color: var(--amber); background: var(--amber-bg); border: 1px solid var(--amber-bd); }

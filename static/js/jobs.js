@@ -389,7 +389,7 @@ function updateSummary(data) {
   const ts = document.getElementById('topbar-stat');
   if (ts) {
     const parts = [];
-    if (running) parts.push(`${running} running (<span class="gpu-num">${totalGpus}</span> GPU)`);
+    if (running) parts.push(`${running} running (<span class="gpu-num">${totalGpus}</span>&thinsp;GPU)`);
     if (pending) parts.push(`${pending} pending`);
     if (dependent) parts.push(`${dependent} dep`);
     if (backup) parts.push(`${backup} backup`);
@@ -479,8 +479,8 @@ function renderCard(name, data) {
     }
   }
   const jobParts = [];
-  if (runCount) jobParts.push(`${runCount} running (<span class="gpu-num">${cardRunGpus}</span> GPU)`);
-  if (pendCount) jobParts.push(`${pendCount} pending (<span class="gpu-num">${cardPendGpus}</span> GPU)`);
+  if (runCount) jobParts.push(`${runCount} running (<span class="gpu-num">${cardRunGpus}</span>&thinsp;GPU)`);
+  if (pendCount) jobParts.push(`${pendCount} pending (<span class="gpu-num">${cardPendGpus}</span>&thinsp;GPU)`);
   if (depCount) jobParts.push(`<span class="card-queued-gpus">${depCount} dep (<span class="gpu-num">${cardDepGpus}</span>)</span>`);
   if (bkpCount) jobParts.push(`<span class="card-queued-gpus">${bkpCount} backup (<span class="gpu-num">${cardBkpGpus}</span>)</span>`);
   let jobCountText;
@@ -526,7 +526,7 @@ function renderCard(name, data) {
       const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
       const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
       const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
-      const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
+      const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix, _campaign, _shadedColor);
       const attemptBadge = groupKeyCounts[gk] > 1 ? runAttemptBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
@@ -627,7 +627,6 @@ function renderCard(name, data) {
         backupBtn = ` <button class="${cls}" data-backups-toggle="${j.jobid}" onclick="event.stopPropagation();toggleBackups('${j.jobid}')">${n} backup${n !== 1 ? 's' : ''}</button>`;
       }
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
-
       const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
       const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
@@ -677,13 +676,13 @@ function renderCard(name, data) {
   const liveCount   = jobs.filter(j => !j._pinned).length;
 
   const clearFailedBtn = pinnedFailedCount > 0
-    ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
+    ? `<button class="clear-btn clear-failed" onclick="clearFailed('${name}')">× ${pinnedFailedCount} failed</button>`
     : '';
   const clearCancelledBtn = pinnedCancelledCount > 0
-    ? `<button class="icon-btn" style="border-color:var(--gray-bd);color:var(--muted)" onclick="clearCancelled('${name}')">clear ${pinnedCancelledCount} canc/comp</button>`
+    ? `<button class="clear-btn clear-canc" onclick="clearCancelled('${name}')">× ${pinnedCancelledCount} canc</button>`
     : '';
   const clearCompletedBtn = pinnedCompletedCount > 0
-    ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} done</button>`
+    ? `<button class="clear-btn clear-done" onclick="clearCompleted('${name}')">× ${pinnedCompletedCount} done</button>`
     : '';
   const mountBadge = name !== 'local'
     ? `<span class="mount-badge ${mount.mounted ? 'ok' : 'off'}" title="${(mount.root || '').replace(/"/g, '&quot;')}">${mount.mounted ? 'mounted' : 'ssh-only'}</span>`

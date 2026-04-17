@@ -259,13 +259,13 @@ function _computeJobStateSummary(jobs, gpusPerNode) {
   }
 
   const parts = [];
-  if (runC)  parts.push(`<span class="ss-run">${runC} running (<span class="gpu-num">${runG}</span> GPU)</span>`);
-  if (pendC) parts.push(`<span class="ss-pend">${pendC} pending (<span class="gpu-num">${pendG}</span> GPU)</span>`);
+  if (runC)  parts.push(`<span class="ss-run">${runC} running (<span class="gpu-num">${runG}</span>&thinsp;GPU)</span>`);
+  if (pendC) parts.push(`<span class="ss-pend">${pendC} pending (<span class="gpu-num">${pendG}</span>&thinsp;GPU)</span>`);
   if (depC)  parts.push(`<span class="ss-dep">${depC} dep (<span class="gpu-num">${depG}</span>)</span>`);
   if (bkpC)  parts.push(`<span class="ss-bkp">${bkpC} backup (<span class="gpu-num">${bkpG}</span>)</span>`);
   if (doneC) parts.push(`<span class="ss-done">${doneC} done</span>`);
-  if (failC) parts.push(`<span class="ss-fail">${failC} failed (<span class="gpu-num">${failG}</span> GPU)</span>`);
-  if (toC)   parts.push(`<span class="ss-fail">${toC} timeout (<span class="gpu-num">${toG}</span> GPU)</span>`);
+  if (failC) parts.push(`<span class="ss-fail">${failC} failed (<span class="gpu-num">${failG}</span>&thinsp;GPU)</span>`);
+  if (toC)   parts.push(`<span class="ss-fail">${toC} timeout (<span class="gpu-num">${toG}</span>&thinsp;GPU)</span>`);
   if (cancC) parts.push(`<span class="ss-canc">${cancC} cancelled</span>`);
   for (const st of Object.keys(otherCounts)) {
     parts.push(`<span class="ss-canc">${otherCounts[st]} ${st.toLowerCase()} (<span class="gpu-num">${otherGpus[st]}</span>)</span>`);
