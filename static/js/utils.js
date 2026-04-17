@@ -1023,10 +1023,13 @@ async function fetchPartitions(force, clusterName) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.status === 'ok') {
-      if (isSingleCluster) {
-        _partitionData = _mergeClusterMap(_partitionData, data.clusters || {}, clusterName);
-      } else {
-        _partitionData = data.clusters;
+      const hasClusters = data.clusters && Object.keys(data.clusters).length > 0;
+      if (hasClusters || !_partitionData) {
+        if (isSingleCluster) {
+          _partitionData = _mergeClusterMap(_partitionData, data.clusters || {}, clusterName);
+        } else {
+          _partitionData = data.clusters;
+        }
       }
       _partitionLastFetched = Date.now();
       if (typeof _clearErrorBannerKey === 'function') _clearErrorBannerKey('partitions');
@@ -1127,11 +1130,41 @@ function _shortAcct(acct) {
 const _PPP_COLORS = ['ppp-c0', 'ppp-c1', 'ppp-c2'];
 
 const _COMPUTE_CACHE_KEY = 'clausius.computeCache';
+const _COMPUTE_CACHE_MAX_AGE_MS = 10 * 60 * 1000;
 
-function _saveComputeCache() {}
+function _saveComputeCache() {
+  try {
+    const payload = {
+      ts: Date.now(),
+      pppAlloc: _pppAllocData,
+      partitions: _partitionData,
+      teamJobs: _teamJobsData,
+      overlay: _pppOverlayData,
+      fairshare: _myFairshareData,
+    };
+    localStorage.setItem(_COMPUTE_CACHE_KEY, JSON.stringify(payload));
+  } catch (_) {}
+}
+
 function _loadComputeCache() {
-  try { localStorage.removeItem(_COMPUTE_CACHE_KEY); } catch (_) {}
-  return false;
+  try {
+    const raw = localStorage.getItem(_COMPUTE_CACHE_KEY);
+    if (!raw) return false;
+    const c = JSON.parse(raw);
+    if (!c.ts || Date.now() - c.ts > _COMPUTE_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(_COMPUTE_CACHE_KEY);
+      return false;
+    }
+    if (c.pppAlloc) _pppAllocData = c.pppAlloc;
+    if (c.partitions) _partitionData = c.partitions;
+    if (c.teamJobs) _teamJobsData = c.teamJobs;
+    if (c.overlay) _pppOverlayData = c.overlay;
+    if (c.fairshare) _myFairshareData = c.fairshare;
+    return true;
+  } catch (_) {
+    try { localStorage.removeItem(_COMPUTE_CACHE_KEY); } catch (_) {}
+    return false;
+  }
 }
 
 function _showComputeLoadBar(show) {
@@ -1234,21 +1267,25 @@ async function _doRefreshPppAllocations(force, clusterName) {
   if (!el) return;
   const isSingleCluster = !!clusterName;
 
-  if (!isSingleCluster && _loadComputeCache() && _pppAllocData) {
-    _renderPppAllocations(_pppAllocData);
+  const hadCache = !isSingleCluster && _loadComputeCache();
+  if (hadCache) {
+    _renderPppAllocations(_pppAllocData || { clusters: {} });
   }
+
+  // Always force-fetch live data so we never show stale backend cache
+  const fetchForce = force || hadCache;
 
   if (!isSingleCluster) _showComputeLoadBar(true);
   try {
-    const q = _computeClusterQuery(clusterName, force);
+    const q = _computeClusterQuery(clusterName, fetchForce);
     const results = await Promise.allSettled([
       fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
-      _ensureOverlayData(true, force, clusterName),
-      fetchPartitions(force, clusterName),
-      _fetchMyFairshare(force, clusterName),
-      _fetchTeamJobs(force, clusterName),
+      _ensureOverlayData(true, fetchForce, clusterName),
+      fetchPartitions(fetchForce, clusterName),
+      _fetchMyFairshare(fetchForce, clusterName),
+      _fetchTeamJobs(fetchForce, clusterName),
       _fetchProjectColors(),
-      _refreshLiveClusterData(clusterName, force),
+      _refreshLiveClusterData(clusterName, fetchForce),
       ...(isSingleCluster ? [] : [fetchWaitCalibration()]),
     ]);
     const allocResult = results[0];
@@ -1258,17 +1295,15 @@ async function _doRefreshPppAllocations(force, clusterName) {
         _pppAllocData = isSingleCluster
           ? _mergeClusterPayload(_pppAllocData, data, clusterName)
           : data;
-        _renderCurrentPppAllocations();
-        _saveComputeCache();
       } else if (!_pppAllocData) {
         el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
       }
-    } else if (!_pppAllocData) {
-      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
     }
+    _renderCurrentPppAllocations();
+    _saveComputeCache();
   } catch (e) {
-    if (!_pppAllocData) {
-      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
+    if (!_pppAllocData && !_partitionData) {
+      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to load compute data</div>';
     }
   } finally {
     if (!isSingleCluster) _showComputeLoadBar(false);
@@ -1590,16 +1625,21 @@ function _renderPppAllocations(data) {
             for (const acct of acctList) {
               const acctJobs = tjJobs.filter(j => j.account === acct);
               let myRun = 0, myPend = 0, teamRun = 0, teamPend = 0, totalAcctGpus = 0;
+              let myAllGpus = 0;
               for (const j of acctJobs) {
                 const g = j.gpus || 0;
                 totalAcctGpus += g;
                 if (j.user === currentUser) {
+                  myAllGpus += g;
                   if (j.state === 'RUNNING') myRun += g; else myPend += g;
                 } else {
                   if (j.state === 'RUNNING') teamRun += g; else teamPend += g;
                 }
               }
-              const barMax = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus;
+              const barMax = Math.max(
+                (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus,
+                myAllGpus * 1.05
+              );
               const toPct = (v) => Math.min(100, Math.round(v / barMax * 100));
               let segments = '';
               if (showMe && myRun > 0) segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRun)}%"></div>`;
@@ -1676,7 +1716,7 @@ function _renderPppAllocations(data) {
     const teamScale = document.getElementById('ppp-scale-toggle')?.checked ?? false;
 
 
-    const maxAlloc = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : rawMaxAlloc;
+    let maxAlloc = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : rawMaxAlloc;
 
     const hasTeamQuota = teamAlloc === 'any' || (teamNum && teamNum > 0);
     const ps = _partitionData?.[cn];
@@ -1701,6 +1741,19 @@ function _renderPppAllocations(data) {
 
     const tjCluster = _teamJobsData?.clusters?.[cn]?.summary?.by_user || null;
     const hasJobSplit = !!tjCluster;
+
+    if (hasJobSplit) {
+      const allTjJobs = _teamJobsData?.clusters?.[cn]?.jobs || [];
+      const currentUser = _pppOverlayData?.current_user || USERNAME;
+      for (const [acct] of accts) {
+        let myAllGpus = 0;
+        for (const j of allTjJobs) {
+          if (j.account !== acct || j.user !== currentUser) continue;
+          myAllGpus += (j.gpus || 0);
+        }
+        if (myAllGpus > maxAlloc) maxAlloc = myAllGpus * 1.05;
+      }
+    }
 
     accts.forEach(([acct, ad], i) => {
       const allocPct = Math.min(100, maxAlloc > 0 ? Math.round(ad.gpus_allocated / maxAlloc * 100) : 0);
@@ -1759,7 +1812,6 @@ function _renderPppAllocations(data) {
       const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
       const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
       let segments = '';
-      const pendingScale = teamScale ? 1 : 0.3;
       if (hasJobSplit) {
         let myRunning = 0, myPending = 0, myDep = 0, myBackup = 0, teamRunGpus = 0, teamPendGpus = 0;
         for (const j of acctJobs) {
@@ -1774,13 +1826,17 @@ function _renderPppAllocations(data) {
             if (st === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
           }
         }
-        const myRunGpus = Math.min(myRunning, myTotal);
-        const myPendGpus = Math.min(myPending, myTotal * pendingScale);
-        const myDepGpus = Math.min(myDep, myTotal * pendingScale);
-        const myBkpGpus = Math.min(myBackup, myTotal * pendingScale);
+        const myRunGpus = myRunning;
+        const myPendGpus = myPending;
+        const myDepGpus = myDep;
+        const myBkpGpus = myBackup;
 
-        const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
-        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * pendingScale);
+        const myAllGpus = myRunning + myPending + myDep + myBackup;
+        const barRemaining = Math.max(0, maxAlloc - myAllGpus);
+        const teamTotal = teamRunGpus + teamPendGpus;
+        const teamFactor = teamTotal > 0 && teamTotal > barRemaining ? barRemaining / teamTotal : 1;
+        const teamRunW = Math.round(teamRunGpus * teamFactor);
+        const teamPendW = Math.round(teamPendGpus * teamFactor);
 
         const showProjects = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
         if (showMe && showProjects) {
@@ -1794,8 +1850,8 @@ function _renderPppAllocations(data) {
           }
           for (const [proj, pd] of Object.entries(projMap).sort((a, b) => (b[1].run + b[1].pend) - (a[1].run + a[1].pend))) {
             const color = _getProjectColor(proj) || 'var(--accent)';
-            const runW = Math.min(pd.run, myTotal);
-            const pendW = Math.min(pd.pend, myTotal * pendingScale);
+            const runW = pd.run;
+            const pendW = pd.pend;
             if (runW > 0)
               segments += `<div class="ppp-seg ppp-seg-proj" style="width:${toPct(runW)}%;background:${color}"></div>`;
             if (pendW > 0)
@@ -1976,9 +2032,12 @@ async function _ensureOverlayData(refetch, force, clusterName) {
     const res = await fetchWithTimeout(url, {}, 20000);
     const data = await res.json();
     if (data.status === 'ok') {
-      _pppOverlayData = isSingleCluster
-        ? _mergeClusterPayload(_pppOverlayData, data, clusterName)
-        : data;
+      const hasClusters = data.clusters && Object.keys(data.clusters).length > 0;
+      if (hasClusters || !_pppOverlayData) {
+        _pppOverlayData = isSingleCluster
+          ? _mergeClusterPayload(_pppOverlayData, data, clusterName)
+          : data;
+      }
     }
   } catch (_) {}
   if (!isSingleCluster) _pppOverlayFetching = false;
@@ -2206,9 +2265,12 @@ async function _fetchTeamJobs(force, clusterName) {
     const res = await fetchWithTimeout(url);
     const data = await res.json();
     if (data.status === 'ok') {
-      _teamJobsData = isSingleCluster
-        ? _mergeClusterPayload(_teamJobsData, data, clusterName)
-        : data;
+      const hasData = Object.values(data.clusters || {}).some(c => c && c.jobs && c.jobs.length > 0);
+      if (hasData || !_teamJobsData) {
+        _teamJobsData = isSingleCluster
+          ? _mergeClusterPayload(_teamJobsData, data, clusterName)
+          : data;
+      }
     }
   } catch (_) {}
 }
