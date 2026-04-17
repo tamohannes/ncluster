@@ -1513,10 +1513,14 @@ function _renderPppAllocations(data) {
   }
 
   const allClusterNames = [...new Set([...Object.keys(clusters), ...partOnlySet])];
-  // Stable sort: by total compute capacity (highest first), name tie-break.
-  // Cards must never reorder due to dynamic state (idle GPUs, my jobs, etc.),
-  // so we ignore live signals and cache the largest size we've seen per cluster
-  // to keep the order stable even when data is temporarily incomplete.
+  // Stable sort: GPU memory rank (highest-memory GPU first), then total GPU
+  // count descending within the same tier, then cluster name alphabetically.
+  // Only static properties are used so cards never reorder on refresh.
+  const _gpuMemRank = { 'GB200': 0, 'B200': 1, 'H200': 2, 'H100': 3, 'A100': 4, 'L40S': 5 };
+  const _gpuRank = (cn) => {
+    const gt = (clusters[cn]?.gpu_type || CLUSTERS[cn]?.gpu_type || '').toUpperCase();
+    return _gpuMemRank[gt] ?? 99;
+  };
   const _clusterSize = (cn) => {
     let total = 0;
     const ppp = clusters[cn]?.cluster_total_gpus;
@@ -1534,6 +1538,9 @@ function _renderPppAllocations(data) {
     return _clusterSizeCache[cn] || 0;
   };
   const names = allClusterNames.sort((a, b) => {
+    const aGpu = _gpuRank(a);
+    const bGpu = _gpuRank(b);
+    if (aGpu !== bGpu) return aGpu - bGpu;
     const aSize = _clusterSize(a);
     const bSize = _clusterSize(b);
     if (aSize !== bSize) return bSize - aSize;
