@@ -1121,6 +1121,11 @@ async function refreshClusterAvailability() {
 /* ── PPP Allocation Dashboard ── */
 
 let _pppAllocData = null;
+// Sticky cache of cluster compute sizes (total GPUs) keyed by cluster name.
+// Used to keep the cluster card order stable: once we observe a size, we never
+// let it shrink between renders, so cards stay in place even if data is briefly
+// incomplete during a refresh.
+const _clusterSizeCache = {};
 
 function _shortAcct(acct) {
   const parts = acct.split('_');
@@ -1500,45 +1505,38 @@ function _renderPppAllocations(data) {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
   const clusters = data.clusters || {};
-  const configOrder = Object.keys(CLUSTERS).filter(c => c !== 'local');
   const partOnlySet = new Set();
   if (_partitionData) {
     for (const cn of Object.keys(_partitionData)) {
       if (cn !== 'local' && !clusters[cn]) partOnlySet.add(cn);
     }
   }
-  const _gpuMemRank = { 'GB200': 0, 'B200': 1, 'H200': 2, 'H100': 3, 'A100': 4, 'L40S': 5 };
-  const _gpuRank = (cn) => {
-    const gt = (clusters[cn]?.gpu_type || CLUSTERS[cn]?.gpu_type || '').toUpperCase();
-    return _gpuMemRank[gt] ?? 99;
-  };
 
   const allClusterNames = [...new Set([...Object.keys(clusters), ...partOnlySet])];
-  const _idleGpus = (cn) => {
-    const ps = _partitionData?.[cn];
-    if (!ps) return 0;
-    const gpn = ps.partitions?.[0]?.gpus_per_node || CLUSTERS[cn]?.gpus_per_node || 8;
-    return (ps.idle_nodes || 0) * gpn;
-  };
-  const _myJobGpus = (cn) => {
-    const s = _teamJobsData?.clusters?.[cn]?.summary?.by_user?.[USERNAME];
-    return s ? (s.running || 0) + (s.pending || 0) + (s.dependent || 0) : 0;
+  // Stable sort: by total compute capacity (highest first), name tie-break.
+  // Cards must never reorder due to dynamic state (idle GPUs, my jobs, etc.),
+  // so we ignore live signals and cache the largest size we've seen per cluster
+  // to keep the order stable even when data is temporarily incomplete.
+  const _clusterSize = (cn) => {
+    let total = 0;
+    const ppp = clusters[cn]?.cluster_total_gpus;
+    if (typeof ppp === 'number' && ppp > 0) total = ppp;
+    if (total === 0) {
+      const ps = _partitionData?.[cn];
+      const parts = ps?.partitions || [];
+      for (const p of parts) {
+        total += (p.total_nodes || 0) * (p.gpus_per_node || 0);
+      }
+    }
+    if (total > 0 && total > (_clusterSizeCache[cn] || 0)) {
+      _clusterSizeCache[cn] = total;
+    }
+    return _clusterSizeCache[cn] || 0;
   };
   const names = allClusterNames.sort((a, b) => {
-    const aAlloc = clusters[a]?.team_gpu_alloc ?? _teamGpuAlloc[a];
-    const bAlloc = clusters[b]?.team_gpu_alloc ?? _teamGpuAlloc[b];
-    const aActive = (aAlloc === 'any' || (typeof aAlloc === 'number' && aAlloc > 0)) ? 0 : 1;
-    const bActive = (bAlloc === 'any' || (typeof bAlloc === 'number' && bAlloc > 0)) ? 0 : 1;
-    if (aActive !== bActive) return aActive - bActive;
-    const aMyJobs = _myJobGpus(a) > 0 ? 0 : 1;
-    const bMyJobs = _myJobGpus(b) > 0 ? 0 : 1;
-    if (aMyJobs !== bMyJobs) return aMyJobs - bMyJobs;
-    const aIdle = _idleGpus(a);
-    const bIdle = _idleGpus(b);
-    if (aIdle !== bIdle) return bIdle - aIdle;
-    const aGpu = _gpuRank(a);
-    const bGpu = _gpuRank(b);
-    if (aGpu !== bGpu) return aGpu - bGpu;
+    const aSize = _clusterSize(a);
+    const bSize = _clusterSize(b);
+    if (aSize !== bSize) return bSize - aSize;
     return a.localeCompare(b);
   });
   if (!names.length) {
