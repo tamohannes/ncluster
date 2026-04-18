@@ -1,4 +1,4 @@
-"""MCP server import and health check smoke tests (HTTP proxy architecture)."""
+"""MCP server import and health check smoke tests (in-process Flask architecture)."""
 
 import pytest
 from unittest.mock import patch
@@ -14,13 +14,19 @@ class TestMcpImport:
         assert hasattr(mcp_server, "health_check")
 
     def test_health_check_returns_ok(self):
+        """Healthy in-process Flask response."""
         with patch("mcp_server._api", return_value={"status": "ok", "board_version": 42}):
             result = health_check()
         assert result["status"] == "ok"
-        assert result["service"] == "connected"
+        assert result["service"] == "in-process"
+        assert result["board_version"] == 42
+        assert "follower_active" in result
 
-    def test_health_check_service_down(self):
-        with patch("mcp_server._api", return_value={"status": "error", "error": "unreachable"}):
+    def test_health_check_service_degraded(self):
+        """If the in-process API itself returns an error envelope, MCP labels
+        the service 'degraded' rather than 'unreachable' — there is no remote
+        service to be unreachable any more, just an internal error."""
+        with patch("mcp_server._api", return_value={"status": "error", "error": "boom"}):
             result = health_check()
         assert result["status"] == "ok"
-        assert result["service"] == "unreachable"
+        assert result["service"] == "degraded"

@@ -134,7 +134,8 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - `recommend_submission()` — partition-level ranking with fairshare-aware scoring and PPP account recommendation
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
 - Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
-- No SSH, no DB access — wraps the Flask API cleanly
+- **In-process Flask, no HTTP**: MCP boots the same Flask `app` as gunicorn but inside its own stdio process and dispatches each tool through `app.test_client()`. Both processes share SQLite (WAL) and `server.ssh`; gunicorn crashes don't take MCP down.
+- **Follower poller**: MCP probes the gunicorn `/api/health` endpoint every 10 s and starts the cluster poller in its own process after ~30 s of silence, then steps back as soon as gunicorn answers again. Single-writer work (backups, mount remounts, WDS snapshots, the progress scraper) stays gunicorn-only.
 
 ### SDK Experiment Tracking (v3)
 - NeMo-Skills SDK integration: add `CLAUSIUS_URL=http://<host>:7272` to any `ns` command to enable tracking

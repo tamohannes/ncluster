@@ -119,28 +119,61 @@ def _watchdog_notify_loop():
         time.sleep(30)
 
 
-def _run_init():
+def _shared_init():
+    """Initialisation common to gunicorn and the in-process MCP server.
+
+    Both processes need a usable DB schema and the cheap shared housekeeping
+    threads. They MUST NOT both run anything that owns external state
+    (backups, mount remounts, WDS snapshots, the progress scraper) — those
+    stay leader-only in `_run_init`.
+    """
     from server.db import init_db, cleanup_local_on_startup
     from server.logbooks import migrate_legacy_files
     from server.ssh import ssh_pool_gc_loop
-    from server.backup import backup_loop
-    from server.mounts import mount_health_loop
-    from server.wds import wds_snapshot_loop
     from server.config import cache_gc_loop
-    from server.poller import start_poller
-    from server.progress_scraper import start_progress_scraper
 
     init_db()
     migrate_legacy_files()
     cleanup_local_on_startup()
     threading.Thread(target=ssh_pool_gc_loop, daemon=True).start()
+    threading.Thread(target=cache_gc_loop, daemon=True).start()
+
+
+def _run_init():
+    """Full gunicorn init: shared bits plus everything that owns external
+    state (backups, mounts, WDS, progress scraper, the cluster poller, and
+    the systemd watchdog notifier)."""
+    from server.backup import backup_loop
+    from server.mounts import mount_health_loop
+    from server.wds import wds_snapshot_loop
+    from server.poller import start_poller
+    from server.progress_scraper import start_progress_scraper
+
+    _shared_init()
     threading.Thread(target=backup_loop, daemon=True).start()
     threading.Thread(target=mount_health_loop, daemon=True).start()
     threading.Thread(target=wds_snapshot_loop, daemon=True).start()
-    threading.Thread(target=cache_gc_loop, daemon=True).start()
     threading.Thread(target=_watchdog_notify_loop, daemon=True).start()
     start_poller()
     start_progress_scraper()
+
+
+def mcp_init():
+    """Lean init for the in-process MCP server.
+
+    Brings up just the bits MCP needs to serve tool calls against the shared
+    SQLite DB without colliding with gunicorn:
+      - DB schema + migrations (idempotent)
+      - SSH subprocess GC (in-process bookkeeping only)
+      - In-memory cache GC (in-process bookkeeping only)
+
+    Deliberately omitted:
+      - backup / mount-health / WDS / progress scraper — single-writer
+      - cluster poller — started lazily by the follower-poller in
+        mcp_server.py only when gunicorn is unreachable
+      - systemd watchdog — gunicorn owns the unit
+    """
+    _shared_init()
 
 
 if __name__ == "__main__":

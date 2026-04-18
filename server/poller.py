@@ -292,6 +292,7 @@ class Poller:
 
 _poller = None
 _poller_lock = threading.Lock()
+_poller_thread = None  # currently running poller thread (or None)
 
 
 def get_poller():
@@ -305,10 +306,55 @@ def get_poller():
 
 
 def start_poller():
-    """Start the poller background thread (called from _run_init)."""
+    """Start the poller background thread.
+
+    Called from `_run_init` (gunicorn) at boot, and from the MCP follower
+    when it decides to take over after detecting gunicorn is unreachable.
+    Idempotent: if the poller is already running, this is a no-op.
+    """
+    global _poller_thread
+    # Resolve the singleton OUTSIDE the lock — `get_poller()` itself acquires
+    # `_poller_lock`, and re-entering a non-reentrant lock would deadlock.
     p = get_poller()
-    t = threading.Thread(target=p.run, daemon=True, name="poller")
-    t.start()
+    with _poller_lock:
+        if _poller_thread is not None and _poller_thread.is_alive():
+            return _poller_thread
+        # Fresh `_stop` event so a stop+start cycle (follower handover)
+        # actually resumes polling instead of exiting on the very next tick.
+        p._stop = threading.Event()
+        t = threading.Thread(target=p.run, daemon=True, name="poller")
+        t.start()
+        _poller_thread = t
     log.info("poller started (%d clusters, interval=%ds)",
              len(CLUSTERS), Poller.HEALTHY_INTERVAL)
     return t
+
+
+def stop_poller(timeout=5.0):
+    """Signal the poller loop to exit and wait briefly for the thread to die.
+
+    The MCP follower calls this when gunicorn becomes reachable again so the
+    leader poller can resume sole ownership of polling. Returns True if the
+    thread terminated within `timeout`.
+    """
+    global _poller_thread
+    with _poller_lock:
+        thread = _poller_thread
+        _poller_thread = None
+    if _poller is not None:
+        _poller.stop()
+    if thread is None:
+        return True
+    thread.join(timeout=timeout)
+    alive = thread.is_alive()
+    if not alive:
+        log.info("poller stopped")
+    else:
+        log.warning("poller stop timed out after %.1fs (thread still alive)", timeout)
+    return not alive
+
+
+def poller_running():
+    """Whether a poller thread is currently active in this process."""
+    with _poller_lock:
+        return _poller_thread is not None and _poller_thread.is_alive()

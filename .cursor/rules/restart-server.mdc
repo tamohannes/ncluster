@@ -17,8 +17,8 @@ systemctl --user restart clausius.service
 
 - After every turn that modifies files in `server/`, `static/`, `templates/`, or `app.py`
 - Do NOT restart if only test files, docs, rules, or config files changed
-- Do NOT restart for changes to `mcp_server.py` — it is a thin HTTP proxy and rarely needs changes. Changes to `mcp_server.py` take effect on next Cursor restart.
-- Restarting gunicorn automatically updates MCP tool behavior too (the MCP server proxies all calls to gunicorn)
+- Do NOT restart for changes to `mcp_server.py` — those take effect on the next Cursor restart (MCP runs as its own stdio process).
+- Restarting gunicorn refreshes the UI immediately. The MCP server runs the same Flask code in its own process, so changes to `server/` or `app.py` only reach MCP after Cursor restarts the MCP stdio process.
 
 ## Verify
 

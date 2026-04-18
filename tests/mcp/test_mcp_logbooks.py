@@ -26,19 +26,21 @@ class TestListLogbookEntries:
             list_logbook_entries("alpha", query="CUDA")
         mock.assert_called_once()
         _, kwargs = mock.call_args
-        assert kwargs["params"]["q"] == "CUDA"
+        # Now uses Werkzeug's test client (`query_string=`) instead of httpx
+        # (`params=`) since MCP runs the Flask app in-process.
+        assert kwargs["query_string"]["q"] == "CUDA"
 
     def test_with_entry_type(self):
         with patch("mcp_server._api", return_value=[]) as mock:
             list_logbook_entries("alpha", entry_type="plan")
         _, kwargs = mock.call_args
-        assert kwargs["params"]["type"] == "plan"
+        assert kwargs["query_string"]["type"] == "plan"
 
     def test_with_sort(self):
         with patch("mcp_server._api", return_value=[]) as mock:
             list_logbook_entries("alpha", sort="created_at")
         _, kwargs = mock.call_args
-        assert kwargs["params"]["sort"] == "created_at"
+        assert kwargs["query_string"]["sort"] == "created_at"
 
 
 @pytest.mark.mcp

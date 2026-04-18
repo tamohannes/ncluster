@@ -1,73 +1,154 @@
-"""MCP server for clausius — HTTP proxy architecture.
+"""MCP server for clausius — in-process Flask architecture.
 
-All tool calls are forwarded to the gunicorn web service at localhost:7272.
-This ensures the MCP process always uses the same code, caches, and SSH pools
-as the web UI.  ``systemctl --user restart clausius.service`` immediately
-updates both the browser UI and MCP tool behavior.
+The MCP server runs the same Flask app as gunicorn but inside its own
+process. Tool calls go through Werkzeug's WSGI loop via `app.test_client()`,
+so there is no HTTP dependency on the gunicorn UI service: when gunicorn
+crashes or restarts, the MCP server keeps serving every tool against the
+same SQLite database.
 
-Only ``health_check`` runs locally (no HTTP dependency).
+Both processes share:
+  - SQLite (WAL mode, multi-process safe)
+  - The `server.ssh` module (each process has its own bounded semaphores)
+  - The on-disk config and mounts
+
+Single-writer responsibilities (backups, mount remounts, WDS snapshots,
+the progress scraper) stay in gunicorn — see `_run_init` in app.py.
+
+Follower poller
+---------------
+A small daemon thread probes `http://localhost:7272/api/health` every
+``_FOLLOWER_INTERVAL_SEC``. After ``_FOLLOWER_FAIL_THRESHOLD`` consecutive
+failures we assume gunicorn is down and start the cluster poller in this
+process so MCP keeps reporting fresh data. The first successful probe
+hands polling back to gunicorn.
 """
 
+import logging
 import os
-import sys
+import threading
 import time
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
-import httpx
 
-BASE_URL = os.environ.get("CLAUSIUS_MCP_URL", "http://localhost:7272")
-_client = httpx.Client(base_url=BASE_URL, timeout=180)
+from app import app, mcp_init
+from server.poller import poller_running, start_poller, stop_poller
+
+mcp_init()
+_client = app.test_client()
 
 mcp = FastMCP("clausius")
 
+log = logging.getLogger("server.mcp")
 
-# ── HTTP helper ───────────────────────────────────────────────────────────────
+
+# ── In-process API helpers ───────────────────────────────────────────────────
 
 def _api(method, path, **kwargs):
-    """Call the clausius HTTP API with retry on connection failure."""
-    last_exc = None
-    for attempt in range(3):
-        try:
-            r = _client.request(method, path, **kwargs)
-            if r.status_code == 503:
-                if attempt < 2:
-                    time.sleep(1)
-                    continue
-            r.raise_for_status()
-            return r.json()
-        except httpx.ConnectError as exc:
-            last_exc = exc
-            if attempt < 2:
-                time.sleep(1)
-        except httpx.HTTPStatusError as exc:
-            try:
-                return exc.response.json()
-            except Exception:
-                return {"status": "error", "error": str(exc)}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
-    return {
-        "status": "error",
-        "error": f"clausius service unreachable after 3 attempts — run: systemctl --user restart clausius.service ({last_exc})",
-    }
+    """Invoke a Flask route through the test client and return parsed JSON.
+
+    Mirrors the previous httpx-based signature so tool implementations stay
+    untouched. Errors are surfaced as `{"status": "error", "error": "..."}`
+    so callers don't need exception handling.
+    """
+    try:
+        resp = _client.open(path=path, method=method, **kwargs)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
+    if resp.status_code >= 500:
+        # Mirror the legacy proxy's behaviour: still try to surface the
+        # JSON error body if the route produced one.
+        if resp.is_json:
+            return resp.get_json()
+        return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.get_data(as_text=True)[:200]}"}
+    if resp.is_json:
+        return resp.get_json()
+    return resp.get_data(as_text=True)
 
 
 def _api_text(method, path, **kwargs):
-    """Like _api but returns raw text instead of JSON."""
-    last_exc = None
-    for attempt in range(3):
+    """Like `_api` but returns the raw response body as text."""
+    try:
+        resp = _client.open(path=path, method=method, **kwargs)
+    except Exception as exc:
+        return f"Error: {exc}"
+    return resp.get_data(as_text=True)
+
+
+# ── Follower poller ──────────────────────────────────────────────────────────
+
+_FOLLOWER_URL = os.environ.get("CLAUSIUS_LEADER_URL", "http://localhost:7272") + "/api/health"
+_FOLLOWER_INTERVAL_SEC = float(os.environ.get("CLAUSIUS_FOLLOWER_INTERVAL_SEC", "10"))
+_FOLLOWER_FAIL_THRESHOLD = int(os.environ.get("CLAUSIUS_FOLLOWER_FAIL_THRESHOLD", "3"))
+_FOLLOWER_PROBE_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_FOLLOWER_PROBE_TIMEOUT_SEC", "2"))
+
+
+def _probe_leader():
+    """Return True iff the gunicorn leader's /api/health responds with 2xx."""
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(_FOLLOWER_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=_FOLLOWER_PROBE_TIMEOUT_SEC) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
+def _follower_step(consecutive_failures):
+    """Apply one follower decision based on a single liveness probe.
+
+    Returns the updated `consecutive_failures` counter. Pulled out of the
+    loop so the leadership transition can be unit-tested without timers
+    or threads.
+    """
+    healthy = _probe_leader()
+    if healthy:
+        if poller_running():
+            log.info("follower: leader healthy, stopping local poller")
+            stop_poller()
+        return 0
+
+    consecutive_failures += 1
+    if (
+        consecutive_failures >= _FOLLOWER_FAIL_THRESHOLD
+        and not poller_running()
+    ):
+        log.warning(
+            "follower: leader unreachable for %d probes, taking over polling",
+            consecutive_failures,
+        )
+        start_poller()
+    return consecutive_failures
+
+
+def _follower_loop():
+    """Watch gunicorn liveness and start/stop our poller accordingly.
+
+    We only take over polling once the leader has been silent for
+    ``_FOLLOWER_FAIL_THRESHOLD`` consecutive probes (~30 s by default) so
+    a transient gunicorn restart doesn't trigger a costly handover. As soon
+    as the leader answers we step back — duplicate polling during the
+    transition is harmless because every poll write is idempotent.
+    """
+    consecutive_failures = 0
+    while True:
         try:
-            r = _client.request(method, path, **kwargs)
-            r.raise_for_status()
-            return r.text
-        except httpx.ConnectError as exc:
-            last_exc = exc
-            if attempt < 2:
-                time.sleep(1)
-        except Exception as exc:
-            return f"Error: {exc}"
-    return f"Error: clausius service unreachable — run: systemctl --user restart clausius.service ({last_exc})"
+            consecutive_failures = _follower_step(consecutive_failures)
+        except Exception:
+            log.exception("follower tick failed")
+        time.sleep(_FOLLOWER_INTERVAL_SEC)
+
+
+def _start_follower():
+    """Spawn the follower-poller daemon.
+
+    Started from the ``__main__`` block below so that importing this module
+    (e.g. from tests) is side-effect-free — no probe thread, no real socket.
+    """
+    t = threading.Thread(target=_follower_loop, daemon=True, name="mcp-follower")
+    t.start()
+    return t
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -97,9 +178,14 @@ def _slim_job(cluster: str, job: dict) -> dict:
 def health_check() -> dict:
     """Quick health check. Returns ok if the MCP server is running."""
     svc = _api("GET", "/api/health")
-    if svc.get("status") == "ok":
-        return {"status": "ok", "service": "connected", "board_version": svc.get("board_version")}
-    return {"status": "ok", "service": "unreachable", "note": "clausius gunicorn may be down"}
+    if isinstance(svc, dict) and svc.get("status") == "ok":
+        return {
+            "status": "ok",
+            "service": "in-process",
+            "board_version": svc.get("board_version"),
+            "follower_active": poller_running(),
+        }
+    return {"status": "ok", "service": "degraded", "note": "in-process API responded with an error"}
 
 
 @mcp.tool()
@@ -135,7 +221,7 @@ def list_log_files(cluster: str, job_id: str) -> dict:
 
     Returns lists of direct log files and explorable directories.
     """
-    return _api("GET", f"/api/log_files/{cluster}/{job_id}", params={"force": "1"})
+    return _api("GET", f"/api/log_files/{cluster}/{job_id}", query_string={"force": "1"})
 
 
 @mcp.tool()
@@ -152,7 +238,7 @@ def get_job_log(
     params = {"lines": str(lines)}
     if path:
         params["path"] = path
-    data = _api("GET", f"/api/log/{cluster}/{job_id}", params=params)
+    data = _api("GET", f"/api/log/{cluster}/{job_id}", query_string=params)
     if isinstance(data, dict):
         if data.get("status") == "error":
             return f"Error: {data.get('error', 'Unknown error')}"
@@ -205,7 +291,7 @@ def get_history(
         params["q"] = search
     if days is not None:
         params["days"] = str(days)
-    data = _api("GET", "/api/history", params=params)
+    data = _api("GET", "/api/history", query_string=params)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
@@ -332,7 +418,7 @@ def list_logbook_entries(
         params["q"] = query
     if entry_type:
         params["type"] = entry_type
-    data = _api("GET", f"/api/logbook/{project}/entries", params=params)
+    data = _api("GET", f"/api/logbook/{project}/entries", query_string=params)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
@@ -441,12 +527,19 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
     with open(image_path, "rb") as f:
         data = f.read()
     try:
-        r = _client.post(
+        # Werkzeug's test client accepts a `(BytesIO, filename)` tuple under
+        # the multipart field name; this matches what httpx's `files=` did
+        # against the live HTTP endpoint.
+        from io import BytesIO
+
+        resp = _client.post(
             f"/api/logbook/{project}/images",
-            files={"file": (filename, data)},
+            data={"file": (BytesIO(data), filename)},
+            content_type="multipart/form-data",
         )
-        r.raise_for_status()
-        return r.json()
+        if resp.is_json:
+            return resp.get_json()
+        return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.get_data(as_text=True)[:200]}"}
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -465,4 +558,5 @@ def jobs_summary() -> str:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _start_follower()
     mcp.run()

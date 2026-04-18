@@ -178,10 +178,13 @@ class TestGetHistory:
             get_history(cluster="c1", project="alpha", state="FAILED", limit=10)
         mock.assert_called_once()
         _, kwargs = mock.call_args
-        assert kwargs["params"]["cluster"] == "c1"
-        assert kwargs["params"]["project"] == "alpha"
-        assert kwargs["params"]["state"] == "FAILED"
-        assert kwargs["params"]["limit"] == "10"
+        # Now uses Werkzeug's test client, which takes `query_string=` instead
+        # of httpx's `params=`.
+        qs = kwargs["query_string"]
+        assert qs["cluster"] == "c1"
+        assert qs["project"] == "alpha"
+        assert qs["state"] == "FAILED"
+        assert qs["limit"] == "10"
 
 
 # ── cancel_job ───────────────────────────────────────────────────────────────
