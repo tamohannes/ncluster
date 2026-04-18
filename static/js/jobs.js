@@ -458,11 +458,9 @@ function renderCard(name, data) {
   if (isEmpty) cardClass += ' is-empty';
 
   const poller = data.poller || {};
-  const pollerState = poller.state || 'healthy';
   const failCount = poller.failure_count || 0;
   const staleness = poller.staleness_sec;
   const isStale = staleness != null && staleness > 60;
-  const isRetrying = pollerState === 'backoff' || pollerState === 'retrying';
   const statusClass = (isErr && failCount >= 3 && !jobs.length) ? 'error' : isStale ? 'stale' : 'ok';
   const byId = {};
   for (const j of jobs) { if (j.jobid) byId[j.jobid] = j; }
@@ -487,15 +485,11 @@ function renderCard(name, data) {
   if (isErr && failCount >= 3 && !jobs.length) {
     jobCountText = 'unreachable';
   } else {
+    // Staleness is already shown via the freshness badge (e.g. "1m") and
+    // the stale chip; backoff state is implied by the existing retry
+    // button. Inlining "data Xm old · retrying in Ns" duplicated those
+    // signals and made the line noisy, so it's omitted on purpose.
     jobCountText = jobParts.length ? jobParts.join(' · ') : 'no jobs';
-    if (isStale) {
-      const mins = Math.round(staleness / 60);
-      jobCountText += ` · data ${mins}m old`;
-    }
-    if (isRetrying && failCount > 0) {
-      const nextSec = Math.round(poller.next_poll_sec || 0);
-      jobCountText += ` · retrying in ${nextSec}s`;
-    }
   }
 
   const updated = data.updated ? new Date(data.updated).toLocaleTimeString() : '';
