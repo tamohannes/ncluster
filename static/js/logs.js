@@ -261,6 +261,10 @@ async function expandDir(path, container, depth, onFileClick) {
       icon: e.is_dir ? '📁' : guessIcon(e.name),
       job_id: e.is_dir ? '' : _extractJobId(e.name),
     }));
+    items.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
     _treeState[cacheKey] = { ts: Date.now(), items };
     renderTreeItems(container, items, depth || 0, onFileClick);
   } catch (e) {

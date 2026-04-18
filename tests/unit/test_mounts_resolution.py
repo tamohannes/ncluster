@@ -185,3 +185,14 @@ class TestListLocalDir:
         d = next(e for e in entries if e["name"] == "subdir")
         assert d["is_dir"]
         assert d["size"] is None
+
+    @pytest.mark.unit
+    def test_dirs_sorted_before_files(self, tmp_path):
+        (tmp_path / "aaa.txt").write_text("x")
+        (tmp_path / "zzz.txt").write_text("x")
+        (tmp_path / "main_chem").write_text("x")
+        (tmp_path / "judge").mkdir()
+        (tmp_path / "alpha").mkdir()
+        entries = list_local_dir(str(tmp_path))
+        names = [e["name"] for e in entries]
+        assert names == ["alpha", "judge", "aaa.txt", "main_chem", "zzz.txt"]

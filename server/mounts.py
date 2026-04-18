@@ -233,6 +233,7 @@ def list_local_dir(path):
             "is_dir": os.path.isdir(full),
             "size": os.path.getsize(full) if os.path.isfile(full) else None,
         })
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
     return entries
 
 

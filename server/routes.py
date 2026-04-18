@@ -1190,6 +1190,7 @@ def api_ls(cluster):
             ftype, size, name = parts
             entries.append({"name": name, "path": path.rstrip("/") + "/" + name, "is_dir": ftype == "d",
                             "size": int(size) if size.isdigit() else None})
+        entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         payload = {"status": "ok", "path": path, "entries": entries, "source": "ssh", "resolved_path": path}
         _cache_set(_dir_list_cache, cache_key, payload)
         return jsonify(payload)
