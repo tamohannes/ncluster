@@ -90,30 +90,79 @@ def normalize_job_times_local(job):
     return j
 
 
+_DB_CONNECT_TIMEOUT_SEC = 15.0  # max time sqlite3.connect waits on cross-process locks
+_DB_BUSY_TIMEOUT_MS = 15000     # max time SQLite operations wait on busy DB
+_DB_WRITE_LOCK_TIMEOUT_SEC = 20.0  # max time db_write() waits on the in-process write lock
+
+
+class DBWriteLockTimeoutError(RuntimeError):
+    """Raised when db_write() cannot acquire the in-process write lock in
+    DB_WRITE_LOCK_TIMEOUT_SEC seconds. Indicates either heavy write
+    contention or a stuck writer holding the lock — surfaces as a 500
+    response instead of letting the request thread block forever."""
+
+
 def get_db():
-    con = sqlite3.connect(DB_PATH)
+    # ``timeout`` here is SQLite's busy_timeout for cross-process locking:
+    # if another process holds the DB lock, this call waits up to N seconds
+    # then raises OperationalError instead of blocking forever. We also set
+    # the PRAGMA explicitly for clarity (Python's `timeout` and the PRAGMA
+    # are equivalent — having both is harmless).
+    con = sqlite3.connect(DB_PATH, timeout=_DB_CONNECT_TIMEOUT_SEC)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
-    con.execute("PRAGMA busy_timeout=5000")
+    con.execute(f"PRAGMA busy_timeout={_DB_BUSY_TIMEOUT_MS}")
     return con
 
 
+# In-process serializer for DB writes so bookkeeping threads don't fight
+# for the SQLite writer slot. We hold this lock ONLY around the
+# write-and-commit window — never around `sqlite3.connect()` itself,
+# because connect can block on cross-process WAL contention and we don't
+# want one slow connect to wedge every other writer in the process.
 _db_write_lock = _th_db.RLock()
 
 
 @contextmanager
 def db_write():
-    """Serialize in-process writes so bookkeeping threads don't fight for SQLite."""
-    with _db_write_lock:
-        con = get_db()
+    """Serialize in-process writes so bookkeeping threads don't fight for SQLite.
+
+    The lock is held around the actual write window only. Connection
+    open/close happen outside the lock — opening a connection can block
+    on cross-process WAL housekeeping, and if that happened while
+    holding the lock, every other writer in the process would wedge
+    behind it (which is exactly the failure mode we hit on 2026-04-19
+    that took the worker down repeatedly).
+    """
+    con = get_db()
+    acquired = _db_write_lock.acquire(timeout=_DB_WRITE_LOCK_TIMEOUT_SEC)
+    if not acquired:
         try:
-            yield con
-            con.commit()
-        except Exception:
-            con.rollback()
-            raise
-        finally:
             con.close()
+        except Exception:
+            pass
+        raise DBWriteLockTimeoutError(
+            f"db_write: could not acquire write lock in "
+            f"{_DB_WRITE_LOCK_TIMEOUT_SEC:.0f}s — another writer is wedged"
+        )
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            _db_write_lock.release()
+        except Exception:
+            pass
+        try:
+            con.close()
+        except Exception:
+            pass
 
 
 def init_db():

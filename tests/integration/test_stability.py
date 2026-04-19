@@ -387,6 +387,99 @@ class TestWatchdog:
         from server.ssh import _watchdog_log_active
         _watchdog_log_active()
 
+    def test_db_write_lock_has_timeout(self, _isolate_db, monkeypatch):
+        """db_write() must time out instead of wedging behind a stuck writer.
+
+        Regression test for the cascade that took the worker down on
+        2026-04-19: every writer queued behind a single thread that was
+        stuck in sqlite3.connect() inside the write lock, so SDK ingest /
+        prefetch / poller all blocked forever. Now the lock has a hard
+        timeout and raises DBWriteLockTimeoutError instead.
+        """
+        from server import db as db_mod
+
+        # Hold the write lock from a sleeper thread so db_write() must
+        # wait. Drop the timeout to keep the test fast.
+        monkeypatch.setattr(db_mod, "_DB_WRITE_LOCK_TIMEOUT_SEC", 0.5)
+
+        release = threading.Event()
+        holder_acquired = threading.Event()
+
+        def _hog_lock():
+            db_mod._db_write_lock.acquire()
+            holder_acquired.set()
+            try:
+                release.wait(timeout=5)
+            finally:
+                db_mod._db_write_lock.release()
+
+        t = threading.Thread(target=_hog_lock, daemon=True)
+        t.start()
+        try:
+            assert holder_acquired.wait(timeout=2), "sleeper failed to grab lock"
+            t0 = time.monotonic()
+            with pytest.raises(db_mod.DBWriteLockTimeoutError):
+                with db_mod.db_write() as _:
+                    pass  # pragma: no cover — must not enter
+            elapsed = time.monotonic() - t0
+            assert 0.4 < elapsed < 2.0, (
+                f"db_write should have timed out near 0.5s; took {elapsed:.2f}s"
+            )
+        finally:
+            release.set()
+            t.join(timeout=3)
+
+    def test_db_write_does_not_hold_lock_during_connect(self, _isolate_db, monkeypatch):
+        """sqlite3.connect() runs OUTSIDE the write lock so a slow connect
+        in one thread does not wedge every other writer.
+
+        Regression test: previously connect was inside the lock, so when
+        cross-process WAL contention made connect slow, the lock was held
+        for the duration of the slow connect and every other db_write()
+        in the process queued up. Now connect happens before the lock
+        acquisition, so a slow connect only delays its own caller.
+        """
+        from server import db as db_mod
+
+        # Replace sqlite3.connect with a slow version; meanwhile a SECOND
+        # writer should still be able to acquire and release the lock,
+        # which proves the slow connect is not holding it.
+        original_connect = db_mod.sqlite3.connect
+        slow_connect_started = threading.Event()
+        slow_connect_release = threading.Event()
+        connect_count = [0]
+
+        def _slow_connect(*args, **kwargs):
+            connect_count[0] += 1
+            # Only the FIRST connect is slow; subsequent connects
+            # (including the second writer's) run normally.
+            if connect_count[0] == 1:
+                slow_connect_started.set()
+                slow_connect_release.wait(timeout=5)
+            return original_connect(*args, **kwargs)
+
+        monkeypatch.setattr(db_mod.sqlite3, "connect", _slow_connect)
+
+        # Writer A: trigger the slow connect on a background thread.
+        def _writer_a():
+            try:
+                with db_mod.db_write() as con:
+                    con.execute("SELECT 1")
+            except Exception:
+                pass
+
+        ta = threading.Thread(target=_writer_a, daemon=True)
+        ta.start()
+        assert slow_connect_started.wait(timeout=2), "writer A never reached connect"
+
+        # Writer B should be able to acquire the lock and complete a
+        # write while writer A is still stuck inside connect.
+        with db_mod.db_write() as con:
+            con.execute("SELECT 1")
+
+        slow_connect_release.set()
+        ta.join(timeout=3)
+
     def test_diag_dump_stacks_endpoint(self, client, mock_ssh, tmp_path, monkeypatch):
         """Manual stack-dump endpoint must work even when the worker is busy.
 
