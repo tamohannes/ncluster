@@ -1027,6 +1027,7 @@ async function _triggerServerReconnect(reason) {
       _clearErrorBannerKey('jobs');
       _clearErrorBannerKey('clusters');
       _fetchFailCount = 0;
+      _consecutiveFanoutFails = 0;
       _lastEtag = null;
       try { console.info('[clausius] server reconnect: healthy, resuming'); } catch (_) {}
       try { await fetchAll(); } catch (_) {}
@@ -1112,6 +1113,14 @@ async function _doFetchAll() {
   prefetchAndUpdateProgress(allData);
 }
 
+// Consecutive total-failure counter for the per-cluster fanout. Used to
+// soft-fail: don't immediately show the alarming "Server unreachable"
+// banner on the first failed pass — most of the time a single failure is
+// just a brief restart window or a transient slow tick. Wait until we've
+// seen sustained failure before alarming the user.
+let _consecutiveFanoutFails = 0;
+const _FANOUT_FAIL_BANNER_THRESHOLD = 2;
+
 async function _fanoutPerCluster() {
   const names = Object.keys(CLUSTERS);
   const failedClusters = [];
@@ -1141,15 +1150,32 @@ async function _fanoutPerCluster() {
   _renderAll();
 
   if (anySuccess && failedClusters.length === 0) {
+    _consecutiveFanoutFails = 0;
     _clearErrorBannerKey('jobs');
     _clearErrorBannerKey('clusters');
   } else if (failedClusters.length === names.length) {
-    _setErrorBanner('jobs', `Server unreachable — retrying`);
-    _triggerServerReconnect('all clusters failed');
+    _consecutiveFanoutFails++;
+    if (_consecutiveFanoutFails >= _FANOUT_FAIL_BANNER_THRESHOLD) {
+      _setErrorBanner('jobs', `Server unreachable — retrying`);
+      _triggerServerReconnect('all clusters failed');
+    } else {
+      try { console.info(`[clausius] fanout failed (#${_consecutiveFanoutFails}), suppressing banner until threshold`); } catch (_) {}
+    }
   } else if (failedClusters.length > 0) {
+    // Partial failure — clear the loud "unreachable" banner since *some*
+    // clusters answered, and reset the consecutive counter (we're not in
+    // total-failure territory).
+    _consecutiveFanoutFails = 0;
+    _clearErrorBannerKey('jobs');
     _setErrorBanner('clusters', `${failedClusters.length} cluster${failedClusters.length > 1 ? 's' : ''} stale: ${failedClusters.join(', ')}`);
   }
 }
+
+// Test/debug hook to inspect and reset the soft-fail counter.
+window._clausiusFanoutFails = {
+  get value() { return _consecutiveFanoutFails; },
+  reset() { _consecutiveFanoutFails = 0; },
+};
 
 async function _forceRefreshAll() {
   const grid = document.getElementById('grid');

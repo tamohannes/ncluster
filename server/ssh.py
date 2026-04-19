@@ -390,25 +390,95 @@ def _format_active_snapshot(snapshot):
     return " | ".join(parts) if parts else "(empty)"
 
 
-def _dump_all_thread_stacks():
-    """Dump tracebacks for every live thread to the log.
+_WATCHDOG_DUMP_DIR = None  # resolved lazily on first use
+_WATCHDOG_DUMP_KEEP = 50   # rotate after this many files
+
+
+def _watchdog_dump_dir():
+    """Resolve and cache the directory where stack dumps are written.
+
+    Lazy import of `.config.PROJECT_ROOT` to avoid an import cycle at
+    module load time (ssh.py is imported very early during init).
+    """
+    global _WATCHDOG_DUMP_DIR
+    if _WATCHDOG_DUMP_DIR is not None:
+        return _WATCHDOG_DUMP_DIR
+    try:
+        from .config import PROJECT_ROOT
+        path = os.path.join(PROJECT_ROOT, "data", "watchdog-dumps")
+        os.makedirs(path, exist_ok=True)
+        _WATCHDOG_DUMP_DIR = path
+        return path
+    except Exception:
+        log.exception("watchdog: could not resolve dump directory")
+        return None
+
+
+def _watchdog_dump_rotate(dump_dir):
+    """Keep at most _WATCHDOG_DUMP_KEEP files in the dump directory."""
+    try:
+        files = sorted(
+            (f for f in os.listdir(dump_dir) if f.endswith(".txt")),
+            reverse=True,
+        )
+        for stale in files[_WATCHDOG_DUMP_KEEP:]:
+            try:
+                os.unlink(os.path.join(dump_dir, stale))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _dump_all_thread_stacks(reason=""):
+    """Dump tracebacks for every live thread to the log AND to disk.
 
     Called once before SIGTERM'ing a wedged worker so the next root-cause
     analysis can read journalctl alone — without needing to attach py-spy to
-    a process that's about to die.
+    a process that's about to die. Also written to
+    ``data/watchdog-dumps/<timestamp>.txt`` so the evidence survives
+    journal rotation.
     """
     import sys
+    import time as _time
     import traceback
+    from datetime import datetime as _dt
 
     try:
         frames = sys._current_frames()
         threads_by_id = {t.ident: t for t in threading.enumerate()}
-        log.error("watchdog: dumping %d thread stacks before SIGTERM", len(frames))
+        header = f"watchdog: dumping {len(frames)} thread stacks"
+        if reason:
+            header += f" — reason: {reason}"
+        log.error(header)
+
+        # Build the full dump text once, write to log line-by-line, and
+        # also persist to disk for post-rotation post-mortems.
+        sections = []
         for tid, frame in frames.items():
             t = threads_by_id.get(tid)
             name = t.name if t else "?"
             stack = "".join(traceback.format_stack(frame)).rstrip()
             log.error("watchdog: thread tid=%s name=%s\n%s", tid, name, stack)
+            sections.append(f"=== thread tid={tid} name={name} ===\n{stack}\n")
+
+        dump_dir = _watchdog_dump_dir()
+        if dump_dir:
+            ts = _dt.now().strftime("%Y-%m-%dT%H-%M-%S")
+            fname = f"{ts}-pid{os.getpid()}.txt"
+            fpath = os.path.join(dump_dir, fname)
+            try:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(header + "\n")
+                    f.write(f"dumped_at: {_dt.now().isoformat(timespec='seconds')}\n")
+                    f.write(f"pid: {os.getpid()}\n")
+                    f.write(f"thread_count: {len(frames)}\n")
+                    f.write("=" * 60 + "\n\n")
+                    f.write("\n".join(sections))
+                log.error("watchdog: stack dump written to %s", fpath)
+                _watchdog_dump_rotate(dump_dir)
+            except Exception:
+                log.exception("watchdog: failed to persist stack dump")
     except Exception:
         log.exception("watchdog: thread stack dump failed")
 
@@ -468,7 +538,9 @@ def _watchdog_log_active():
                     "for diagnosis (one-shot per episode)",
                     count,
                 )
-                _dump_all_thread_stacks()
+                _dump_all_thread_stacks(
+                    reason=f"first elevation, count={count}"
+                )
 
         critical_wedge = count >= max_active and _watchdog_high_streak >= _WATCHDOG_CRITICAL_STREAK
         elevated_wedge = count >= _WATCHDOG_LOG_THRESHOLD and _watchdog_high_streak >= _WATCHDOG_ELEVATED_STREAK

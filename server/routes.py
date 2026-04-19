@@ -172,7 +172,12 @@ def _debug_log(run_id, hypothesis_id, location, message, data):
     pass
 
 
-_SHED_EXEMPT = ("/api/health", "/api/sdk/events", "/api/_diag/active")
+_SHED_EXEMPT = (
+    "/api/health",
+    "/api/sdk/events",
+    "/api/_diag/active",
+    "/api/_diag/dump_stacks",
+)
 
 @api.before_request
 def _start_timer():
@@ -222,6 +227,24 @@ def api_diag_active():
         "active_requests": _active_request_count(),
         "max_active": _MAX_ACTIVE,
         "snapshot": _active_request_snapshot(limit=32),
+    })
+
+
+@api.route("/api/_diag/dump_stacks", methods=["GET", "POST"])
+def api_diag_dump_stacks():
+    """Force a thread-stack dump on demand. Useful when the dashboard
+    appears slow but the watchdog hasn't tripped yet — captures evidence
+    while the suspect threads are still stuck.
+
+    Exempt from load shedding so it works even during a wedge.
+    """
+    from .ssh import _dump_all_thread_stacks
+    reason = (request.args.get("reason") or "manual").strip()[:80]
+    _dump_all_thread_stacks(reason=f"manual: {reason}")
+    return jsonify({
+        "status": "ok",
+        "message": "stack dump written to log and data/watchdog-dumps/",
+        "active_requests": _active_request_count(),
     })
 
 

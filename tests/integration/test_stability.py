@@ -387,6 +387,29 @@ class TestWatchdog:
         from server.ssh import _watchdog_log_active
         _watchdog_log_active()
 
+    def test_diag_dump_stacks_endpoint(self, client, mock_ssh, tmp_path, monkeypatch):
+        """Manual stack-dump endpoint must work even when the worker is busy.
+
+        Used by operators to capture evidence BEFORE the watchdog SIGTERMs
+        the worker — by which time the original culprit is buried under
+        piled-on requests.
+        """
+        # Redirect dump output to tmp so we don't pollute the workspace.
+        from server import ssh as ssh_mod
+        monkeypatch.setattr(ssh_mod, "_WATCHDOG_DUMP_DIR", str(tmp_path))
+
+        resp = client.post("/api/_diag/dump_stacks?reason=test")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert "active_requests" in data
+
+        files = list(tmp_path.glob("*.txt"))
+        assert files, "dump endpoint must persist a stack-dump file"
+        body = files[0].read_text()
+        assert "thread tid=" in body
+        assert "test" in body  # reason gets included in the header
+
     def test_stale_entries_evicted_by_ttl(self):
         """A leaked entry on a still-alive thread must be reclaimed by TTL.
 

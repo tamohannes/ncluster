@@ -1076,6 +1076,13 @@ let _clusterUtilLastFetched = 0;
 let _partitionLastFetched = 0;
 const _AUX_TTL_MS = 90000;
 
+// Soft-fail counter for the partition fetch (mirrors the per-cluster
+// fanout's _consecutiveFanoutFails). A single failed tick is almost
+// always transient (worker restart, slow tick) — only show the banner
+// after sustained failure so we stop crying wolf.
+let _consecutivePartitionFails = 0;
+const _PARTITION_FAIL_BANNER_THRESHOLD = 2;
+
 async function fetchClusterUtilization(force) {
   if (_clusterUtilFetching) return;
   if (!force && _clusterUtil && Date.now() - _clusterUtilLastFetched < _AUX_TTL_MS) return;
@@ -1116,11 +1123,18 @@ async function fetchPartitions(force, clusterName) {
         }
       }
       _partitionLastFetched = Date.now();
+      _consecutivePartitionFails = 0;
       if (typeof _clearErrorBannerKey === 'function') _clearErrorBannerKey('partitions');
     }
   } catch (e) {
     console.warn('Partition fetch failed:', e);
-    if (typeof _setErrorBanner === 'function') _setErrorBanner('partitions', 'Partition data unavailable');
+    _consecutivePartitionFails++;
+    // Soft-fail: most single failures are transient (worker restart,
+    // slow tick). Only alarm the user when it's been failing repeatedly.
+    if (_consecutivePartitionFails >= _PARTITION_FAIL_BANNER_THRESHOLD &&
+        typeof _setErrorBanner === 'function') {
+      _setErrorBanner('partitions', 'Partition data unavailable');
+    }
   } finally {
     if (!isSingleCluster) _partitionFetching = false;
   }
