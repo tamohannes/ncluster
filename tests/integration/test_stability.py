@@ -107,13 +107,55 @@ class TestCircuitBreaker:
 class TestLoadShedding:
     """Verify load shedding protects the server without leaking counters."""
 
+    @staticmethod
+    def _inject_alive_active(routes, n):
+        """Spawn n live sleeper threads and register their TIDs as in-flight.
+
+        Returns (release_event, threads) — caller MUST set the event in a
+        finally block so the sleeper threads exit.
+
+        We need the TIDs to be in ``threading.enumerate()`` and the meta
+        timestamps to be fresh, otherwise ``_purge_stale_locked`` evicts
+        them as dead-thread or TTL-expired and the load-shed branch is
+        unreachable.
+        """
+        release = threading.Event()
+        threads = []
+
+        def _sleeper():
+            release.wait(timeout=10)
+
+        for _ in range(n):
+            t = threading.Thread(target=_sleeper, daemon=True)
+            t.start()
+            threads.append(t)
+
+        now_ms = int(time.time() * 1000)
+        with routes._active_lock:
+            for t in threads:
+                routes._active_threads.add(t.ident)
+                routes._active_requests_meta[t.ident] = {
+                    "method": "GET",
+                    "path": "/test/fake-inflight",
+                    "run_id": None,
+                    "started_ms": now_ms,
+                }
+
+        return release, threads
+
+    @classmethod
+    def _release_alive_active(cls, routes, release, threads):
+        with routes._active_lock:
+            for t in threads:
+                routes._active_threads.discard(t.ident)
+                routes._active_requests_meta.pop(t.ident, None)
+        release.set()
+        for t in threads:
+            t.join(timeout=2)
+
     def test_rejected_request_when_at_capacity(self, client, mock_ssh):
         from server import routes
-        fake_tids = set(range(900_000, 900_000 + routes._MAX_ACTIVE + 5))
-        with routes._active_lock:
-            saved = routes._active_threads.copy()
-            routes._active_threads.update(fake_tids)
-
+        release, threads = self._inject_alive_active(routes, routes._MAX_ACTIVE + 5)
         try:
             resp = client.get("/api/partition_summary")
             assert resp.status_code == 503
@@ -121,24 +163,16 @@ class TestLoadShedding:
             assert data["status"] == "error"
             assert "busy" in data["error"]
         finally:
-            with routes._active_lock:
-                routes._active_threads.clear()
-                routes._active_threads.update(saved)
+            self._release_alive_active(routes, release, threads)
 
     def test_non_heavy_endpoint_bypasses_shedding(self, client, mock_ssh):
         from server import routes
-        fake_tids = set(range(900_000, 900_000 + routes._MAX_ACTIVE + 10))
-        with routes._active_lock:
-            saved = routes._active_threads.copy()
-            routes._active_threads.update(fake_tids)
-
+        release, threads = self._inject_alive_active(routes, routes._MAX_ACTIVE + 10)
         try:
             resp = client.get("/api/health")
             assert resp.status_code == 200
         finally:
-            with routes._active_lock:
-                routes._active_threads.clear()
-                routes._active_threads.update(saved)
+            self._release_alive_active(routes, release, threads)
 
     def test_threads_cleaned_on_success(self, client, mock_ssh):
         from server import routes
@@ -353,6 +387,80 @@ class TestWatchdog:
         from server.ssh import _watchdog_log_active
         _watchdog_log_active()
 
+    def test_stale_entries_evicted_by_ttl(self):
+        """A leaked entry on a still-alive thread must be reclaimed by TTL.
+
+        Regression test for the wedge that took the worker down for ~12h:
+        under ``gthread`` the pool keeps threads alive, so a leaked entry's
+        TID stays in ``threading.enumerate()`` forever. Without TTL, the
+        counter only grows and load shedding is permanent.
+        """
+        from server import routes
+
+        # Pin an entry to the *current* (alive) thread but with an ancient
+        # timestamp so dead-thread cleanup does NOT evict it — only TTL can.
+        cur_tid = threading.current_thread().ident
+        ancient_ms = int(time.time() * 1000) - (routes._ACTIVE_TTL_SEC + 30) * 1000
+        with routes._active_lock:
+            saved_threads = routes._active_threads.copy()
+            saved_meta = dict(routes._active_requests_meta)
+            routes._active_threads.add(cur_tid)
+            routes._active_requests_meta[cur_tid] = {
+                "method": "GET",
+                "path": "/test/leaked",
+                "run_id": None,
+                "started_ms": ancient_ms,
+            }
+
+        try:
+            routes._active_request_count()
+            with routes._active_lock:
+                assert cur_tid not in routes._active_requests_meta, (
+                    "TTL eviction did not remove ancient entry"
+                )
+        finally:
+            with routes._active_lock:
+                routes._active_threads.clear()
+                routes._active_threads.update(saved_threads)
+                routes._active_requests_meta.clear()
+                routes._active_requests_meta.update(saved_meta)
+
+    def test_teardown_cleans_up_without_g_counted(self):
+        """teardown_request must reclaim the tid even if g._counted is unset.
+
+        Earlier versions checked ``g._counted`` and skipped cleanup if the
+        flag was missing (e.g. an exception between ``_active_threads.add``
+        and ``g._counted = True``). That's exactly how we leaked entries
+        forever under ``gthread``.
+        """
+        from server import routes
+
+        before = routes._active_request_count()
+
+        # Manually add the current thread to the active set, then trigger
+        # teardown via a normal request. The teardown handler must remove
+        # the entry regardless of how it got there.
+        cur_tid = threading.current_thread().ident
+        now_ms = int(time.time() * 1000)
+        with routes._active_lock:
+            routes._active_threads.add(cur_tid)
+            routes._active_requests_meta[cur_tid] = {
+                "method": "GET",
+                "path": "/test/no-counted-flag",
+                "run_id": None,
+                "started_ms": now_ms,
+            }
+
+        from app import app as flask_app
+        with flask_app.test_client() as c:
+            resp = c.get("/api/health")
+            assert resp.status_code == 200
+
+        after = routes._active_request_count()
+        assert after == before, (
+            f"teardown failed to clean up; before={before} after={after}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Global error handler
@@ -438,14 +546,11 @@ class TestHealthEndpoint:
     def test_health_not_load_shed(self, client, mock_ssh):
         """Health check must never be load-shed."""
         from server import routes
-        fake_tids = set(range(900_000, 900_000 + 999))
-        with routes._active_lock:
-            saved = routes._active_threads.copy()
-            routes._active_threads.update(fake_tids)
+        release, threads = TestLoadShedding._inject_alive_active(
+            routes, routes._MAX_ACTIVE + 5
+        )
         try:
             resp = client.get("/api/health")
             assert resp.status_code == 200
         finally:
-            with routes._active_lock:
-                routes._active_threads.clear()
-                routes._active_threads.update(saved)
+            TestLoadShedding._release_alive_active(routes, release, threads)

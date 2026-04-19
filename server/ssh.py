@@ -361,11 +361,23 @@ atexit.register(close_all_clients)
 #      a ~15 s blip (graceful_timeout=15 in gunicorn.conf.py).
 
 _WATCHDOG_TICK_SEC = 15
-_WATCHDOG_LOG_THRESHOLD = 16
-_WATCHDOG_RESET_THRESHOLD = 10  # streak resets when active drops well below cap
+_WATCHDOG_LOG_THRESHOLD = 16        # log + dump stacks when we hit this count
+_WATCHDOG_RESET_THRESHOLD = 10      # streak resets when active drops well below cap
+
+# SIGTERM thresholds. Two triggers, whichever fires first:
+#   * MAX_ACTIVE (load-shed cap) sustained for CRITICAL_STREAK ticks (~30s).
+#     This is the legacy fast-path: load shedding is already kicking in, so
+#     we have nothing to lose by restarting immediately.
+#   * LOG_THRESHOLD sustained for ELEVATED_STREAK ticks (~60s). This catches
+#     the silent sub-20 wedges where the worker stays at 17-19 in-flight
+#     forever — never hits the load-shed cap, never recovers. We saw a
+#     6+ hour episode of this before adding the elevated trigger.
+_WATCHDOG_CRITICAL_STREAK = 2
+_WATCHDOG_ELEVATED_STREAK = 4
 
 _watchdog_high_streak = 0
 _watchdog_restart_pending = False
+_watchdog_stack_dumped_for_streak = False
 
 
 def _format_active_snapshot(snapshot):
@@ -378,15 +390,49 @@ def _format_active_snapshot(snapshot):
     return " | ".join(parts) if parts else "(empty)"
 
 
+def _dump_all_thread_stacks():
+    """Dump tracebacks for every live thread to the log.
+
+    Called once before SIGTERM'ing a wedged worker so the next root-cause
+    analysis can read journalctl alone — without needing to attach py-spy to
+    a process that's about to die.
+    """
+    import sys
+    import traceback
+
+    try:
+        frames = sys._current_frames()
+        threads_by_id = {t.ident: t for t in threading.enumerate()}
+        log.error("watchdog: dumping %d thread stacks before SIGTERM", len(frames))
+        for tid, frame in frames.items():
+            t = threads_by_id.get(tid)
+            name = t.name if t else "?"
+            stack = "".join(traceback.format_stack(frame)).rstrip()
+            log.error("watchdog: thread tid=%s name=%s\n%s", tid, name, stack)
+    except Exception:
+        log.exception("watchdog: thread stack dump failed")
+
+
 def _watchdog_log_active():
     """Log stuck-request snapshot and self-restart on persistent wedge.
 
     The set-based _active_threads in routes.py self-heals (dead threads are
-    pruned on read), but it cannot help when threads are alive-but-blocked
-    (e.g. stuck inside a hung FUSE syscall).  For that case the snapshot
-    tells us *what* was stuck and the SIGTERM gets us moving again.
+    pruned on read, and TTL-expired entries are evicted), but it cannot help
+    when threads are alive-but-blocked (e.g. stuck inside a hung FUSE
+    syscall).  For that case the snapshot tells us *what* was stuck, the
+    thread dump tells us *where*, and the SIGTERM gets us moving again.
+
+    Two trigger modes:
+      * Critical (count >= MAX_ACTIVE): load shedding is already firing,
+        respawn after CRITICAL_STREAK ticks (~30s).
+      * Elevated (count >= LOG_THRESHOLD): a silent wedge where the count
+        sits below the load-shed cap forever. Respawn after ELEVATED_STREAK
+        ticks (~60s) so the worker recovers without an explicit user
+        restart. Stack dump fires on first elevation so we always have
+        evidence regardless of which trigger eventually fires.
     """
     global _watchdog_high_streak, _watchdog_restart_pending
+    global _watchdog_stack_dumped_for_streak
 
     if _watchdog_restart_pending:
         return
@@ -397,10 +443,11 @@ def _watchdog_log_active():
         count = routes._active_request_count()
         max_active = getattr(routes, "_MAX_ACTIVE", 20)
 
-        if count >= max_active:
+        if count >= _WATCHDOG_LOG_THRESHOLD:
             _watchdog_high_streak += 1
         elif count <= _WATCHDOG_RESET_THRESHOLD:
             _watchdog_high_streak = 0
+            _watchdog_stack_dumped_for_streak = False
 
         if count >= _WATCHDOG_LOG_THRESHOLD:
             snapshot = routes._active_request_snapshot(limit=8)
@@ -410,13 +457,31 @@ def _watchdog_log_active():
                 _watchdog_high_streak,
                 _format_active_snapshot(snapshot),
             )
+            # One-shot stack dump per wedge episode. Fires on the FIRST
+            # elevated tick so we capture the early stuck state — by the
+            # time the SIGTERM trigger hits, more requests have piled on
+            # and the original culprit is buried in noise.
+            if not _watchdog_stack_dumped_for_streak:
+                _watchdog_stack_dumped_for_streak = True
+                log.error(
+                    "watchdog: %d active requests — dumping thread stacks "
+                    "for diagnosis (one-shot per episode)",
+                    count,
+                )
+                _dump_all_thread_stacks()
 
-        if _watchdog_high_streak >= 2:
+        critical_wedge = count >= max_active and _watchdog_high_streak >= _WATCHDOG_CRITICAL_STREAK
+        elevated_wedge = count >= _WATCHDOG_LOG_THRESHOLD and _watchdog_high_streak >= _WATCHDOG_ELEVATED_STREAK
+
+        if critical_wedge or elevated_wedge:
+            kind = "critical" if critical_wedge else "elevated"
             log.error(
-                "watchdog: wedge confirmed (%d active for %d ticks); "
+                "watchdog: %s wedge confirmed (%d active for %d ticks, %ds); "
                 "SIGTERM self for arbiter respawn",
+                kind,
                 count,
                 _watchdog_high_streak,
+                _watchdog_high_streak * _WATCHDOG_TICK_SEC,
             )
             _watchdog_restart_pending = True
             try:

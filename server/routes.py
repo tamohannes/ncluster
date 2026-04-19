@@ -74,6 +74,14 @@ _active_requests_meta = {}
 _active_lock = threading.Lock()
 _MAX_ACTIVE = 20
 
+# Entries older than this are presumed leaked or truly stuck. Matches the
+# gunicorn worker timeout (120s in gunicorn.conf.py) — anything older than
+# the worker timeout cannot be a healthy in-flight request.
+# Without this safety net, a single leaked entry on a `gthread` worker is
+# permanent for the worker's lifetime — the pool never reclaims threads,
+# so `threading.enumerate()`-based cleanup cannot help us.
+_ACTIVE_TTL_SEC = 120
+
 _HEAVY_PREFIXES = (
     "/api/aihub/", "/api/team_jobs", "/api/team_usage",
     "/api/partition_summary", "/api/cluster_utilization",
@@ -85,31 +93,66 @@ _HEAVY_PREFIXES = (
 )
 
 
-def _active_request_count():
-    """Thread-safe active request count that cannot drift.
+def _purge_stale_locked(now_ms=None):
+    """Evict bookkeeping entries that cannot correspond to live requests.
 
-    Uses a set of thread IDs so dead/recycled threads are automatically
-    excluded — no counter to get out of sync.
+    Caller must hold ``_active_lock``. Two eviction reasons:
+      * ``dead-thread``: tid no longer in ``threading.enumerate()`` (sync
+        workers only — ``gthread`` recycles threads).
+      * ``ttl-expired``: entry older than ``_ACTIVE_TTL_SEC``. This is the
+        only safety net under ``gthread``, because the thread for a stuck
+        or leaked request stays alive in the pool indefinitely.
+
+    Returns the number of entries evicted.
     """
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - (_ACTIVE_TTL_SEC * 1000)
     alive = {t.ident for t in threading.enumerate()}
+
+    evictions = []
+    for tid in list(_active_threads):
+        if tid not in alive:
+            evictions.append(("dead-thread", tid, _active_requests_meta.get(tid, {})))
+            continue
+        meta = _active_requests_meta.get(tid, {})
+        started_ms = meta.get("started_ms", now_ms)
+        if started_ms < cutoff_ms:
+            evictions.append(("ttl-expired", tid, meta))
+
+    for reason, tid, meta in evictions:
+        _active_threads.discard(tid)
+        _active_requests_meta.pop(tid, None)
+        if reason == "ttl-expired" and meta:
+            age_s = (now_ms - meta.get("started_ms", now_ms)) / 1000.0
+            _log.warning(
+                "evicting stale active request: %s %s tid=%s age=%.0fs",
+                meta.get("method") or "?",
+                meta.get("path") or "?",
+                tid,
+                age_s,
+            )
+    return len(evictions)
+
+
+def _active_request_count():
+    """Thread-safe active request count.
+
+    Self-heals via two mechanisms (both required under ``gthread``):
+      * ``threading.enumerate()`` filtering for dead threads (sync workers).
+      * TTL eviction for entries older than ``_ACTIVE_TTL_SEC`` — the only
+        safety net when threads stay alive in the pool but their counter
+        entry leaked.
+    """
     with _active_lock:
-        stale = _active_threads - alive
-        if stale:
-            _active_threads.difference_update(stale)
-            for tid in stale:
-                _active_requests_meta.pop(tid, None)
+        _purge_stale_locked()
         return len(_active_threads)
 
 
 def _active_request_snapshot(limit=8):
     now_ms = int(time.time() * 1000)
-    alive = {t.ident for t in threading.enumerate()}
     with _active_lock:
-        stale = _active_threads - alive
-        if stale:
-            _active_threads.difference_update(stale)
-            for tid in stale:
-                _active_requests_meta.pop(tid, None)
+        _purge_stale_locked(now_ms)
         items = []
         for tid in _active_threads:
             meta = _active_requests_meta.get(tid, {})
@@ -134,11 +177,14 @@ _SHED_EXEMPT = ("/api/health", "/api/sdk/events", "/api/_diag/active")
 @api.before_request
 def _start_timer():
     g._req_start = time.monotonic()
-    g._counted = False
     tid = threading.current_thread().ident
     path = request.path
     exempt = path in _SHED_EXEMPT or not path.startswith("/api/")
     with _active_lock:
+        # Purge stale entries before deciding on shedding so a leaked
+        # counter cannot wedge the worker. Without this, a single leak
+        # under `gthread` is permanent until the worker dies.
+        _purge_stale_locked()
         count = len(_active_threads)
         if not exempt and count >= _MAX_ACTIVE:
             shed = True
@@ -150,7 +196,6 @@ def _start_timer():
                 "run_id": request.headers.get("X-Debug-Run-Id"),
                 "started_ms": int(time.time() * 1000),
             }
-            g._counted = True
             shed = False
     if shed:
         _log.warning("load shedding: %d active, rejecting %s", count, path)
@@ -159,8 +204,10 @@ def _start_timer():
 
 @api.teardown_request
 def _release_load(exc):
-    if not getattr(g, '_counted', False):
-        return
+    # Always discard the current tid, regardless of any per-request flag.
+    # Under `gthread` only one request runs per thread at a time, so the
+    # current tid maps unambiguously to the request being torn down.
+    # This also opportunistically cleans up any prior leak on the same tid.
     tid = threading.current_thread().ident
     with _active_lock:
         _active_threads.discard(tid)
