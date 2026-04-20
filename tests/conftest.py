@@ -68,12 +68,23 @@ def _ensure_mock_cluster():
 @pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
     """Redirect ALL DB and config access to per-test temp files.
-    This is autouse so no test can accidentally write to production files."""
+    This is autouse so no test can accidentally write to production files.
+
+    Also evicts the thread-local cached DB connection at start AND end of
+    each test, otherwise a connection cached during one test would still
+    point at the previous test's tmp DB (or the production DB if the test
+    ran before any other test).
+    """
+    from server.db import _force_close_thread_local_db
+    _force_close_thread_local_db()
+
     p = str(tmp_path / "test_history.db")
     monkeypatch.setattr("server.config.DB_PATH", p)
     monkeypatch.setattr("server.db.DB_PATH", p)
     monkeypatch.setattr("server.config.CONFIG_PATH", str(tmp_path / "test_config.json"))
     yield p
+
+    _force_close_thread_local_db()
 
 
 # ---------------------------------------------------------------------------

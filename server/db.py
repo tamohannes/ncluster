@@ -102,17 +102,122 @@ class DBWriteLockTimeoutError(RuntimeError):
     response instead of letting the request thread block forever."""
 
 
-def get_db():
+_db_local = _th_db.local()
+
+
+class _CachedConnection:
+    """Thread-local SQLite connection wrapper that survives ``close()``.
+
+    Why this exists: under cross-process WAL contention (gunicorn worker
+    + multiple MCP server processes all hitting the same SQLite file),
+    ``sqlite3.connect()`` itself can block for tens of seconds while
+    waiting on file-level locks held by another process doing checkpoint
+    or transaction work. Each ``/api/jobs`` call previously opened 10+
+    fresh connections; multiplied by 32 worker threads and 2-3 sibling
+    processes, this produced hundreds of connect/close cycles per second
+    and any momentary slowness cascaded into worker-wide wedges (we
+    captured 22/30 threads stuck in ``sqlite3.connect()`` in a live
+    stack dump on 2026-04-20).
+
+    With caching, each thread keeps a single long-lived connection.
+    ``close()`` on this wrapper is a no-op — the underlying connection
+    persists for the lifetime of the thread. Existing call sites that
+    pattern-match ``con = get_db(); ...; con.close()`` continue to work
+    unchanged but no longer churn file descriptors or trigger WAL
+    housekeeping on the close path.
+
+    The wrapper records the ``DB_PATH`` it was opened against so
+    ``get_db()`` can detect a path change (e.g. a test monkeypatching
+    the path, or any future runtime config reload) and discard the
+    stale connection automatically.
+    """
+
+    __slots__ = ("_raw", "_db_path")
+
+    def __init__(self, raw, db_path):
+        self._raw = raw
+        self._db_path = db_path
+
+    def __getattr__(self, name):
+        # Delegate everything except ``close`` and the dunder context
+        # manager protocol (handled below) to the underlying connection.
+        return getattr(self._raw, name)
+
+    def __enter__(self):
+        return self._raw.__enter__()
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._raw.__exit__(exc_type, exc, tb)
+
+    def close(self):
+        # Intentionally a no-op. The cached connection is owned by the
+        # thread-local store and released only on thread death or via
+        # _force_close_thread_local_db().
+        pass
+
+
+def _open_raw_db():
     # ``timeout`` here is SQLite's busy_timeout for cross-process locking:
-    # if another process holds the DB lock, this call waits up to N seconds
-    # then raises OperationalError instead of blocking forever. We also set
-    # the PRAGMA explicitly for clarity (Python's `timeout` and the PRAGMA
-    # are equivalent — having both is harmless).
-    con = sqlite3.connect(DB_PATH, timeout=_DB_CONNECT_TIMEOUT_SEC)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    con.execute(f"PRAGMA busy_timeout={_DB_BUSY_TIMEOUT_MS}")
-    return con
+    # if another process holds the DB lock, operations wait up to N
+    # seconds then raise OperationalError instead of blocking forever.
+    # We also set the PRAGMA explicitly for clarity (Python's ``timeout``
+    # and the PRAGMA are equivalent — having both is harmless).
+    raw = sqlite3.connect(DB_PATH, timeout=_DB_CONNECT_TIMEOUT_SEC)
+    raw.row_factory = sqlite3.Row
+    raw.execute("PRAGMA journal_mode=WAL")
+    raw.execute(f"PRAGMA busy_timeout={_DB_BUSY_TIMEOUT_MS}")
+    return raw
+
+
+def get_db(*, fresh=False):
+    """Return a thread-local cached SQLite connection.
+
+    Pass ``fresh=True`` for one-off operations that shouldn't share state
+    with the thread's cached connection (backups, schema migrations,
+    integrity checks). The returned connection is a real
+    ``sqlite3.Connection`` — close it yourself.
+
+    A cached connection is automatically evicted and reopened if the
+    module-level ``DB_PATH`` has changed since the connection was
+    created. This keeps thread pools (e.g. ``_shared_pool`` in routes,
+    or any future global pool) correct across test isolation, where
+    each test monkeypatches DB_PATH to a fresh tmp file. In production
+    DB_PATH never changes so this check is a single dict lookup.
+    """
+    if fresh:
+        return _open_raw_db()
+
+    cached = getattr(_db_local, "con", None)
+    if cached is not None and cached._db_path != DB_PATH:
+        # DB_PATH was rebound under us — drop the stale connection so
+        # the next caller gets one pointed at the current DB.
+        try:
+            cached._raw.close()
+        except Exception:
+            pass
+        cached = None
+        _db_local.con = None
+    if cached is None:
+        cached = _CachedConnection(_open_raw_db(), DB_PATH)
+        _db_local.con = cached
+    return cached
+
+
+def _force_close_thread_local_db():
+    """Force-close and discard the current thread's cached connection.
+
+    Use when the connection is in a known-bad state (corruption error,
+    inconsistent transaction state) and the next ``get_db()`` call must
+    open a fresh connection. Safe no-op if no cached connection exists.
+    """
+    cached = getattr(_db_local, "con", None)
+    if cached is None:
+        return
+    try:
+        cached._raw.close()
+    except Exception:
+        pass
+    _db_local.con = None
 
 
 # In-process serializer for DB writes so bookkeeping threads don't fight
@@ -133,14 +238,14 @@ def db_write():
     holding the lock, every other writer in the process would wedge
     behind it (which is exactly the failure mode we hit on 2026-04-19
     that took the worker down repeatedly).
+
+    Uses the thread-local cached connection so we don't open + close a
+    fresh connection per write — connect/close itself is the slow path
+    under cross-process WAL contention.
     """
     con = get_db()
     acquired = _db_write_lock.acquire(timeout=_DB_WRITE_LOCK_TIMEOUT_SEC)
     if not acquired:
-        try:
-            con.close()
-        except Exception:
-            pass
         raise DBWriteLockTimeoutError(
             f"db_write: could not acquire write lock in "
             f"{_DB_WRITE_LOCK_TIMEOUT_SEC:.0f}s — another writer is wedged"
@@ -159,10 +264,9 @@ def db_write():
             _db_write_lock.release()
         except Exception:
             pass
-        try:
-            con.close()
-        except Exception:
-            pass
+        # Note: con.close() intentionally NOT called — the cached
+        # connection persists for the thread's lifetime. See
+        # _CachedConnection docstring for why.
 
 
 def init_db():

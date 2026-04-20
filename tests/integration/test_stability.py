@@ -429,6 +429,46 @@ class TestWatchdog:
             release.set()
             t.join(timeout=3)
 
+    def test_get_db_caches_per_thread(self, _isolate_db):
+        """Two get_db() calls on the same thread return the SAME connection.
+
+        Regression test for the connection-churn pattern that caused
+        worker wedges under cross-process WAL contention. Each request
+        used to open 10+ fresh connections; with caching, each thread
+        keeps one long-lived connection.
+        """
+        from server import db as db_mod
+        db_mod.init_db()
+        a = db_mod.get_db()
+        b = db_mod.get_db()
+        assert a is b, "get_db should return the same cached connection"
+        # And close() must be a no-op so existing call sites continue to work.
+        a.close()
+        c = db_mod.get_db()
+        assert a is c, "cached connection must survive close()"
+
+    def test_get_db_evicts_when_db_path_changes(self, _isolate_db, tmp_path, monkeypatch):
+        """Cached connection is auto-evicted when DB_PATH is rebound.
+
+        Regression test for cross-test pool-thread leakage: the spotlight
+        endpoint fans out to a shared ThreadPoolExecutor whose worker
+        threads cache connections. Without this eviction, a pool thread
+        keeps using the previous test's tmp DB and the next test sees
+        empty results.
+        """
+        from server import db as db_mod
+        db_mod.init_db()
+        first = db_mod.get_db()
+
+        new_db = str(tmp_path / "different.db")
+        monkeypatch.setattr(db_mod, "DB_PATH", new_db)
+        db_mod.init_db()
+        second = db_mod.get_db()
+        assert first is not second, (
+            "get_db should evict the cached connection after DB_PATH change"
+        )
+        assert second._db_path == new_db
+
     def test_db_write_does_not_hold_lock_during_connect(self, _isolate_db, monkeypatch):
         """sqlite3.connect() runs OUTSIDE the write lock so a slow connect
         in one thread does not wedge every other writer.
