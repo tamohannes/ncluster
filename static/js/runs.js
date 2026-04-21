@@ -191,7 +191,7 @@ function _renderRunBody(run, cluster) {
               const gpuCell = hasGpuSignal ? jobGpus : '—';
               return `<tr>
                 <td style="color:var(--muted)">${j.job_id || j.jobid || '—'}</td>
-                <td style="font-weight:500" title="${rawName}">${dispName}</td>
+                <td class="bold" title="${rawName}">${dispName}</td>
                 <td><span class="state-chip ${cls}">${label}</span></td>
                 <td style="color:var(--muted)">${start}</td>
                 <td style="color:var(--muted)">${end}</td>

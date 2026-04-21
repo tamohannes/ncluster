@@ -575,6 +575,13 @@ td {
   white-space: nowrap; max-width: 420px;
   overflow: hidden; text-overflow: ellipsis;
 }
+/* Long Slurm job names — show full text; table scrolls horizontally (.card-body, .history-table-wrap, …) */
+td.bold,
+.group-head-row td {
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
 td.dim { color: var(--muted); }
 td.acct-cell { font-size: 10px; }
 td.bold { font-weight: 500; }
