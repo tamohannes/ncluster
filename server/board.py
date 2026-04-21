@@ -229,27 +229,25 @@ def _apply_job_overlays(cluster, jobs, overlays):
             job["campaign"] = extract_campaign(job_name, project)
 
 
-def _find_sdk_runs_with_live_siblings(cluster, live_ids, pinned_jobs):
-    """Return set of run_ids where an SDK synthetic job has real Slurm siblings in squeue."""
+def _find_sdk_runs_with_real_siblings(cluster, pinned_jobs):
+    """Return set of run_ids where an SDK synthetic job has real Slurm siblings."""
     sdk_run_ids = set()
     for p in pinned_jobs:
         pid = str(p.get("job_id") or p.get("jobid") or "")
         if pid.startswith("sdk-") and p.get("run_id"):
             sdk_run_ids.add(p["run_id"])
-    if not sdk_run_ids or not live_ids:
+    if not sdk_run_ids:
         return set()
     try:
         con = get_db()
         result = set()
         for rid in sdk_run_ids:
-            rows = con.execute(
-                "SELECT job_id FROM job_history WHERE cluster=? AND run_id=? AND job_id NOT LIKE 'sdk-%'",
+            row = con.execute(
+                "SELECT 1 FROM job_history WHERE cluster=? AND run_id=? AND job_id NOT LIKE 'sdk-%' LIMIT 1",
                 (cluster, rid),
-            ).fetchall()
-            for r in rows:
-                if r["job_id"] in live_ids:
-                    result.add(rid)
-                    break
+            ).fetchone()
+            if row:
+                result.add(rid)
         con.close()
         return result
     except Exception:
@@ -260,13 +258,13 @@ def _merge_live_and_pinned_jobs(cluster, live_jobs, pinned_jobs):
     jobs = [_normalize_job_shape(job) for job in live_jobs]
     live_ids = {str(job.get("jobid") or "") for job in jobs}
 
-    sdk_runs_with_live_siblings = _find_sdk_runs_with_live_siblings(cluster, live_ids, pinned_jobs)
+    sdk_runs_with_real_siblings = _find_sdk_runs_with_real_siblings(cluster, pinned_jobs)
 
     for pinned in pinned_jobs:
         pinned_id = str(pinned.get("job_id") or pinned.get("jobid") or "")
         if not pinned_id or pinned_id in live_ids:
             continue
-        if pinned_id.startswith("sdk-") and pinned.get("run_id") in sdk_runs_with_live_siblings:
+        if pinned_id.startswith("sdk-") and pinned.get("run_id") in sdk_runs_with_real_siblings:
             continue
         jobs.append(_normalize_job_shape({
             **pinned,
