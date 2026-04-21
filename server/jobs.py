@@ -556,6 +556,24 @@ def _group_jobs_for_runs(jobs, cluster=None):
             for i in range(1, len(ids)):
                 union(ids[0], ids[i])
 
+    # Union across name groups: jobs that already share a run_id in the DB
+    # belong together even when their names produce different group keys
+    # (e.g. multi-benchmark submissions under one SDK run).
+    # Only merge jobs whose group keys differ — within the same group key,
+    # time-bucketing already decided whether they belong together.
+    if existing_run_for_job:
+        job_group_key = {j["jobid"]: _group_key_for_job(j.get("name", "")) for j in jobs}
+        run_to_first = {}
+        for jid, rid in existing_run_for_job.items():
+            if jid not in by_id:
+                continue
+            if rid in run_to_first:
+                first_jid = run_to_first[rid]
+                if job_group_key.get(jid) != job_group_key.get(first_jid):
+                    union(jid, first_jid)
+            else:
+                run_to_first[rid] = jid
+
     groups = {}
     for j in jobs:
         root = find(j["jobid"])
