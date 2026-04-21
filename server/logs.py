@@ -604,6 +604,16 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
                 mounted_output, output_dir, job_id, seen_paths, files,
                 include_recognized=True,
             )
+        od = output_dir.rstrip("/")
+        for sub in ("eval-results", "eval-logs", "tmp-eval-results"):
+            sub_remote = f"{od}/{sub}"
+            mounted_sub = resolve_mounted_path(cluster_name, sub_remote, want_dir=True)
+            if mounted_sub and os.path.isdir(mounted_sub):
+                _append_discovered_dir(dirs, seen_dirs, sub_remote)
+                _discover_local_dir_files(
+                    mounted_sub, sub_remote, job_id, seen_paths, files,
+                    include_recognized=True,
+                )
 
     run_dir = os.path.dirname(logdir) if logdir else (output_dir or "")
     if run_dir:

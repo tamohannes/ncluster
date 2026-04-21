@@ -1146,8 +1146,9 @@ def api_history():
 
 @api.route("/api/projects")
 def api_projects():
-    from .config import get_project_color as _color, get_project_emoji as _emoji
-    projects = get_projects()
+    from .config import get_project_color as _color, get_project_emoji as _emoji, PROJECTS
+    # Only registered settings projects — history may still list removed keys.
+    projects = [p for p in get_projects() if p.get("project") in PROJECTS]
     for p in projects:
         p["color"] = _color(p["project"])
         p["emoji"] = _emoji(p["project"])
@@ -2263,7 +2264,7 @@ def api_logbook_map(project):
 
 @api.route("/api/spotlight")
 def api_spotlight():
-    from .config import get_project_color, get_project_emoji
+    from .config import get_project_color, get_project_emoji, PROJECTS
     q = request.args.get("q", "").strip()
     if not q:
         return jsonify({"projects": [], "logbook": [], "history": []})
@@ -2274,7 +2275,8 @@ def api_spotlight():
         return [
             {"project": p["project"], "emoji": get_project_emoji(p["project"]),
              "color": get_project_color(p["project"]), "job_count": p["job_count"]}
-            for p in get_projects() if ql in p["project"].lower()
+            for p in get_projects()
+            if p.get("project") in PROJECTS and ql in p["project"].lower()
         ][:8]
 
     def _search_logbook():

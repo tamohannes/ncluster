@@ -116,6 +116,17 @@ class TestApiProjects:
         assert matching[0]["job_count"] == 2
         assert matching[0]["color"] == "#e8f4fd"
 
+    def test_get_projects_omits_unregistered(self, client, db_path, monkeypatch):
+        """Sidebar uses /api/projects; rows may remain in history after a project is removed from settings."""
+        from server.config import PROJECTS
+        monkeypatch.setitem(PROJECTS, "kept", {"prefix": "kept_", "color": "#e8f4fd", "emoji": "🧪"})
+        upsert_job("c", {"jobid": "1", "name": "", "project": "removed_sidebar", "state": "COMPLETED"})
+        upsert_job("c", {"jobid": "2", "name": "kept_run", "state": "COMPLETED"})
+        resp = client.get("/api/projects")
+        names = [p["project"] for p in resp.get_json()]
+        assert "removed_sidebar" not in names
+        assert "kept" in names
+
 
 @pytest.mark.integration
 class TestApiCleanup:

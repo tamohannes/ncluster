@@ -450,6 +450,19 @@ def _bucket_same_name_jobs(jobs, gap_sec=_RUN_NAME_MERGE_GAP_SEC):
     return buckets
 
 
+def _buckets_separated_by_time_gap(bucket_a, bucket_b, gap_sec=_RUN_NAME_MERGE_GAP_SEC):
+    """True if two job buckets are clearly different submission-time waves."""
+    times_a = [_job_group_ts(j) for j in bucket_a if _job_group_ts(j) is not None]
+    times_b = [_job_group_ts(j) for j in bucket_b if _job_group_ts(j) is not None]
+    if not times_a or not times_b:
+        return False
+    max_a = max(times_a)
+    min_b = min(times_b)
+    max_b = max(times_b)
+    min_a = min(times_a)
+    return (min_b - max_a > gap_sec) or (min_a - max_b > gap_sec)
+
+
 def _group_jobs_for_runs(jobs, cluster=None):
     """Group jobs using union-find on dependency chains + name prefixes.
 
@@ -509,11 +522,13 @@ def _group_jobs_for_runs(jobs, cluster=None):
                     rid = existing_run_for_job.get(job["jobid"])
                     if rid and rid not in run_to_bucket:
                         run_to_bucket[rid] = bi
-            # Merge any bucket whose jobs don't have a run_id yet into
-            # the bucket that owns the existing run.
+            # Merge buckets that reference the same DB run_id (e.g. skip_filled
+            # resubmits with a large time gap). Leave unrelated buckets separate.
             if run_to_bucket:
                 anchor_bi = next(iter(run_to_bucket.values()))
-                merged = list(buckets[anchor_bi])
+                anchor_snapshot = list(buckets[anchor_bi])
+                merged = list(anchor_snapshot)
+                tail_buckets = []
                 for bi, bucket in enumerate(buckets):
                     if bi == anchor_bi:
                         continue
@@ -521,14 +536,20 @@ def _group_jobs_for_runs(jobs, cluster=None):
                         existing_run_for_job.get(j["jobid"])
                         for j in bucket
                     } - {None}
-                    if not bucket_rids or bucket_rids & set(run_to_bucket):
+                    share_overlap = bool(bucket_rids & set(run_to_bucket))
+                    time_gap = _buckets_separated_by_time_gap(anchor_snapshot, bucket)
+                    orphan_bucket = not bucket_rids
+                    if share_overlap and time_gap:
+                        tail_buckets.append(bucket)
+                    elif share_overlap or (orphan_bucket and not time_gap):
                         merged.extend(bucket)
+                    elif orphan_bucket and time_gap:
+                        tail_buckets.append(bucket)
                     else:
-                        # Different existing run — keep separate
                         ids = [job["jobid"] for job in bucket]
                         for k in range(1, len(ids)):
                             union(ids[0], ids[k])
-                buckets = [merged]
+                buckets = [merged] + tail_buckets
 
         for bucket in buckets:
             ids = [job["jobid"] for job in bucket]

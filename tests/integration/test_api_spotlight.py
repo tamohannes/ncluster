@@ -46,6 +46,17 @@ class TestSpotlightProjects:
         data = resp.get_json()
         assert len(data["projects"]) >= 1
 
+    def test_unregistered_project_not_in_spotlight_projects(self, client, db_path, monkeypatch):
+        from server.config import PROJECTS
+        monkeypatch.setitem(PROJECTS, "spotkeep", {"prefix": "spotkeep_"})
+        upsert_job("c", {"jobid": "1", "name": "", "project": "spotzombie", "state": "COMPLETED"})
+        upsert_job("c", {"jobid": "2", "name": "spotkeep_run", "state": "COMPLETED"})
+        resp = client.get("/api/spotlight?q=spot")
+        data = resp.get_json()
+        names = [p["project"] for p in data["projects"]]
+        assert "spotzombie" not in names
+        assert "spotkeep" in names
+
 
 @pytest.mark.integration
 class TestSpotlightLogbook:
