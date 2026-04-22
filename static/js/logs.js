@@ -13,6 +13,14 @@ const LIVE_MIN_MS = 2000;
 const LIVE_MAX_MS = 5000;
 let _liveLastHash = null;
 
+// ── Popup scroll-back pagination ──
+let _popupTopPage = 0;
+let _popupTotalPages = 0;
+let _popupLoading = false;
+let _popupFullLoaded = false;
+let _popupRawContent = '';
+const _POPUP_PAGE_SIZE = 500;
+
 async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
@@ -996,24 +1004,45 @@ async function viewFile(path, force) {
     return;
   }
 
+  _popupTopPage = 0;
+  _popupTotalPages = 0;
+  _popupLoading = false;
+  _popupFullLoaded = false;
+  _popupRawContent = '';
+
+  const jobIdParam = _exJobId || '__dir__';
   try {
-    const res = await fetchWithTimeout(`/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&lines=300&force=${force ? 1 : 0}`);
+    const res = await fetchWithTimeout(`/api/log_full/${_exCluster}/${jobIdParam}?path=${encodeURIComponent(path)}&page=999999&page_size=${_POPUP_PAGE_SIZE}`);
     const data = await res.json();
     const el = document.getElementById('modal-content');
-    const raw = (data.status === 'ok' ? data.content : data.error) || '(empty)';
-    const rendered = renderFileContentByType(path, raw);
+    if (data.status !== 'ok') {
+      el.className = 'log-content';
+      el.textContent = data.error || 'Failed to load file';
+      return;
+    }
+    _popupRawContent = data.content || '(empty)';
+    _popupTopPage = data.page;
+    _popupTotalPages = data.total_pages;
+    _popupFullLoaded = data.total_pages <= 1;
+    _currentSource = data.source || 'ssh';
+
+    const rendered = renderFileContentByType(path, _popupRawContent);
     el.className = rendered.cls;
     el.innerHTML = rendered.html;
-    _currentSource = data.source || 'ssh';
-    _currentResolvedPath = data.resolved_path || path;
-    _liveLastHash = data.hash || null;
+
     const sourceEl = document.getElementById('content-source');
     sourceEl.textContent = `source: ${_currentSource}`;
     sourceEl.className = `source-pill ${_currentSource}`;
-    if (_currentResolvedPath && _currentResolvedPath !== _currentRemotePath) {
-      document.getElementById('content-path').textContent = `${path}  ->  ${_currentResolvedPath}`;
+
+    const contentBody = el.parentElement;
+    contentBody.scrollTop = contentBody.scrollHeight;
+
+    if (!_popupFullLoaded) {
+      _setupPopupScroll(contentBody);
+    } else {
+      contentBody.onscroll = null;
     }
-    el.parentElement.scrollTop = el.parentElement.scrollHeight;
+
     if (shouldResumeLive) startLive();
   } catch (e) {
     const el = document.getElementById('modal-content');
@@ -1023,6 +1052,58 @@ async function viewFile(path, force) {
     sourceEl.textContent = 'source: error';
     sourceEl.className = 'source-pill ssh';
   }
+}
+
+function _setupPopupScroll(contentBody) {
+  contentBody.onscroll = () => {
+    if (_popupLoading || _popupFullLoaded || _popupTopPage <= 0) return;
+    if (contentBody.scrollTop < 100) {
+      _loadPopupPage(_popupTopPage - 1, contentBody);
+    }
+  };
+}
+
+async function _loadPopupPage(page, contentBody) {
+  if (_popupLoading) return;
+  _popupLoading = true;
+
+  const el = document.getElementById('modal-content');
+  const loader = document.createElement('div');
+  loader.className = 'log-loading';
+  loader.id = 'popup-prepend-loader';
+  loader.textContent = 'Loading earlier content…';
+  el.insertBefore(loader, el.firstChild);
+
+  const jobIdParam = _exJobId || '__dir__';
+  try {
+    const res = await fetchWithTimeout(`/api/log_full/${_exCluster}/${jobIdParam}?path=${encodeURIComponent(_currentFilePath)}&page=${page}&page_size=${_POPUP_PAGE_SIZE}`);
+    const data = await res.json();
+    if (data.status !== 'ok') {
+      document.getElementById('popup-prepend-loader')?.remove();
+      _popupLoading = false;
+      return;
+    }
+
+    _popupTopPage = data.page;
+    _popupRawContent = data.content + '\n' + _popupRawContent;
+    if (_popupTopPage === 0) _popupFullLoaded = true;
+
+    const oldScrollHeight = contentBody.scrollHeight;
+    const oldScrollTop = contentBody.scrollTop;
+
+    const rendered = renderFileContentByType(_currentFilePath, _popupRawContent);
+    el.className = rendered.cls;
+    el.innerHTML = rendered.html;
+
+    contentBody.scrollTop = oldScrollTop + (contentBody.scrollHeight - oldScrollHeight);
+
+    if (_popupFullLoaded) {
+      contentBody.onscroll = null;
+    }
+  } catch {
+    document.getElementById('popup-prepend-loader')?.remove();
+  }
+  _popupLoading = false;
 }
 
 async function reloadCurrentFile() {
