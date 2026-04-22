@@ -577,7 +577,7 @@ td {
 }
 /* Long Slurm job names — show full text; table scrolls horizontally (.card-body, .history-table-wrap, …) */
 td.bold,
-.group-head-row td {
+.group-head-row td:first-child {
   max-width: none;
   overflow: visible;
   text-overflow: clip;
@@ -738,17 +738,19 @@ tr.bg-job:hover td { opacity: 0.7; }
 
 /* Grouped runs within a cluster card */
 .group-head-row td {
+  background: var(--group-bg);
+  border-top: 1px solid var(--group-bd);
+  border-bottom: 1px solid var(--group-bd);
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.group-head-row td:first-child {
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.6px;
   color: var(--text);
-  background: var(--group-bg);
-  border-top: 1px solid var(--group-bd);
-  border-bottom: 1px solid var(--group-bd);
-  padding-top: 7px;
-  padding-bottom: 7px;
 }
 .group-head-row { cursor: pointer; }
 .group-head-row:hover td { filter: brightness(0.97); }
@@ -821,6 +823,24 @@ tr.group-bg-0:hover td,
 tr.group-bg-1:hover td,
 tr.group-bg-2:hover td,
 tr.group-bg-3:hover td { background-color: var(--group-hover); }
+
+/* ── Campaign divider ── */
+.campaign-divider td {
+  padding: 0 !important; height: 0; border: none !important;
+  background: transparent !important;
+}
+.campaign-divider-inner {
+  display: block; position: relative;
+  border-top: 1px solid var(--border); margin: 14px 16px 4px;
+  opacity: 0.7;
+}
+.campaign-divider-label {
+  position: absolute; top: -7px; left: 8px;
+  font-family: var(--mono); font-size: 8.5px; font-weight: 600;
+  letter-spacing: 0.8px; text-transform: uppercase;
+  color: var(--muted); background: var(--bg);
+  padding: 0 6px; line-height: 1;
+}
 
 /* ── Run name badge ── */
 .run-name-badge {

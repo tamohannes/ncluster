@@ -503,10 +503,23 @@ function renderCard(name, data) {
     body = `<div class="no-jobs">no active jobs</div>`;
   } else {
     const groupEntries = groupJobsByDependency(jobs);
+
+    // Stable-sort groups by campaign so same-campaign runs cluster together.
+    const campaignOf = ([, gj]) => gj[0]?.campaign || '';
+    const seenCampaigns = [];
+    for (const ge of groupEntries) {
+      const c = campaignOf(ge);
+      if (c && !seenCampaigns.includes(c)) seenCampaigns.push(c);
+    }
+    if (!seenCampaigns.includes('')) seenCampaigns.push('');
+    groupEntries.sort((a, b) => seenCampaigns.indexOf(campaignOf(a)) - seenCampaigns.indexOf(campaignOf(b)));
+
     const allGroupKeys = groupEntries.map(([gk]) => gk);
     const groupKeyCounts = {};
     for (const [gk] of groupEntries) groupKeyCounts[gk] = (groupKeyCounts[gk] || 0) + 1;
     const gkHL = computeNameHighlight(allGroupKeys);
+    const hasMixedCampaigns = seenCampaigns.filter(c => c).length > 1;
+    let _prevCampaign = null;
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
       const _proj = groupJobs[0]?.project || '';
@@ -555,6 +568,23 @@ function renderCard(name, data) {
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${_projBadge} ${summaryHtml}</span>`;
+
+      // Aggregate values for the group head row columns.
+      const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
+      const _grpGpuStr = _grpGpuTotal ? `${_grpGpuTotal}` : '—';
+      const _grpPartitions = [...new Set(groupJobs.map(j => j.partition).filter(Boolean))];
+      const _grpPartStr = _grpPartitions.join(', ') || '—';
+      const _grpAccounts = [...new Set(groupJobs.map(j => _shortAcct(j.account || '')).filter(Boolean))];
+      const _grpAcctStr = _grpAccounts.join(', ') || '—';
+      const _grpStart = fmtStartCell(rootJob);
+      const _grpEnded = groupJobs.filter(j => j.ended_local || j.ended_at);
+      const _grpEnd = _grpEnded.length === groupJobs.length
+        ? fmtTime(_grpEnded.reduce((latest, j) => {
+            const t = j.ended_local || j.ended_at;
+            return !latest || t > latest ? t : latest;
+          }, ''))
+        : '—';
+      const _grpElapsed = rootJob.elapsed || '—';
 
       const jobNames = groupJobs.map(j => j.name || '');
       const jnHL = computeNameHighlight(jobNames);
@@ -652,7 +682,24 @@ function renderCard(name, data) {
       const cancelGroupBtn = cancelableIds.length >= 1 && name !== 'local'
         ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroupByKey('${cancelKey}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
         : '';
-      return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
+      let campaignDivider = '';
+      if (hasMixedCampaigns && _campaign && _campaign !== _prevCampaign) {
+        const _divColor = _shadedColor || _projColor || '';
+        const _divBorder = _divColor ? ` style="border-color:${_divColor}"` : '';
+        const _lblStyle = _divColor ? ` style="color:${_divColor}"` : '';
+        campaignDivider = `<tr class="campaign-divider"><td colspan="11"><span class="campaign-divider-inner"${_divBorder}><span class="campaign-divider-label"${_lblStyle}>${_campaign}</span></span></td></tr>`;
+      }
+      _prevCampaign = _campaign;
+      return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')">
+        <td colspan="4"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td>
+        <td class="dim">${_grpStart}</td>
+        <td class="dim">${_grpEnd}</td>
+        <td class="dim">${_grpElapsed}</td>
+        <td class="dim">${_grpGpuStr}</td>
+        <td class="dim">${_grpPartStr}</td>
+        <td class="dim acct-cell">${_grpAcctStr}</td>
+        <td></td>
+      </tr>${groupRows}`;
     }).join('');
 
     body = `<div class="card-body">
