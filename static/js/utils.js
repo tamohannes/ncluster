@@ -967,10 +967,12 @@ function _campaignHash(str) {
 function campaignShade(hexColor, campaign) {
   if (!hexColor || !campaign || !hexColor.startsWith('#')) return hexColor;
   const [h, s, l] = _hexToHSL(hexColor);
-  const idx = _campaignHash(campaign) % 7;
-  const hueShift = (idx - 3) * 5;
-  const lightShift = ((idx % 3) - 1) * 0.02;
-  return _hslToHex(h + hueShift, s, l + lightShift);
+  const hash = _campaignHash(campaign);
+  const idx = hash % 11;
+  const hueShift = (idx - 5) * 12;
+  const satShift = ((hash >> 4) % 5 - 2) * 0.06;
+  const lightShift = ((hash >> 8) % 5 - 2) * 0.04;
+  return _hslToHex(h + hueShift, s + satShift, l + lightShift);
 }
 
 /* ── Job name highlighting (dim common prefix/suffix, bold unique part) ── */
