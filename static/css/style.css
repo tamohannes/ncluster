@@ -2699,13 +2699,23 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   padding: 12px 24px; background: var(--surface);
   border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-.explorer-back {
-  font-family: var(--mono); font-size: 12px; font-weight: 500;
-  padding: 7px 16px; border-radius: 7px;
+.explorer-nav-btn {
+  font-size: 14px; font-weight: 600; line-height: 1;
+  width: 30px; height: 30px; border-radius: 6px;
   border: 1px solid var(--border); background: var(--surface);
-  color: var(--accent); cursor: pointer; transition: all 0.15s;
+  color: var(--muted); cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
 }
-.explorer-back:hover { background: var(--accent-bg); border-color: var(--accent); }
+.explorer-nav-btn:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.explorer-close-btn {
+  font-size: 14px; line-height: 1;
+  width: 30px; height: 30px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; transition: all 0.15s;
+  display: flex; align-items: center; justify-content: center;
+  margin-left: auto;
+}
+.explorer-close-btn:hover { background: var(--red-bg); border-color: var(--red-bd); color: var(--red); }
 .explorer-file-info { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .explorer-filename {
   font-family: var(--mono); font-size: 13px; font-weight: 600;

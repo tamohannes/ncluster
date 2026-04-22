@@ -285,12 +285,13 @@
     <!-- File Explorer view -->
     <div class="explorer-page" id="explorer-page">
       <div class="explorer-topbar">
-        <button class="explorer-back" onclick="closeExplorer()">← Dashboard</button>
+        <button class="explorer-nav-btn" onclick="expNavigateUp()" title="Go up one directory">↑</button>
         <div class="explorer-file-info">
           <span class="explorer-filename" id="exp-filename"></span>
           <span class="badge" id="exp-cluster"></span>
         </div>
         <span class="source-pill" id="exp-source">source: —</span>
+        <button class="explorer-close-btn" onclick="closeExplorer()" title="Close explorer">✕</button>
       </div>
       <div class="explorer">
         <div class="tree-pane" id="exp-tree-pane"></div>
