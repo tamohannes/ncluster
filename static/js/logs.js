@@ -1,6 +1,7 @@
 // ── File Explorer ──
 let _exCluster = null, _exJobId = null, _currentFilePath = null;
 let _currentRemotePath = null, _currentResolvedPath = null, _currentSource = null;
+let _exDirRoot = null;
 const _treeState = {};   // path -> { open, entries }
 const TREE_CACHE_TTL_MS = 30000;
 
@@ -15,6 +16,7 @@ let _liveLastHash = null;
 async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
+  _exDirRoot = null;
   _currentFilePath = null;
   stopLive();
 
@@ -98,6 +100,68 @@ async function openLog(cluster, jobId, jobName, force) {
     document.getElementById('modal-content').className = 'placeholder';
     document.getElementById('modal-content').textContent = msg;
     document.getElementById('content-path').textContent = 'error';
+    document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
+  }
+}
+
+async function openDir(cluster, dirPath, label) {
+  _exCluster = cluster;
+  _exJobId = null;
+  _exDirRoot = dirPath;
+  _currentFilePath = null;
+  stopLive();
+
+  document.getElementById('modal-overlay').classList.add('open');
+  if (label) document.getElementById('modal-title').textContent = label;
+  document.getElementById('modal-subtitle').textContent = `${cluster} · ${dirPath}`;
+  document.getElementById('content-path').textContent = dirPath;
+  document.getElementById('content-source').textContent = 'source: —';
+  document.getElementById('content-source').className = 'source-pill';
+  document.getElementById('modal-content').className = 'log-loading';
+  document.getElementById('modal-content').textContent = 'Loading directory…';
+  document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
+  for (const k of Object.keys(_treeState)) delete _treeState[k];
+
+  try {
+    const res = await fetchWithTimeout(`/api/ls/${cluster}?path=${encodeURIComponent(dirPath)}&force=1`, {}, 15000);
+    const data = await res.json();
+
+    if (data.status !== 'ok') {
+      document.getElementById('modal-content').className = 'placeholder';
+      document.getElementById('modal-content').textContent = data.error || 'Could not list directory';
+      document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
+      return;
+    }
+
+    const entries = (data.entries || []).map(e => ({
+      name: e.name, path: e.path, is_dir: e.is_dir, size: e.size,
+      icon: e.is_dir ? '📁' : guessIcon(e.name),
+    }));
+    entries.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+
+    const tree = document.getElementById('tree-pane');
+    tree.innerHTML = '';
+    if (entries.length) {
+      renderTreeItems(tree, entries, 0);
+    } else {
+      tree.innerHTML = '<div class="tree-loading" style="color:var(--muted)">(empty directory)</div>';
+    }
+
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = 'Select a file from the tree to view its contents.';
+
+    const sourceEl = document.getElementById('content-source');
+    sourceEl.textContent = `source: ${data.source || 'ssh'}`;
+    sourceEl.className = `source-pill ${data.source || 'ssh'}`;
+  } catch (e) {
+    const msg = e.name === 'TimeoutError' || e.name === 'AbortError'
+      ? 'Timed out loading directory — the cluster may be slow or unreachable.'
+      : 'Failed: ' + e;
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = msg;
     document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
   }
 }

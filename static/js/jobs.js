@@ -584,6 +584,8 @@ function renderCard(name, data) {
           }, ''))
         : '—';
       const _grpElapsed = rootJob.elapsed || '—';
+      const _grpOutputRaw = groupJobs.find(j => j.output_dir)?.output_dir || '';
+      const _grpOutputDir = _grpOutputRaw.replace(/\/(eval-logs|log|logs)\/?$/, '');
 
       const jobNames = groupJobs.map(j => j.name || '');
       const jnHL = computeNameHighlight(jobNames);
@@ -681,10 +683,13 @@ function renderCard(name, data) {
         campaignDivider = `<tr class="campaign-divider"><td colspan="11"><span class="campaign-divider-inner"${_divBorder}><span class="campaign-divider-label"${_lblStyle}>${_divLabel}</span></span></td></tr>`;
       }
       _prevCampaign = _campaign;
+      const _dirBtn = _grpOutputDir && name !== 'local'
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openDir('${escAttr(name)}','${escAttr(_grpOutputDir)}','${safeGk}')">logs</button>`
+        : '';
       return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')">
         <td colspan="2"><span class="group-head-content">${groupLabel}</span></td>
         <td>${summaryHtml}</td>
-        <td></td>
+        <td>${_dirBtn}</td>
         <td class="dim">${_grpStart}</td>
         <td class="dim">${_grpEnd}</td>
         <td class="dim">${_grpElapsed}</td>
