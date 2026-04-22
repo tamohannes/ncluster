@@ -1055,12 +1055,9 @@ def _run_cluster_bookkeeping(cluster, context):
 
     gone_ids = prev_ids - current_ids
     if gone_ids:
-        sdk_job_ids = _get_sdk_run_job_ids(cluster, gone_ids) if cluster != "local" else set()
-        non_sdk_gone = [jid for jid in gone_ids if jid not in sdk_job_ids]
-        sacct_batch = sacct_final_batch(cluster, non_sdk_gone) if non_sdk_gone and cluster != "local" else {}
-        for job_id in gone_ids:
-            if job_id in sdk_job_ids:
-                continue
+        non_synthetic = [jid for jid in gone_ids if not str(jid).startswith("sdk-")]
+        sacct_batch = sacct_final_batch(cluster, non_synthetic) if non_synthetic and cluster != "local" else {}
+        for job_id in non_synthetic:
             _finalize_gone_job(
                 cluster,
                 job_id,
