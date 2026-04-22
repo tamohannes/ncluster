@@ -1078,10 +1078,7 @@ def _run_cluster_bookkeeping(cluster, context):
         ]
         uncaptured = [jid for jid in running_ids if (cluster, jid) not in _stdout_captured]
         if uncaptured:
-            sdk_covered = _get_sdk_run_jobs_for_stdout(cluster, uncaptured)
-            non_sdk_uncaptured = [jid for jid in uncaptured if jid not in sdk_covered]
-            if non_sdk_uncaptured:
-                _capture_stdout_paths(cluster, non_sdk_uncaptured)
+            _capture_stdout_paths(cluster, uncaptured)
 
         all_jobs_for_runs = list(live_jobs)
         pinned = get_board_pinned(cluster)
