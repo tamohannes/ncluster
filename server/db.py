@@ -504,6 +504,8 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_runs_uuid ON runs(run_uuid)")
 
+    con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")
+
     con.commit()
     con.close()
 
@@ -1191,11 +1193,10 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
         con.execute("""
             INSERT INTO job_history
                 (cluster, job_id, job_name, state, board_visible, project, run_id, submitted, started)
-            VALUES (?, ?, ?, 'SUBMITTING', 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, 'SUBMITTING', 0, ?, ?, ?, ?)
             ON CONFLICT(cluster, job_id) DO UPDATE SET
                 state = CASE WHEN job_history.state IN ('COMPLETED','FAILED','CANCELLED','TIMEOUT','RUNNING','PENDING')
                              THEN job_history.state ELSE excluded.state END,
-                board_visible = 1,
                 run_id = excluded.run_id,
                 project = COALESCE(NULLIF(excluded.project, ''), job_history.project)
         """, (cluster, synthetic_job_id, expname, job_project, run_id, now_ts, now_ts))
@@ -1225,7 +1226,7 @@ def cancel_sdk_job(synthetic_job_id):
         cluster = row["cluster"]
         run_id = row["run_id"]
         con.execute(
-            "UPDATE job_history SET state='CANCELLED', ended_at=COALESCE(ended_at, ?), board_visible=1 WHERE job_id=?",
+            "UPDATE job_history SET state='CANCELLED', ended_at=COALESCE(ended_at, ?) WHERE job_id=?",
             (ts, synthetic_job_id),
         )
         if run_id:
