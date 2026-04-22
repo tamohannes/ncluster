@@ -525,7 +525,6 @@ function renderCard(name, data) {
       const _proj = groupJobs[0]?.project || '';
       const _projColor = groupJobs[0]?.project_color || '';
       const _projEmoji = groupJobs[0]?.project_emoji || '';
-      const _projBadge = _proj ? `<span class="group-project-badge">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span>` : '';
       const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
@@ -567,7 +566,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${_projBadge} ${summaryHtml}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
@@ -671,27 +670,21 @@ function renderCard(name, data) {
         <td>${tailAction}</td>
       </tr>`;
       }).join('');
-      const cancelableIds = [...new Set(
-        groupJobs
-          .filter(j => _isActivelyCancelableState(j.state))
-          .map(j => String(j.jobid))
-      )];
-      const cancelKey = `${name}:${rootJobId}`;
-      window._cancelGroupIds = window._cancelGroupIds || {};
-      window._cancelGroupIds[cancelKey] = cancelableIds;
-      const cancelGroupBtn = cancelableIds.length >= 1 && name !== 'local'
-        ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroupByKey('${cancelKey}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
-        : '';
       let campaignDivider = '';
       if (hasMixedCampaigns && _campaign && _campaign !== _prevCampaign) {
-        const _divColor = _shadedColor || _projColor || '';
+        const _divSrc = _shadedColor || _projColor || '';
+        const _divColor = _divSrc ? campaignDividerColor(_divSrc) : '';
         const _divBorder = _divColor ? ` style="border-color:${_divColor}"` : '';
         const _lblStyle = _divColor ? ` style="color:${_divColor}"` : '';
-        campaignDivider = `<tr class="campaign-divider"><td colspan="11"><span class="campaign-divider-inner"${_divBorder}><span class="campaign-divider-label"${_lblStyle}>${_campaign}</span></span></td></tr>`;
+        const _projTag = _proj ? `<span class="campaign-divider-proj">${_projEmoji ? _projEmoji + ' ' : ''}${_proj}</span>` : '';
+        const _divLabel = _projTag ? `${_campaign} / ${_projTag}` : _campaign;
+        campaignDivider = `<tr class="campaign-divider"><td colspan="11"><span class="campaign-divider-inner"${_divBorder}><span class="campaign-divider-label"${_lblStyle}>${_divLabel}</span></span></td></tr>`;
       }
       _prevCampaign = _campaign;
       return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')">
-        <td colspan="4"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td>
+        <td colspan="2"><span class="group-head-content">${groupLabel}</span></td>
+        <td>${summaryHtml}</td>
+        <td></td>
         <td class="dim">${_grpStart}</td>
         <td class="dim">${_grpEnd}</td>
         <td class="dim">${_grpElapsed}</td>

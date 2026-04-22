@@ -975,6 +975,15 @@ function campaignShade(hexColor, campaign) {
   return _hslToHex(h + hueShift, s + satShift, l + lightShift);
 }
 
+function campaignDividerColor(hexColor) {
+  if (!hexColor || !hexColor.startsWith('#')) return '';
+  const [h, s, l] = _hexToHSL(hexColor);
+  if (_isDarkTheme()) {
+    return _hslToHex(h, Math.max(s, 0.45), Math.max(l, 0.55));
+  }
+  return _hslToHex(h, Math.max(s, 0.35), Math.min(l, 0.45));
+}
+
 /* ── Job name highlighting (dim common prefix/suffix, bold unique part) ── */
 
 function computeNameHighlight(names) {

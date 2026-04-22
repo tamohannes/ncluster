@@ -120,8 +120,16 @@ function _renderRunBody(run, cluster) {
     </div>` : ''}
   </div>`;
 
+  const _cancelableRunIds = jobs
+    .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
+    .map(j => String(j.job_id || j.jobid));
+  const _cancelRunBtn = _cancelableRunIds.length > 0
+    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${JSON.stringify(_cancelableRunIds)},'${_escHtml(run.name || '')}')">cancel run</button>`
+    : '';
+
   html += `<div class="run-resource-bar">
     <span class="job-count-text">${_jobStates}</span>
+    ${_cancelRunBtn}
   </div>`;
 
   const paramsHtml = _renderRunParams(run.params, run.root_job_id);
@@ -611,6 +619,13 @@ async function retryMetadata(cluster, rootJobId) {
     }
   } catch (e) {
     if (container) container.innerHTML = 'Retry failed: ' + e.message;
+  }
+}
+
+async function _cancelRun(cluster, jobIds, runName) {
+  if (typeof _doCancelGroup === 'function') {
+    await _doCancelGroup(cluster, jobIds, runName);
+    refreshCluster(cluster, true);
   }
 }
 
