@@ -723,6 +723,97 @@ function openSettingsModal() {
   renderMountPanel(allData);
   updateThemeUI(getThemePreference());
   renderShortcutsEditor();
+  _setupSettingsAutoSave();
+}
+
+// ── Autosave ──────────────────────────────────────────────────────────────────
+// Settings are persisted on input blur (text/number) and value change
+// (checkbox/select). One delegated listener pair is installed on the modal;
+// it dispatches to the right save function based on the input's section and
+// id. Per-section debouncing coalesces rapid edits into a single POST.
+
+const _autoSaveTimers = {};
+const _LOCAL_SETTINGS_IDS = new Set([
+  'set-autorefresh', 'set-refresh-interval',
+  'set-hist-pagesize', 'set-jsonl-limit', 'set-jsonl-mode',
+]);
+
+function _autoSaveDebounce(key, fn, ms = 500) {
+  clearTimeout(_autoSaveTimers[key]);
+  _autoSaveTimers[key] = setTimeout(fn, ms);
+}
+
+function _getInputValue(el) {
+  if (!el) return '';
+  if (el.type === 'checkbox') return el.checked ? '1' : '0';
+  return el.value || '';
+}
+
+function _setupSettingsAutoSave() {
+  const root = document.getElementById('settings-overlay');
+  if (!root || root.dataset.autosaveBound === '1') return;
+  root.dataset.autosaveBound = '1';
+
+  let _focusValue = null;
+  root.addEventListener('focusin', (ev) => {
+    const t = ev.target;
+    if (t.matches && t.matches('input, select, textarea')) {
+      _focusValue = _getInputValue(t);
+    }
+  }, true);
+  root.addEventListener('focusout', (ev) => {
+    const t = ev.target;
+    if (!(t.matches && t.matches('input, select, textarea'))) return;
+    if (t.type === 'checkbox' || t.tagName === 'SELECT') return;
+    const after = _getInputValue(t);
+    if (after === _focusValue) return;
+    _focusValue = null;
+    _routeAutoSave(t);
+  }, true);
+  root.addEventListener('change', (ev) => {
+    const t = ev.target;
+    if (t.matches && t.matches('input[type="checkbox"], select')) {
+      _routeAutoSave(t);
+    }
+  }, true);
+}
+
+function _routeAutoSave(input) {
+  if (input.id && _LOCAL_SETTINGS_IDS.has(input.id)) {
+    _autoSaveDebounce('local', () => { saveLocalSettings(); toast('Saved'); }, 200);
+    return;
+  }
+  const section = input.closest('.settings-section');
+  if (!section) return;
+  switch (section.id) {
+    case 'sec-profile':
+      _autoSaveDebounce('profile', saveProfile);
+      break;
+    case 'sec-clusters':
+      if (input.closest('#gpu-alloc-editor')) {
+        _autoSaveDebounce('alloc', saveGpuAllocations);
+      } else if (input.closest('#cluster-editor')) {
+        _autoSaveDebounce('clusters', saveClusters);
+      }
+      break;
+    case 'sec-projects': {
+      const card = input.closest('.cluster-edit-card');
+      if (!card) return;
+      const key = 'proj-' + (card.dataset.originalName || card.dataset.cardId || (card.dataset.cardId = String(Date.now() + Math.random())));
+      _autoSaveDebounce(key, () => _saveProjectCard(card));
+      break;
+    }
+    case 'sec-advanced':
+      if (['set-ssh-timeout', 'set-cache-fresh', 'set-stats-interval',
+           'set-backup-interval', 'set-backup-max'].includes(input.id)) {
+        _autoSaveDebounce('advanced', saveAdvancedSettings);
+      } else if (input.id === 'set-bg-suffixes') {
+        _autoSaveDebounce('bg-suffixes', saveBgSuffixes);
+      } else if (['set-proc-include', 'set-proc-exclude'].includes(input.id)) {
+        _autoSaveDebounce('proc-filters', saveProcessFilters);
+      }
+      break;
+  }
 }
 
 function closeSettingsModal() {
@@ -778,7 +869,7 @@ function renderPppEditor(ppps) {
     <div class="cluster-edit-card">
       <div class="ce-head">
         <span class="ce-name">${name}</span>
-        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove(); saveProfile();" title="remove">✕</button>
       </div>
       <div class="ce-fields">
         <div class="ce-field"><span>PPP name</span><input data-f="ppp-name" value="${name}"></div>
@@ -862,7 +953,7 @@ function addPppRow() {
   div.innerHTML = `
     <div class="ce-head">
       <span class="ce-name">new PPP</span>
-      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove(); saveProfile();" title="remove">✕</button>
     </div>
     <div class="ce-fields">
       <div class="ce-field"><span>PPP name</span><input data-f="ppp-name" value="" placeholder="team_project_..."></div>
@@ -870,11 +961,11 @@ function addPppRow() {
     </div>
   `;
   el.appendChild(div);
+  setTimeout(() => div.querySelector('[data-f="ppp-name"]').focus(), 30);
 }
 
 async function saveProfile() {
   const team = document.getElementById('set-team').value.trim();
-  const team_gpu_allocations = _readGpuAllocations();
   const cards = document.querySelectorAll('#ppp-editor .cluster-edit-card');
   const ppps = {};
   for (const card of cards) {
@@ -886,15 +977,11 @@ async function saveProfile() {
     const res = await fetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team, team_gpu_allocations, ppps }),
+      body: JSON.stringify({ team, ppps }),
     });
     const d = await res.json();
     if (d.status === 'ok') {
       toast('Profile saved');
-      _teamGpuAlloc = team_gpu_allocations;
-      _storageQuota = {};
-      fetchStorageQuotas().then(() => { if (Object.keys(allData).length) _renderAll(); });
-      fetchClusterUtilization().then(() => { if (Object.keys(allData).length) _renderAll(); });
       if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
         refreshPppAllocations(true);
       }
@@ -912,7 +999,7 @@ function renderClusterEditor(clusters) {
     <div class="cluster-edit-card" data-cluster="${name}">
       <div class="ce-head">
         <span class="ce-name">${name}</span>
-        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove(); saveClusters();" title="remove">✕</button>
       </div>
       <div class="ce-fields">
         <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
@@ -932,7 +1019,7 @@ function addClusterRow() {
   div.innerHTML = `
     <div class="ce-head">
       <span class="ce-name">new cluster</span>
-      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove(); saveClusters();" title="remove">✕</button>
     </div>
     <div class="ce-fields">
       <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="cluster-name"></div>
@@ -943,6 +1030,7 @@ function addClusterRow() {
     </div>
   `;
   el.appendChild(div);
+  setTimeout(() => div.querySelector('[data-f="name"]').focus(), 30);
 }
 
 async function saveClusters() {
@@ -1090,68 +1178,81 @@ function addProjectRow() {
   }
 }
 
-async function saveProjects() {
-  const cards = Array.from(document.querySelectorAll('#project-editor .cluster-edit-card'));
-  let okCount = 0;
-  let errCount = 0;
-  for (const card of cards) {
-    const name = (card.querySelector('[data-f="name"]').value || '').trim().toLowerCase();
-    if (!name) continue;
-    const originalName = card.dataset.originalName || '';
-    let original = {};
-    try { original = JSON.parse(card.dataset.original || '{}'); } catch (e) { original = {}; }
+function _readProjectCard(card) {
+  const name = (card.querySelector('[data-f="name"]').value || '').trim().toLowerCase();
+  const hexInput = card.querySelector('[data-f="color-hex"]');
+  const pickerInput = card.querySelector('[data-f="color"]');
+  const color = (hexInput && /^#[0-9a-fA-F]{6}$/.test(hexInput.value.trim()))
+    ? hexInput.value.trim()
+    : (pickerInput ? pickerInput.value.trim() : '#e8f4fd');
+  const emoji = card.querySelector('[data-f="emoji"]').value.trim();
+  const prefixesText = card.querySelector('[data-f="prefixes"]').value.trim();
+  const description = card.querySelector('[data-f="description"]').value.trim();
+  let original = {};
+  try { original = JSON.parse(card.dataset.original || '{}'); } catch (e) { original = {}; }
+  const prefixes = _stringToPrefixes(prefixesText, original.prefixes || []);
+  return { name, color, emoji, prefixesText, prefixes, description, original };
+}
 
-    const hexInput = card.querySelector('[data-f="color-hex"]');
-    const pickerInput = card.querySelector('[data-f="color"]');
-    const color = (hexInput && /^#[0-9a-fA-F]{6}$/.test(hexInput.value.trim()))
-      ? hexInput.value.trim()
-      : (pickerInput ? pickerInput.value.trim() : '#e8f4fd');
-    const emoji = card.querySelector('[data-f="emoji"]').value.trim();
-    const prefixesText = card.querySelector('[data-f="prefixes"]').value.trim();
-    const description = card.querySelector('[data-f="description"]').value.trim();
-    const prefixes = _stringToPrefixes(prefixesText, original.prefixes || []);
+async function _saveProjectCard(card) {
+  const originalName = card.dataset.originalName || '';
+  const { name, color, emoji, prefixesText, prefixes, description, original } = _readProjectCard(card);
+  if (!name) return;
 
-    try {
-      let res;
-      if (!originalName) {
-        res = await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, color, emoji, prefixes, description }),
-        });
-      } else {
-        const patch = {};
-        if (color !== original.color) patch.color = color;
-        if (emoji !== original.emoji) patch.emoji = emoji;
-        if (description !== (original.description || '')) patch.description = description;
-        if (prefixesText !== _prefixesToString(original.prefixes)) patch.prefixes = prefixes;
-        if (Object.keys(patch).length === 0) {
-          okCount += 1;
-          continue;
-        }
-        res = await fetch(`/api/projects/${encodeURIComponent(originalName)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(patch),
-        });
-      }
+  try {
+    let res;
+    if (!originalName) {
+      // Brand-new card: POST only when both name and at least one prefix are filled.
+      if (!prefixesText) return;
+      res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, color, emoji, prefixes, description }),
+      });
       const d = await res.json();
       if (d.status === 'ok') {
-        okCount += 1;
+        toast(`Created ${name}`);
+        await loadProjectEditor();
+        _projectColors = null;
+        if (typeof loadProjectButtons === 'function') loadProjectButtons();
+        if (typeof fetchAll === 'function') fetchAll();
       } else {
-        errCount += 1;
+        toast(`${name}: ${d.error || 'create failed'}`, 'error');
+      }
+    } else {
+      if (name !== originalName) {
+        toast(`Renaming projects isn't supported — delete and re-create`, 'error');
+        card.querySelector('[data-f="name"]').value = originalName;
+        return;
+      }
+      const patch = {};
+      if (color !== original.color) patch.color = color;
+      if (emoji !== original.emoji) patch.emoji = emoji;
+      if (description !== (original.description || '')) patch.description = description;
+      if (prefixesText !== _prefixesToString(original.prefixes)) patch.prefixes = prefixes;
+      if (Object.keys(patch).length === 0) return;
+      res = await fetch(`/api/projects/${encodeURIComponent(originalName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      const d = await res.json();
+      if (d.status === 'ok') {
+        toast(`Saved ${name}`);
+        card.dataset.original = JSON.stringify({
+          color: d.project.color, emoji: d.project.emoji,
+          prefixes: d.project.prefixes, description: d.project.description,
+        });
+        _projectColors = null;
+        if (typeof loadProjectButtons === 'function') loadProjectButtons();
+        if (typeof fetchAll === 'function') fetchAll();
+      } else {
         toast(`${name}: ${d.error || 'save failed'}`, 'error');
       }
-    } catch (e) {
-      errCount += 1;
-      toast(`${name}: save failed`, 'error');
     }
+  } catch (e) {
+    toast(`${name}: save failed`, 'error');
   }
-  if (errCount === 0 && okCount > 0) toast(`Saved ${okCount} project${okCount === 1 ? '' : 's'}`);
-  await loadProjectEditor();
-  _projectColors = null;
-  if (typeof loadProjectButtons === 'function') loadProjectButtons();
-  if (typeof fetchAll === 'function') fetchAll();
 }
 
 async function saveAdvancedSettings() {

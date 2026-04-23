@@ -425,8 +425,6 @@
             </div>
           </details>
 
-          <div class="set-actions"><button class="btn" onclick="saveProfile()">save profile</button></div>
-
           <details class="set-group">
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Theme</span></summary>
             <div class="set-group-body">
@@ -441,8 +439,8 @@
           <details class="set-group">
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Auto-refresh</span></summary>
             <div class="set-group-body">
-              <label class="set-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()"></label>
-              <label class="set-row"><span>Interval (seconds)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30" onchange="saveLocalSettings()"></label>
+              <label class="set-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh"></label>
+              <label class="set-row"><span>Interval (seconds)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30"></label>
             </div>
           </details>
         </div>
@@ -459,14 +457,13 @@
             <div class="set-group-body">
               <div class="set-help">Your team's weekly GPU allocation per cluster. Update when your manager sends new numbers.</div>
               <div id="gpu-alloc-editor"></div>
-              <div class="set-actions"><button class="btn" onclick="saveGpuAllocations()">save allocations</button></div>
             </div>
           </details>
 
           <details class="set-group" open>
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Mounts</span></summary>
             <div class="set-group-body">
-              <div class="set-actions" style="justify-content:flex-start">
+              <div class="set-actions" style="justify-content:flex-start;margin-top:0;margin-bottom:10px">
                 <button class="btn" onclick="mountAll()">mount all</button>
                 <button class="btn" onclick="unmountAll()">unmount all</button>
               </div>
@@ -478,9 +475,8 @@
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Cluster configuration</span></summary>
             <div class="set-group-body">
               <div id="cluster-editor"></div>
-              <div class="set-actions">
-                <button class="btn" onclick="addClusterRow()">+ add cluster</button>
-                <button class="btn" onclick="saveClusters()">save clusters</button>
+              <div class="set-actions" style="justify-content:flex-start">
+                <button class="btn-ghost" onclick="addClusterRow()">+ add cluster</button>
               </div>
             </div>
           </details>
@@ -489,9 +485,8 @@
         <!-- Projects -->
         <div class="settings-section" id="sec-projects">
           <div id="project-editor"></div>
-          <div class="set-actions">
-            <button class="btn" onclick="addProjectRow()">+ add project</button>
-            <button class="btn" onclick="saveProjects()">save projects</button>
+          <div class="set-actions" style="justify-content:flex-start">
+            <button class="btn-ghost" onclick="addProjectRow()">+ add project</button>
           </div>
         </div>
 
@@ -503,7 +498,6 @@
               <label class="set-row"><span>SSH timeout (sec)</span><input type="number" id="set-ssh-timeout" min="2" max="60" value="8"></label>
               <label class="set-row"><span>Cache freshness (sec)</span><input type="number" id="set-cache-fresh" min="5" max="600" value="30"></label>
               <label class="set-row"><span>GPU stats interval (sec)</span><input type="number" id="set-stats-interval" min="60" max="7200" value="1800"></label>
-              <div class="set-actions"><button class="btn" onclick="saveAdvancedSettings()">save connection</button></div>
             </div>
           </details>
 
@@ -512,17 +506,16 @@
             <div class="set-group-body">
               <label class="set-row"><span>Backup interval (hours)</span><input type="number" id="set-backup-interval" min="1" max="168" value="24"></label>
               <label class="set-row"><span>Keep last N backups</span><input type="number" id="set-backup-max" min="1" max="90" value="7"></label>
-              <div class="set-actions"><button class="btn" onclick="saveAdvancedSettings()">save backups</button></div>
             </div>
           </details>
 
           <details class="set-group">
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Display</span></summary>
             <div class="set-group-body">
-              <label class="set-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" onchange="saveLocalSettings()"></label>
-              <label class="set-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" onchange="saveLocalSettings()"></label>
+              <label class="set-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50"></label>
+              <label class="set-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50"></label>
               <label class="set-row"><span>JSONL load mode</span>
-                <select id="set-jsonl-mode" onchange="saveLocalSettings()">
+                <select id="set-jsonl-mode">
                   <option value="first">first N</option><option value="last">last N</option><option value="all">all records</option>
                 </select>
               </label>
@@ -531,7 +524,6 @@
                 <input type="text" id="set-bg-suffixes" placeholder="_server, _proxy, ...">
                 <div class="set-help">Comma-separated. Runs ending with these suffixes appear translucent on the dashboard.</div>
               </div>
-              <div class="set-actions"><button class="btn" onclick="saveBgSuffixes()">save display</button></div>
             </div>
           </details>
 
@@ -548,7 +540,6 @@
                 <input type="text" id="set-proc-exclude" placeholder="cursor, jupyter, ...">
                 <div class="set-help">Comma-separated patterns to exclude.</div>
               </div>
-              <div class="set-actions"><button class="btn" onclick="saveProcessFilters()">save filters</button></div>
             </div>
           </details>
         </div>
