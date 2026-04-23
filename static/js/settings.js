@@ -756,9 +756,19 @@ async function loadSettingsPanel() {
     renderPppEditor(cfg.ppps || {});
 
     renderClusterEditor(cfg.clusters || {});
-    renderProjectEditor(cfg.projects || {});
+    await loadProjectEditor();
   } catch (e) {
     toast('Failed to load settings', 'error');
+  }
+}
+
+async function loadProjectEditor() {
+  try {
+    const res = await fetch('/api/projects/all');
+    const projects = await res.json();
+    renderProjectEditor(Array.isArray(projects) ? projects : []);
+  } catch (e) {
+    toast('Failed to load projects', 'error');
   }
 }
 
@@ -969,84 +979,168 @@ async function saveClusters() {
   }
 }
 
+function _prefixesToString(prefixes) {
+  if (!Array.isArray(prefixes)) return '';
+  return prefixes.map(p => (p && p.prefix) || '').filter(Boolean).join(', ');
+}
+
+function _stringToPrefixes(text, originalPrefixes) {
+  const wanted = (text || '').split(',').map(s => s.trim()).filter(Boolean);
+  const origByPrefix = {};
+  for (const p of (originalPrefixes || [])) {
+    if (p && p.prefix) origByPrefix[p.prefix] = p;
+  }
+  return wanted.map(prefix => {
+    const orig = origByPrefix[prefix];
+    if (orig && orig.default_campaign) {
+      return { prefix, default_campaign: orig.default_campaign };
+    }
+    return { prefix };
+  });
+}
+
 function renderProjectEditor(projects) {
   const el = document.getElementById('project-editor');
-  el.innerHTML = Object.entries(projects).map(([name, p]) => `
-    <div class="cluster-edit-card" data-project="${name}">
+  el.innerHTML = projects.map(p => {
+    const name = p.name || '';
+    const color = p.color || '#e8f4fd';
+    const emoji = p.emoji || '📁';
+    const prefixesText = _prefixesToString(p.prefixes);
+    const description = p.description || '';
+    const originalJson = JSON.stringify({
+      color, emoji, prefixes: p.prefixes || [], description,
+    }).replace(/"/g, '&quot;');
+    return `
+    <div class="cluster-edit-card" data-project="${name}" data-original-name="${name}" data-original="${originalJson}">
       <div class="ce-head">
         <span class="ce-name" style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:16px">${p.emoji || '📁'}</span>
-          <span class="project-color-dot" style="background:${p.color || '#ddd'}"></span>${name}
+          <span style="font-size:16px">${emoji}</span>
+          <span class="project-color-dot" style="background:${color}"></span>${name}
         </span>
-        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+        <button class="ce-remove" data-action="delete-project" title="delete">✕</button>
       </div>
       <div class="ce-fields">
         <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
-        <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="${p.prefix || ''}" placeholder="name_"></div>
-        <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="${p.emoji || ''}" placeholder="🔬" style="width:40px;text-align:center"></div>
-        <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="${p.color || '#e8f4fd'}" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="${p.color || '#e8f4fd'}" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
+        <div class="ce-field"><span>Prefixes</span><input data-f="prefixes" value="${prefixesText}" placeholder="name_, alias_"></div>
+        <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="${emoji}" placeholder="🔬" style="width:40px;text-align:center"></div>
+        <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="${color}" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="${color}" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
+        <div class="ce-field"><span>Description</span><input data-f="description" value="${description.replace(/"/g, '&quot;')}" placeholder="optional"></div>
       </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
+
+  el.querySelectorAll('[data-action="delete-project"]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      const card = ev.target.closest('.cluster-edit-card');
+      const origName = card.dataset.originalName || '';
+      if (origName) {
+        if (!confirm(`Delete project "${origName}"? Job history is preserved but the project will disappear from the sidebar.`)) return;
+        try {
+          const res = await fetch(`/api/projects/${encodeURIComponent(origName)}`, { method: 'DELETE' });
+          const d = await res.json();
+          if (d.status !== 'ok') {
+            toast(d.error || 'Delete failed', 'error');
+            return;
+          }
+          toast(`Deleted ${origName}`);
+        } catch (e) {
+          toast('Delete failed', 'error');
+          return;
+        }
+      }
+      card.remove();
+      _projectColors = null;
+      if (typeof loadProjectButtons === 'function') loadProjectButtons();
+    });
+  });
 }
 
 function addProjectRow() {
   const el = document.getElementById('project-editor');
   const div = document.createElement('div');
   div.className = 'cluster-edit-card';
+  div.dataset.originalName = '';
+  div.dataset.original = '';
   div.innerHTML = `
     <div class="ce-head">
       <span class="ce-name">new project</span>
-      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      <button class="ce-remove" data-action="delete-project" title="remove">✕</button>
     </div>
     <div class="ce-fields">
       <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="my-project"></div>
-      <div class="ce-field"><span>Prefix</span><input data-f="prefix" value="" placeholder="my-project_"></div>
+      <div class="ce-field"><span>Prefixes</span><input data-f="prefixes" value="" placeholder="my-project_"></div>
       <div class="ce-field"><span>Emoji</span><input data-f="emoji" value="" placeholder="🔬" style="width:40px;text-align:center"></div>
       <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="#e8f4fd" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="#e8f4fd" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
+      <div class="ce-field"><span>Description</span><input data-f="description" value="" placeholder="optional"></div>
     </div>
   `;
+  div.querySelector('[data-action="delete-project"]').addEventListener('click', () => div.remove());
   el.appendChild(div);
 }
 
 async function saveProjects() {
-  const cards = document.querySelectorAll('#project-editor .cluster-edit-card');
-  const projects = {};
+  const cards = Array.from(document.querySelectorAll('#project-editor .cluster-edit-card'));
+  let okCount = 0;
+  let errCount = 0;
   for (const card of cards) {
-    const name = (card.querySelector('[data-f="name"]').value || '').trim();
+    const name = (card.querySelector('[data-f="name"]').value || '').trim().toLowerCase();
     if (!name) continue;
+    const originalName = card.dataset.originalName || '';
+    let original = {};
+    try { original = JSON.parse(card.dataset.original || '{}'); } catch (e) { original = {}; }
+
     const hexInput = card.querySelector('[data-f="color-hex"]');
     const pickerInput = card.querySelector('[data-f="color"]');
     const color = (hexInput && /^#[0-9a-fA-F]{6}$/.test(hexInput.value.trim()))
       ? hexInput.value.trim()
       : (pickerInput ? pickerInput.value.trim() : '#e8f4fd');
-    projects[name] = {
-      prefix: card.querySelector('[data-f="prefix"]').value.trim(),
-      emoji: card.querySelector('[data-f="emoji"]').value.trim(),
-      color,
-    };
-  }
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projects }),
-    });
-    const d = await res.json();
-    if (d.status === 'ok') {
-      toast('Projects saved');
-      if (d.settings && d.settings.projects) {
-        renderProjectEditor(d.settings.projects);
+    const emoji = card.querySelector('[data-f="emoji"]').value.trim();
+    const prefixesText = card.querySelector('[data-f="prefixes"]').value.trim();
+    const description = card.querySelector('[data-f="description"]').value.trim();
+    const prefixes = _stringToPrefixes(prefixesText, original.prefixes || []);
+
+    try {
+      let res;
+      if (!originalName) {
+        res = await fetch('/api/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, color, emoji, prefixes, description }),
+        });
+      } else {
+        const patch = {};
+        if (color !== original.color) patch.color = color;
+        if (emoji !== original.emoji) patch.emoji = emoji;
+        if (description !== (original.description || '')) patch.description = description;
+        if (prefixesText !== _prefixesToString(original.prefixes)) patch.prefixes = prefixes;
+        if (Object.keys(patch).length === 0) {
+          okCount += 1;
+          continue;
+        }
+        res = await fetch(`/api/projects/${encodeURIComponent(originalName)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
       }
-      _projectColors = null;
-      loadProjectButtons();
-      fetchAll();
-    } else {
-      toast(d.error || 'Save failed', 'error');
+      const d = await res.json();
+      if (d.status === 'ok') {
+        okCount += 1;
+      } else {
+        errCount += 1;
+        toast(`${name}: ${d.error || 'save failed'}`, 'error');
+      }
+    } catch (e) {
+      errCount += 1;
+      toast(`${name}: save failed`, 'error');
     }
-  } catch (e) {
-    toast('Save failed', 'error');
   }
+  if (errCount === 0 && okCount > 0) toast(`Saved ${okCount} project${okCount === 1 ? '' : 's'}`);
+  await loadProjectEditor();
+  _projectColors = null;
+  if (typeof loadProjectButtons === 'function') loadProjectButtons();
+  if (typeof fetchAll === 'function') fetchAll();
 }
 
 async function saveAdvancedSettings() {
