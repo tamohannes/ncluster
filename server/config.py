@@ -208,18 +208,48 @@ _PROJECT_EMOJIS = [
 ]
 
 
+def _project_prefix_entries(cfg):
+    """Return a list of (prefix, default_campaign) pairs for a project config.
+
+    Supports both the legacy singular form (``{"prefix": "...", ...}``) and
+    the multi-prefix form (``{"prefixes": [{"prefix": "...", "default_campaign":
+    "..."}], ...}``).  Entries with empty prefixes are dropped.
+    """
+    if not cfg:
+        return []
+    out = []
+    for entry in cfg.get("prefixes") or []:
+        if not isinstance(entry, dict):
+            continue
+        prefix = entry.get("prefix", "") or ""
+        if prefix:
+            out.append((prefix, entry.get("default_campaign")))
+    legacy_prefix = cfg.get("prefix", "") or ""
+    if legacy_prefix:
+        out.append((legacy_prefix, cfg.get("default_campaign")))
+    return out
+
+
 def extract_project(job_name):
     """Return project key from job name.
 
-    1. Check configured prefixes first.
-    2. Auto-detect: if the job name starts with `word_` (letters/digits/hyphens
+    1. Check configured prefixes first.  When multiple prefixes match (e.g.
+       ``hle_`` and ``hle_chem``), the *longest* prefix wins so more specific
+       projects take precedence over their parent.  A project may declare
+       multiple prefixes via the ``prefixes`` list; each one participates in
+       the longest-match.
+    2. Auto-detect: if the job name starts with ``word_`` (letters/digits/hyphens
        followed by underscore), treat that as a new project and register it.
     """
     if not job_name:
         return ""
+    candidates = []  # (prefix_len, project_name, prefix)
     for name, cfg in PROJECTS.items():
-        prefix = cfg.get("prefix", "")
-        if prefix and job_name.startswith(prefix):
+        for prefix, _default in _project_prefix_entries(cfg):
+            candidates.append((len(prefix), name, prefix))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    for _, name, prefix in candidates:
+        if job_name.startswith(prefix):
             return name
     # Auto-detect: "myproject_eval-math" → project "myproject", prefix "myproject_"
     import re
@@ -238,28 +268,51 @@ def extract_project(job_name):
 def extract_campaign(job_name, project=""):
     """Return the campaign key from a job name.
 
-    The campaign is the first underscore-delimited segment of the run name
-    (the part after the project prefix).  E.g. ``hle_mpsf_hle-nem120b``
-    → campaign ``mpsf``, ``hle_text_kimi-k25`` → campaign ``text``.
+    The campaign is the first segment of the run name (the part after the
+    matching project prefix), split on the project's ``campaign_delimiter``
+    (default ``_``).  E.g. ``hle_mpsf_hle-nem120b`` → campaign ``mpsf``,
+    ``n3ue_rprof_nano-stem-cot-r1`` → campaign ``rprof``.
+
+    A project entry may also set ``default_campaign`` to force a fixed
+    campaign for every job that matches that prefix.  This is useful when an
+    existing naming pattern (e.g. ``hle_chem-omesilver-...``) should be
+    re-grouped under a single campaign in the new project regardless of the
+    rest of the job name.  In the multi-prefix form, each ``prefixes`` entry
+    may carry its own ``default_campaign`` so legacy prefixes can keep a
+    forced label while modern prefixes derive the campaign normally.
 
     Naming convention: ``<project>_<campaign>_<rest-of-run-name>``
-    Both project and campaign are separated by underscores.
     """
     if not job_name:
         return ""
-    prefix = ""
-    if project and project in PROJECTS:
-        prefix = PROJECTS[project].get("prefix", "")
-    if not prefix:
+    project_cfg = PROJECTS.get(project) if project else None
+    delimiter = "_"
+    matched_prefix = ""
+    matched_default = None
+    if project_cfg:
+        delimiter = project_cfg.get("campaign_delimiter") or "_"
+        # Pick the longest declared prefix that the job actually starts with.
+        for prefix, default_campaign in sorted(
+            _project_prefix_entries(project_cfg),
+            key=lambda x: len(x[0]),
+            reverse=True,
+        ):
+            if job_name.startswith(prefix):
+                matched_prefix = prefix
+                matched_default = default_campaign
+                break
+    if matched_default:
+        return matched_default
+    if not matched_prefix:
         import re
         m = re.match(r'^[a-zA-Z][a-zA-Z0-9-]*_', job_name)
         if m:
-            prefix = m.group(0)
-    if prefix and job_name.startswith(prefix):
-        remainder = job_name[len(prefix):]
+            matched_prefix = m.group(0)
+    if matched_prefix and job_name.startswith(matched_prefix):
+        remainder = job_name[len(matched_prefix):]
     else:
         remainder = job_name
-    seg = remainder.split("_")[0].lower()
+    seg = remainder.split(delimiter)[0].lower()
     return seg if seg else ""
 
 

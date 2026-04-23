@@ -7,7 +7,7 @@ import pytest
 
 from server.config import (
     _cache_get, _cache_set, _warm_lock, _load_mount_map, settings_response,
-    extract_project, get_project_color, PROJECTS,
+    extract_project, extract_campaign, get_project_color, PROJECTS,
 )
 
 
@@ -123,6 +123,50 @@ class TestExtractProject:
         monkeypatch.setattr("server.config._persist_projects", lambda: None)
         extract_project("colortest_job")
         assert PROJECTS.get("colortest", {}).get("color", "").startswith("#")
+
+    @pytest.mark.unit
+    def test_longest_prefix_wins(self, monkeypatch):
+        """When two prefixes both match, the longer one takes precedence."""
+        monkeypatch.setitem(PROJECTS, "parent", {"prefix": "shared_"})
+        monkeypatch.setitem(PROJECTS, "child", {"prefix": "shared_sub_"})
+        assert extract_project("shared_sub_run-1") == "child"
+        assert extract_project("shared_other-run") == "parent"
+
+
+class TestExtractCampaign:
+    @pytest.mark.unit
+    def test_default_underscore_split(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "alpha", {"prefix": "alpha_"})
+        assert extract_campaign("alpha_eval_math-r1", "alpha") == "eval"
+
+    @pytest.mark.unit
+    def test_default_campaign_overrides_derivation(self, monkeypatch):
+        monkeypatch.setitem(
+            PROJECTS,
+            "fixed",
+            {"prefix": "shared_sub_", "default_campaign": "myforced"},
+        )
+        # Even if the remainder would derive a different campaign, the
+        # forced value wins.
+        assert (
+            extract_campaign("shared_sub_omesilver-no-tool-r86-results", "fixed")
+            == "myforced"
+        )
+
+    @pytest.mark.unit
+    def test_custom_campaign_delimiter(self, monkeypatch):
+        monkeypatch.setitem(
+            PROJECTS,
+            "delim",
+            {"prefix": "delim_", "campaign_delimiter": "-"},
+        )
+        assert (
+            extract_campaign("delim_omesilver-no-tool-r1", "delim") == "omesilver"
+        )
+
+    @pytest.mark.unit
+    def test_empty_returns_empty(self):
+        assert extract_campaign("", "anything") == ""
 
 
 class TestGetProjectColor:
