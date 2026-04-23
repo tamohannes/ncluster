@@ -491,8 +491,16 @@ def cache_gc_loop():
 
 
 def reload_config(new_cfg):
-    """Hot-reload mutable globals from a new config dict. Writes to disk first."""
-    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME, TEAM_GPU_ALLOC, PPPS
+    """Hot-reload mutable globals from a new config dict. Writes to disk first.
+
+    Container-typed globals (``TEAM_GPU_ALLOC``, ``PPPS``, ``CLUSTERS``, ...)
+    are mutated *in place* so consumers that imported the symbol by name
+    (e.g. ``from .config import TEAM_GPU_ALLOC`` in ``wds.py`` /
+    ``aihub.py``) keep seeing fresh values without a restart. Rebinding
+    these names would leave callers with a stale reference to the old
+    object.
+    """
+    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, STATS_INTERVAL_SEC, TEAM_NAME
     global BACKUP_INTERVAL_HOURS, BACKUP_MAX_KEEP
     global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
     global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
@@ -515,8 +523,10 @@ def reload_config(new_cfg):
     BACKUP_INTERVAL_HOURS = new_cfg.get("backup_interval_hours", 24)
     BACKUP_MAX_KEEP = new_cfg.get("backup_max_keep", 7)
     TEAM_NAME = new_cfg.get("team", "")
-    TEAM_GPU_ALLOC = new_cfg.get("team_gpu_allocations", {})
-    PPPS = new_cfg.get("ppps", {})
+    TEAM_GPU_ALLOC.clear()
+    TEAM_GPU_ALLOC.update(new_cfg.get("team_gpu_allocations", {}))
+    PPPS.clear()
+    PPPS.update(new_cfg.get("ppps", {}))
     PPP_ACCOUNTS = new_cfg.get("ppp_accounts", [])
     TEAM_MEMBERS = new_cfg.get("team_members", [])
     AIHUB_OPENSEARCH_URL = new_cfg.get("aihub_opensearch_url", "")

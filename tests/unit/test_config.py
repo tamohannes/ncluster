@@ -171,6 +171,54 @@ class TestExtractCampaign:
         assert extract_campaign("", "anything") == ""
 
 
+class TestReloadConfigKeepsSharedDictsLive:
+    """Modules that import ``TEAM_GPU_ALLOC`` / ``PPPS`` by name (e.g.
+    ``server.wds`` and ``server.aihub``) must keep seeing fresh values
+    after a settings change. The fix is to mutate these dicts in place
+    rather than rebinding the module-level names — otherwise old
+    references stay frozen at the values captured at import time."""
+
+    @pytest.mark.unit
+    def test_team_gpu_alloc_mutated_in_place(self):
+        from server import config
+        from server.config import reload_config, TEAM_GPU_ALLOC
+
+        captured_ref = TEAM_GPU_ALLOC
+        original = dict(captured_ref)
+
+        try:
+            reload_config({
+                **config._CONFIG,
+                "team_gpu_allocations": {"dfw": 999, "eos": "any"},
+            })
+            assert captured_ref is config.TEAM_GPU_ALLOC, (
+                "reload_config rebinding TEAM_GPU_ALLOC would break "
+                "wds.py / aihub.py which imported the symbol by name."
+            )
+            assert captured_ref["dfw"] == 999
+            assert captured_ref["eos"] == "any"
+        finally:
+            reload_config({**config._CONFIG, "team_gpu_allocations": original})
+
+    @pytest.mark.unit
+    def test_ppps_mutated_in_place(self):
+        from server import config
+        from server.config import reload_config, PPPS
+
+        captured_ref = PPPS
+        original = dict(captured_ref)
+
+        try:
+            reload_config({
+                **config._CONFIG,
+                "ppps": {"new_ppp": "12345"},
+            })
+            assert captured_ref is config.PPPS
+            assert captured_ref["new_ppp"] == "12345"
+        finally:
+            reload_config({**config._CONFIG, "ppps": original})
+
+
 class TestGetProjectColor:
     @pytest.mark.unit
     def test_returns_color_for_configured_project(self, monkeypatch):
