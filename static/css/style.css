@@ -2711,7 +2711,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .settings-modal {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-  width: min(960px, 92vw); height: min(720px, 88vh);
+  width: min(1180px, 95vw); height: min(880px, 92vh);
   display: flex; flex-direction: column; overflow: hidden;
 }
 .settings-modal-head {
