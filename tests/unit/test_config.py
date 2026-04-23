@@ -171,6 +171,81 @@ class TestExtractCampaign:
         assert extract_campaign("", "anything") == ""
 
 
+class TestMultiPrefixProject:
+    """Projects that declare multiple prefixes via the `prefixes` list."""
+
+    @pytest.mark.unit
+    def test_either_prefix_resolves_to_project(self, monkeypatch):
+        monkeypatch.setitem(
+            PROJECTS,
+            "n3ue",
+            {
+                "prefixes": [
+                    {"prefix": "hle_chem", "default_campaign": "chem"},
+                    {"prefix": "n3ue_"},
+                ],
+            },
+        )
+        assert extract_project("hle_chem-omesilver-no-tool-r86") == "n3ue"
+        assert extract_project("hle_chem_chem700k-python-r1") == "n3ue"
+        assert extract_project("n3ue_rprof_nano-stem-cot-r1") == "n3ue"
+
+    @pytest.mark.unit
+    def test_per_prefix_default_campaign(self, monkeypatch):
+        monkeypatch.setitem(
+            PROJECTS,
+            "n3ue",
+            {
+                "prefixes": [
+                    {"prefix": "hle_chem", "default_campaign": "chem"},
+                    {"prefix": "n3ue_"},
+                ],
+            },
+        )
+        # Legacy hle_chem* prefix forces the campaign label to "chem".
+        assert (
+            extract_campaign("hle_chem-chem700k-no-tool-r19", "n3ue") == "chem"
+        )
+        assert (
+            extract_campaign("hle_chem_omesilver-no-tool-r86-results", "n3ue")
+            == "chem"
+        )
+        # Modern n3ue_ prefix has no default — campaign derives from the
+        # second underscore-delimited segment.
+        assert (
+            extract_campaign("n3ue_rprof_nano-stem-cot-r1", "n3ue") == "rprof"
+        )
+        assert (
+            extract_campaign("n3ue_chem_chem700k-r1", "n3ue") == "chem"
+        )
+
+    @pytest.mark.unit
+    def test_longest_prefix_wins_across_projects(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "hle", {"prefix": "hle_"})
+        monkeypatch.setitem(
+            PROJECTS,
+            "n3ue",
+            {
+                "prefixes": [
+                    {"prefix": "hle_chem", "default_campaign": "chem"},
+                    {"prefix": "n3ue_"},
+                ],
+            },
+        )
+        # "hle_chem" (8) beats "hle_" (4); other hle_* names still go to hle.
+        assert extract_project("hle_chem-foo") == "n3ue"
+        assert extract_project("hle_chem_bar") == "n3ue"
+        assert extract_project("hle_eval_physics-r1") == "hle"
+        assert extract_project("hle_mpsf_run-1") == "hle"
+
+    @pytest.mark.unit
+    def test_legacy_singular_prefix_still_works(self, monkeypatch):
+        """Pre-existing projects using `prefix` (no `prefixes`) keep working."""
+        monkeypatch.setitem(PROJECTS, "old", {"prefix": "old_"})
+        assert extract_project("old_eval_x") == "old"
+        assert extract_campaign("old_eval_x", "old") == "eval"
+
+
 class TestReloadConfigKeepsSharedDictsLive:
     """Modules that import ``TEAM_GPU_ALLOC`` / ``PPPS`` by name (e.g.
     ``server.wds`` and ``server.aihub``) must keep seeing fresh values
