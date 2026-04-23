@@ -1688,8 +1688,21 @@ function _renderPppAllocations(data) {
       if (cn !== 'local' && !clusters[cn]) partOnlySet.add(cn);
     }
   }
+  // Configured-but-no-data clusters: show a stub card so freshly-onboarded
+  // clusters (no AI Hub records yet, SSH key not authorized) still appear on
+  // the Compute page instead of silently dropping out of the dashboard.
+  const configOnlySet = new Set();
+  if (typeof CLUSTERS !== 'undefined') {
+    for (const cn of Object.keys(CLUSTERS)) {
+      if (cn !== 'local' && !clusters[cn] && !partOnlySet.has(cn)) {
+        configOnlySet.add(cn);
+      }
+    }
+  }
 
-  const allClusterNames = [...new Set([...Object.keys(clusters), ...partOnlySet])];
+  const allClusterNames = [...new Set([
+    ...Object.keys(clusters), ...partOnlySet, ...configOnlySet,
+  ])];
   // Stable sort: GPU memory rank (highest-memory GPU first), then total GPU
   // count descending within the same tier, then cluster name alphabetically.
   // Only static properties are used so cards never reorder on refresh.
@@ -1734,8 +1747,41 @@ function _renderPppAllocations(data) {
     const cd = clusters[cn];
     if (!cd) {
       const ps = _partitionData?.[cn];
+      const partsAvailable = ps ? (ps.partitions || []).filter(p => p.total_nodes > 0) : [];
+      if (!partsAvailable.length && CLUSTERS[cn]) {
+        const cfg = CLUSTERS[cn];
+        const gpuType = cfg.gpu_type || '';
+        const cfgAcct = cfg.account || '';
+        const acctList = cfgAcct.split(',').map(a => a.trim()).filter(Boolean);
+        const teamAlloc = _teamGpuAlloc[cn];
+        const teamNum = teamAlloc === 'any' ? null
+          : (typeof teamAlloc === 'number' && teamAlloc > 0 ? teamAlloc : null);
+        const teamAllocL = teamNum ? `${teamNum} GPUs`
+          : (teamAlloc === 'any' ? 'unlimited' : 'none');
+        const acctRows = acctList.length
+          ? acctList.map(a => `<div class="ppp-acct-row">
+              <span class="ppp-acct-name" title="${a}">${_shortAcct(a)}</span>
+              <div class="ppp-bar-outer"><div class="ppp-bar-wrap"></div></div>
+              <span class="ppp-acct-nums" style="opacity:0.5">— GPUs</span>
+            </div>`).join('')
+          : '';
+        html += `<div class="ppp-card ppp-card-dim ppp-card-partonly">
+          <div class="ppp-card-head">
+            <span class="ppp-card-cluster">${cn}</span>
+            ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
+            <span class="ppp-card-gpu" style="opacity:0.5">no data yet</span>
+            ${pppCardFreshnessHtml(cn)}
+          </div>
+          <div class="ppp-card-live" style="opacity:0.6">awaiting AI Hub data &amp; SSH access</div>
+          ${acctRows}
+          <div class="ppp-card-footer">
+            <span class="ppp-cluster-occ">team alloc: ${teamAllocL}</span>
+          </div>
+        </div>`;
+        continue;
+      }
       if (ps) {
-        const parts = (ps.partitions || []).filter(p => p.total_nodes > 0);
+        const parts = partsAvailable;
         if (parts.length) {
           const gpuType = ps.gpu_type || '';
           const idleNodes = ps.idle_nodes || 0;
