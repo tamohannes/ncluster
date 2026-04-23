@@ -398,6 +398,106 @@ def clear_completed(cluster: str) -> dict:
     return _api("POST", f"/api/clear_completed/{cluster}")
 
 
+# ── project tools ─────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def list_projects() -> list[dict]:
+    """List every registered project with its color, emoji, prefixes, and metadata.
+
+    Each entry contains: name, color, emoji, prefixes (list of {prefix,
+    default_campaign?}), campaign_delimiter, description, created_at, updated_at.
+    """
+    data = _api("GET", "/api/projects/all")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and data.get("status") == "error":
+        return [data]
+    return []
+
+
+@mcp.tool()
+def create_project(
+    name: str,
+    prefixes: Optional[list] = None,
+    color: Optional[str] = None,
+    emoji: Optional[str] = None,
+    default_campaign: Optional[str] = None,
+    campaign_delimiter: str = "_",
+    description: str = "",
+) -> dict:
+    """Create a new project so jobs whose names start with one of its prefixes
+    are auto-assigned to it.
+
+    Args:
+      name: lowercase project key (letters, digits, hyphens). Becomes the
+        sidebar label and the value stored in ``job_history.project``.
+      prefixes: list of prefix specs. Each item is either a string like
+        ``"artsiv_"`` or a dict like ``{"prefix": "hle_chem", "default_campaign": "chem"}``.
+        Pass an empty list / omit to create a "manual" project that doesn't
+        auto-route any jobs.
+      color: hex color (e.g. ``"#9effbb"``). Auto-picked from the palette if omitted.
+      emoji: single emoji char. Auto-picked if omitted.
+      default_campaign: shortcut applied to a single-prefix project.
+      campaign_delimiter: char used to split the run-details remainder when
+        deriving the campaign (default ``"_"``).
+      description: free-form note about the project.
+    """
+    payload = {
+        "name": name,
+        "prefixes": prefixes if prefixes is not None else [],
+        "campaign_delimiter": campaign_delimiter or "_",
+        "description": description or "",
+    }
+    if color:
+        payload["color"] = color
+    if emoji:
+        payload["emoji"] = emoji
+    if default_campaign:
+        payload["default_campaign"] = default_campaign
+    return _api("POST", "/api/projects", json=payload)
+
+
+@mcp.tool()
+def update_project(
+    name: str,
+    color: Optional[str] = None,
+    emoji: Optional[str] = None,
+    prefixes: Optional[list] = None,
+    default_campaign: Optional[str] = None,
+    campaign_delimiter: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Update a registered project's metadata. Pass only the fields you want
+    to change; ``None`` is treated as "leave unchanged".
+
+    Note: replacing ``prefixes`` does not retroactively re-extract the
+    ``project`` field on existing job rows. Run a manual SQL update or call
+    a future re-extract helper if you need that.
+    """
+    payload = {}
+    if color is not None:
+        payload["color"] = color
+    if emoji is not None:
+        payload["emoji"] = emoji
+    if prefixes is not None:
+        payload["prefixes"] = prefixes
+    if default_campaign is not None:
+        payload["default_campaign"] = default_campaign
+    if campaign_delimiter is not None:
+        payload["campaign_delimiter"] = campaign_delimiter
+    if description is not None:
+        payload["description"] = description
+    return _api("PUT", f"/api/projects/{name}", json=payload)
+
+
+@mcp.tool()
+def delete_project(name: str) -> dict:
+    """Delete a registered project. Destructive — does not touch job history,
+    but jobs that referenced this project name will stop appearing in the
+    project sidebar (their stored ``project`` string is left as-is)."""
+    return _api("DELETE", f"/api/projects/{name}")
+
+
 # ── logbook tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
