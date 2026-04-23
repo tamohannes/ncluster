@@ -119,6 +119,118 @@ def _watchdog_notify_loop():
         time.sleep(30)
 
 
+_MIGRATION_PROJECTS_NAMED = {"artsiv", "hle", "n3ue", "profiling"}
+
+
+def _migrate_projects_v1():
+    """One-time migration: seed the SQLite ``projects`` table from
+    ``conf/config.json`` and re-extract the ``project`` field on every
+    historical job/run row using the new prefix table.
+
+    Idempotent: skips entirely once the table contains any row. Runs once
+    inside ``_shared_init()`` after ``init_db()``.
+
+    Behaviour:
+      1. If the ``projects`` table is empty AND ``conf/config.json`` has a
+         ``projects`` key, insert exactly the four named projects (artsiv,
+         hle, n3ue, profiling) by copying their existing color/emoji/prefix
+         metadata. Drop every other entry (those were auto-detected from
+         campaigns and are not real projects).
+      2. Re-extract ``project`` for every row in ``job_history`` and ``runs``
+         using the freshly-loaded prefix table. Rows whose ``job_name`` does
+         not match any registered prefix get ``project = ''``.
+      3. Strip the now-stale ``projects`` key from ``conf/config.json``.
+    """
+    import json
+    log = logging.getLogger("server.migration")
+    from server.db import get_db, db_write, db_create_project
+    from server.config import (
+        CONFIG_PATH,
+        PROJECTS,
+        extract_project,
+        reload_projects_cache,
+    )
+
+    con = get_db()
+    has_projects = con.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    if has_projects:
+        return
+
+    legacy_cfg = None
+    legacy_projects = {}
+    try:
+        if os.path.isfile(CONFIG_PATH):
+            with open(CONFIG_PATH) as fh:
+                legacy_cfg = json.load(fh)
+            legacy_projects = legacy_cfg.get("projects") or {}
+    except Exception as exc:
+        log.warning("project migration: could not read config.json: %s", exc)
+        legacy_cfg = None
+
+    seeded = 0
+    for name in _MIGRATION_PROJECTS_NAMED:
+        cfg = legacy_projects.get(name) or {}
+        prefixes = []
+        for entry in cfg.get("prefixes") or []:
+            if isinstance(entry, dict) and entry.get("prefix"):
+                norm = {"prefix": entry["prefix"]}
+                if entry.get("default_campaign"):
+                    norm["default_campaign"] = entry["default_campaign"]
+                prefixes.append(norm)
+        if not prefixes and cfg.get("prefix"):
+            prefixes.append({"prefix": cfg["prefix"]})
+        if not prefixes:
+            prefixes.append({"prefix": f"{name}_"})
+        result = db_create_project(
+            name=name,
+            color=cfg.get("color") or None,
+            emoji=cfg.get("emoji") or None,
+            prefixes=prefixes,
+            default_campaign=cfg.get("default_campaign") or None,
+            campaign_delimiter=cfg.get("campaign_delimiter") or "_",
+        )
+        if result.get("status") == "ok":
+            seeded += 1
+        else:
+            log.warning("project migration: failed to seed %s: %s", name, result.get("error"))
+    log.info("project migration: seeded %d projects (target=%d)", seeded, len(_MIGRATION_PROJECTS_NAMED))
+
+    reload_projects_cache()
+    if not PROJECTS:
+        log.warning("project migration: PROJECTS cache empty after seeding — skipping re-extract")
+        return
+
+    rows = con.execute("SELECT id, job_name FROM job_history").fetchall()
+    updates = [
+        (extract_project(r["job_name"] or ""), r["id"])
+        for r in rows
+    ]
+    if updates:
+        with db_write() as wcon:
+            wcon.executemany("UPDATE job_history SET project=? WHERE id=?", updates)
+        log.info("project migration: re-extracted project for %d job_history rows", len(updates))
+
+    run_rows = con.execute("SELECT id, run_name FROM runs").fetchall()
+    run_updates = [
+        (extract_project(r["run_name"] or ""), r["id"])
+        for r in run_rows
+    ]
+    if run_updates:
+        with db_write() as wcon:
+            wcon.executemany("UPDATE runs SET project=? WHERE id=?", run_updates)
+        log.info("project migration: re-extracted project for %d runs rows", len(run_updates))
+
+    if isinstance(legacy_cfg, dict) and "projects" in legacy_cfg:
+        try:
+            legacy_cfg.pop("projects", None)
+            with open(CONFIG_PATH, "w") as fh:
+                json.dump(legacy_cfg, fh, indent=2)
+                fh.write("\n")
+            log.info("project migration: stripped 'projects' key from config.json")
+        except Exception as exc:
+            log.warning("project migration: could not rewrite config.json: %s", exc)
+
+
 def _shared_init():
     """Initialisation common to gunicorn and the in-process MCP server.
 
@@ -130,9 +242,11 @@ def _shared_init():
     from server.db import init_db, cleanup_local_on_startup
     from server.logbooks import migrate_legacy_files
     from server.ssh import ssh_pool_gc_loop
-    from server.config import cache_gc_loop
+    from server.config import cache_gc_loop, reload_projects_cache
 
     init_db()
+    _migrate_projects_v1()
+    reload_projects_cache()
     migrate_legacy_files()
     cleanup_local_on_startup()
     threading.Thread(target=ssh_pool_gc_loop, daemon=True).start()

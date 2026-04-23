@@ -504,6 +504,20 @@ def init_db():
     con.execute("CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_runs_uuid ON runs(run_uuid)")
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            name               TEXT PRIMARY KEY,
+            color              TEXT NOT NULL DEFAULT '#9CA3AF',
+            emoji              TEXT NOT NULL DEFAULT '📁',
+            prefixes_json      TEXT NOT NULL DEFAULT '[]',
+            campaign_delimiter TEXT NOT NULL DEFAULT '_',
+            description        TEXT NOT NULL DEFAULT '',
+            created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+    """)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
+
     con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")
 
     con.commit()
@@ -932,6 +946,226 @@ def get_projects():
     """).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+# ─── Project CRUD ────────────────────────────────────────────────────────────
+
+import re as _re_proj
+
+
+def _normalize_prefixes(prefixes):
+    """Normalize a prefixes input into a list of ``{prefix[, default_campaign]}`` dicts.
+
+    Accepts:
+      - ``None`` / ``[]`` -> ``[]`` (project with no prefix routes nothing)
+      - ``"myproj_"`` -> ``[{"prefix": "myproj_"}]``
+      - ``["a_", "b_"]`` -> ``[{"prefix": "a_"}, {"prefix": "b_"}]``
+      - ``[{"prefix": "a_", "default_campaign": "x"}, ...]`` -> normalized
+
+    Raises ``ValueError`` for malformed input.
+    """
+    if prefixes is None:
+        return []
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    if not isinstance(prefixes, list):
+        raise ValueError("prefixes must be a list, string, or None")
+    out = []
+    for entry in prefixes:
+        if isinstance(entry, str):
+            if entry:
+                out.append({"prefix": entry})
+        elif isinstance(entry, dict):
+            prefix = (entry.get("prefix") or "").strip()
+            if not prefix:
+                continue
+            norm = {"prefix": prefix}
+            dc = entry.get("default_campaign")
+            if dc:
+                norm["default_campaign"] = dc
+            out.append(norm)
+        else:
+            raise ValueError(
+                f"prefix entry must be str or dict, got {type(entry).__name__}"
+            )
+    return out
+
+
+def _project_row_to_dict(row):
+    if row is None:
+        return None
+    d = dict(row)
+    try:
+        prefixes = _json.loads(d.get("prefixes_json") or "[]")
+    except Exception:
+        prefixes = []
+    d["prefixes"] = prefixes if isinstance(prefixes, list) else []
+    return d
+
+
+def _pick_unused_palette(used_values, palette, fallback_index):
+    for v in palette:
+        if v not in used_values:
+            return v
+    return palette[fallback_index % len(palette)]
+
+
+def _validate_project_name(name):
+    return bool(_re_proj.match(r"^[a-z][a-z0-9-]*$", name or ""))
+
+
+def db_list_projects():
+    """Return all registered projects ordered by name."""
+    con = get_db()
+    rows = con.execute(
+        "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
+        "description, created_at, updated_at "
+        "FROM projects ORDER BY name"
+    ).fetchall()
+    return [_project_row_to_dict(r) for r in rows]
+
+
+def db_get_project(name):
+    """Return a single project by name, or ``None`` if missing."""
+    if not name:
+        return None
+    con = get_db()
+    row = con.execute(
+        "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
+        "description, created_at, updated_at "
+        "FROM projects WHERE name=?",
+        (name,),
+    ).fetchone()
+    return _project_row_to_dict(row)
+
+
+def db_create_project(
+    name,
+    color=None,
+    emoji=None,
+    prefixes=None,
+    default_campaign=None,
+    campaign_delimiter="_",
+    description="",
+):
+    """Insert a new project. Auto-picks color/emoji from the palettes when missing.
+
+    Returns ``{"status": "ok", "project": {...}}`` on success or
+    ``{"status": "error", "error": "..."}`` on validation / duplicate-name failure.
+    """
+    name = (name or "").strip().lower()
+    if not name:
+        return {"status": "error", "error": "name is required"}
+    if not _validate_project_name(name):
+        return {
+            "status": "error",
+            "error": "name must start with a letter and contain only lowercase letters, digits, hyphens",
+        }
+    try:
+        prefixes_list = _normalize_prefixes(prefixes)
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
+    if default_campaign and len(prefixes_list) == 1 and "default_campaign" not in prefixes_list[0]:
+        prefixes_list[0]["default_campaign"] = default_campaign
+
+    if not color or not emoji:
+        existing = db_list_projects()
+        from .config import _PROJECT_PALETTE, _PROJECT_EMOJIS
+        if not color:
+            used_colors = {p["color"] for p in existing if p.get("color")}
+            color = _pick_unused_palette(used_colors, _PROJECT_PALETTE, len(existing))
+        if not emoji:
+            used_emojis = {p["emoji"] for p in existing if p.get("emoji")}
+            emoji = _pick_unused_palette(used_emojis, _PROJECT_EMOJIS, len(existing))
+
+    prefixes_json = _json.dumps(prefixes_list, ensure_ascii=False)
+    try:
+        with db_write() as con:
+            con.execute(
+                "INSERT INTO projects (name, color, emoji, prefixes_json, "
+                "campaign_delimiter, description) VALUES (?,?,?,?,?,?)",
+                (name, color, emoji, prefixes_json, campaign_delimiter or "_", description or ""),
+            )
+    except sqlite3.IntegrityError:
+        return {"status": "error", "error": f"project '{name}' already exists"}
+
+    from .config import reload_projects_cache
+    reload_projects_cache()
+    return {"status": "ok", "project": db_get_project(name)}
+
+
+def db_update_project(name, **fields):
+    """Update an existing project. Returns ``{"status": "ok", "project": ...}``.
+
+    Accepted fields: ``color``, ``emoji``, ``prefixes`` (list/str), ``default_campaign``,
+    ``campaign_delimiter``, ``description``. Unknown / ``None`` fields are ignored.
+    Returns ``{"status": "error", ...}`` on validation failure or missing project.
+    """
+    name = (name or "").strip().lower()
+    if not name:
+        return {"status": "error", "error": "name is required"}
+    existing = db_get_project(name)
+    if not existing:
+        return {"status": "error", "error": f"project '{name}' not found"}
+
+    cols = []
+    vals = []
+    if fields.get("color") is not None:
+        cols.append("color=?")
+        vals.append(fields["color"])
+    if fields.get("emoji") is not None:
+        cols.append("emoji=?")
+        vals.append(fields["emoji"])
+    if fields.get("campaign_delimiter") is not None:
+        cols.append("campaign_delimiter=?")
+        vals.append(fields["campaign_delimiter"] or "_")
+    if fields.get("description") is not None:
+        cols.append("description=?")
+        vals.append(fields["description"])
+
+    if fields.get("prefixes") is not None:
+        try:
+            prefixes_list = _normalize_prefixes(fields["prefixes"])
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}
+        dc = fields.get("default_campaign")
+        if dc and len(prefixes_list) == 1 and "default_campaign" not in prefixes_list[0]:
+            prefixes_list[0]["default_campaign"] = dc
+        cols.append("prefixes_json=?")
+        vals.append(_json.dumps(prefixes_list, ensure_ascii=False))
+    elif fields.get("default_campaign") is not None:
+        prefixes_list = list(existing.get("prefixes") or [])
+        if len(prefixes_list) == 1:
+            prefixes_list[0] = {**prefixes_list[0], "default_campaign": fields["default_campaign"]}
+            cols.append("prefixes_json=?")
+            vals.append(_json.dumps(prefixes_list, ensure_ascii=False))
+
+    if not cols:
+        return {"status": "ok", "project": existing}
+
+    cols.append("updated_at=datetime('now')")
+    vals.append(name)
+    with db_write() as con:
+        con.execute(f"UPDATE projects SET {', '.join(cols)} WHERE name=?", vals)
+
+    from .config import reload_projects_cache
+    reload_projects_cache()
+    return {"status": "ok", "project": db_get_project(name)}
+
+
+def db_delete_project(name):
+    """Delete a project. Returns ``{"status": "ok", "deleted": name}`` or error dict."""
+    name = (name or "").strip().lower()
+    if not name:
+        return {"status": "error", "error": "name is required"}
+    if not db_get_project(name):
+        return {"status": "error", "error": f"project '{name}' not found"}
+    with db_write() as con:
+        con.execute("DELETE FROM projects WHERE name=?", (name,))
+
+    from .config import reload_projects_cache
+    reload_projects_cache()
+    return {"status": "ok", "deleted": name}
 
 
 def cleanup_local_on_startup():

@@ -193,8 +193,14 @@ PINNABLE_TERMINAL_STATES = TERMINAL_STATES | {"COMPLETED", "COMPLETING"}
 RESULT_DIR_NAMES = ["eval-logs", "eval-results", "tmp-eval-results"]
 
 # ─── Projects ────────────────────────────────────────────────────────────────
+#
+# PROJECTS is a runtime cache populated from the SQLite ``projects`` table
+# (see server/db.py). It is intentionally empty at import time; the cache
+# is filled by ``reload_projects_cache()`` which is called from
+# ``_shared_init()`` after ``init_db()`` and again after every project CRUD
+# write so the cache stays in sync with the table.
 
-PROJECTS = _CONFIG.get("projects", {})
+PROJECTS = {}
 
 _PROJECT_PALETTE = [
     "#e8f4fd", "#fef3e2", "#e8f5e9", "#fce4ec",
@@ -206,6 +212,32 @@ _PROJECT_EMOJIS = [
     "🔬", "🧪", "🚀", "⚡", "🎯", "🔮", "🌊", "🔥",
     "💎", "🧬", "🏗️", "🎨",
 ]
+
+
+def reload_projects_cache():
+    """Refresh the in-process ``PROJECTS`` dict from the SQLite ``projects`` table.
+
+    Imported lazily to avoid a circular import with ``server.db``. Safe to call
+    repeatedly; replaces the dict's contents in-place so existing references
+    (e.g. captured in tests) keep seeing the live state.
+    """
+    try:
+        from .db import db_list_projects
+    except Exception:
+        return
+    try:
+        rows = db_list_projects()
+    except Exception:
+        return
+    PROJECTS.clear()
+    for row in rows:
+        PROJECTS[row["name"]] = {
+            "color": row.get("color") or "",
+            "emoji": row.get("emoji") or "",
+            "prefixes": row.get("prefixes") or [],
+            "campaign_delimiter": row.get("campaign_delimiter") or "_",
+            "description": row.get("description") or "",
+        }
 
 
 def _project_prefix_entries(cfg):
@@ -231,15 +263,17 @@ def _project_prefix_entries(cfg):
 
 
 def extract_project(job_name):
-    """Return project key from job name.
+    """Return the project key for ``job_name`` based on registered prefixes.
 
-    1. Check configured prefixes first.  When multiple prefixes match (e.g.
-       ``hle_`` and ``hle_chem``), the *longest* prefix wins so more specific
-       projects take precedence over their parent.  A project may declare
-       multiple prefixes via the ``prefixes`` list; each one participates in
-       the longest-match.
-    2. Auto-detect: if the job name starts with ``word_`` (letters/digits/hyphens
-       followed by underscore), treat that as a new project and register it.
+    Walks every configured prefix (``PROJECTS``) and returns the project whose
+    *longest* prefix matches the start of the job name. Multiple prefixes per
+    project are supported via the ``prefixes`` list — each one participates in
+    the longest-match independently.
+
+    Returns ``""`` for job names that do not match any registered prefix.
+    Projects are created exclusively through ``db_create_project`` (or the
+    matching MCP / REST endpoints); ``extract_project`` no longer registers
+    new projects on the fly.
     """
     if not job_name:
         return ""
@@ -251,17 +285,6 @@ def extract_project(job_name):
     for _, name, prefix in candidates:
         if job_name.startswith(prefix):
             return name
-    # Auto-detect: "myproject_eval-math" → project "myproject", prefix "myproject_"
-    import re
-    m = re.match(r'^([a-zA-Z][a-zA-Z0-9-]*)_', job_name)
-    if m:
-        proj_name = m.group(1).lower()
-        prefix = m.group(0)  # includes the trailing underscore
-        if proj_name not in PROJECTS:
-            PROJECTS[proj_name] = {"prefix": prefix}
-            get_project_color(proj_name)
-            get_project_emoji(proj_name)
-        return proj_name
     return ""
 
 
@@ -317,39 +340,33 @@ def extract_campaign(job_name, project=""):
 
 
 def get_project_color(project_name):
-    """Return the color for a project, auto-assigning from palette if needed."""
-    if not project_name or project_name not in PROJECTS:
+    """Return the color for a registered project, or ``""`` if not registered.
+
+    Read-only: never mutates ``PROJECTS`` or persists state. Palette
+    auto-assignment for missing colors happens once at ``db_create_project``
+    time.
+    """
+    if not project_name:
         return ""
-    cfg = PROJECTS[project_name]
-    if cfg.get("color"):
-        return cfg["color"]
-    used = {p.get("color") for p in PROJECTS.values() if p.get("color")}
-    for c in _PROJECT_PALETTE:
-        if c not in used:
-            cfg["color"] = c
-            _persist_projects()
-            return c
-    cfg["color"] = _PROJECT_PALETTE[len(PROJECTS) % len(_PROJECT_PALETTE)]
-    _persist_projects()
-    return cfg["color"]
+    cfg = PROJECTS.get(project_name)
+    if not cfg:
+        return ""
+    return cfg.get("color") or ""
 
 
 def get_project_emoji(project_name):
-    """Return the emoji for a project, auto-assigning if needed."""
-    if not project_name or project_name not in PROJECTS:
+    """Return the emoji for a registered project, or ``""`` if not registered.
+
+    Read-only: never mutates ``PROJECTS`` or persists state. Palette
+    auto-assignment for missing emojis happens once at ``db_create_project``
+    time.
+    """
+    if not project_name:
         return ""
-    cfg = PROJECTS[project_name]
-    if cfg.get("emoji"):
-        return cfg["emoji"]
-    used = {p.get("emoji") for p in PROJECTS.values() if p.get("emoji")}
-    for e in _PROJECT_EMOJIS:
-        if e not in used:
-            cfg["emoji"] = e
-            _persist_projects()
-            return e
-    cfg["emoji"] = _PROJECT_EMOJIS[len(PROJECTS) % len(_PROJECT_EMOJIS)]
-    _persist_projects()
-    return cfg["emoji"]
+    cfg = PROJECTS.get(project_name)
+    if not cfg:
+        return ""
+    return cfg.get("emoji") or ""
 
 
 def _sync_config():
@@ -369,7 +386,9 @@ def _sync_config():
         "include": LOCAL_PROC_INCLUDE,
         "exclude": LOCAL_PROC_EXCLUDE,
     }
-    _CONFIG["projects"] = {k: dict(v) for k, v in PROJECTS.items()}
+    # Projects are stored in the SQLite ``projects`` table — intentionally
+    # NOT mirrored back into config.json. Source of truth lives in the DB.
+    _CONFIG.pop("projects", None)
     existing_clusters = _CONFIG.get("clusters", {})
     for cname, ccfg in CLUSTERS.items():
         if cname == "local":
@@ -392,12 +411,6 @@ def _write_config():
                 fh.write("\n")
         except Exception:
             pass
-
-
-def _persist_projects():
-    """Write current PROJECTS back into _CONFIG and save to disk."""
-    _sync_config()
-    _write_config()
 
 
 def _dir_label(path):
@@ -539,8 +552,8 @@ def reload_config(new_cfg):
     MOUNT_ALIASES.clear()
     MOUNT_ALIASES.update(_load_mount_aliases())
 
-    PROJECTS.clear()
-    PROJECTS.update(new_cfg.get("projects", {}))
+    # Projects live in the SQLite ``projects`` table; nothing to refresh from
+    # ``new_cfg`` here. The cache stays in sync via ``reload_projects_cache``.
 
 
 def settings_response():
@@ -552,6 +565,10 @@ def settings_response():
     cfg["stats_interval_sec"] = STATS_INTERVAL_SEC
     cfg["backup_interval_hours"] = BACKUP_INTERVAL_HOURS
     cfg["backup_max_keep"] = BACKUP_MAX_KEEP
+    # Projects live in the SQLite ``projects`` table now; expose them in the
+    # legacy ``{name: {color, emoji, prefixes, ...}}`` shape so existing
+    # frontend / settings consumers keep working until they migrate to the
+    # dedicated ``/api/projects/all`` endpoint.
     cfg["projects"] = {k: dict(v) for k, v in PROJECTS.items()}
     cfg["team"] = TEAM_NAME
     cfg["team_gpu_allocations"] = dict(TEAM_GPU_ALLOC)

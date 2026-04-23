@@ -107,22 +107,24 @@ class TestExtractProject:
         assert extract_project("beta-gpt-large-120b") == "beta"
 
     @pytest.mark.unit
-    def test_auto_detect_from_underscore(self, monkeypatch):
-        monkeypatch.setattr("server.config._persist_projects", lambda: None)
-        result = extract_project("newproj_eval-math")
-        assert result == "newproj"
-        assert "newproj" in PROJECTS
-        assert PROJECTS["newproj"]["prefix"] == "newproj_"
+    def test_unregistered_prefix_returns_empty(self, monkeypatch):
+        """extract_project no longer auto-creates projects from unknown prefixes."""
+        monkeypatch.setattr("server.config.PROJECTS", {})
+        assert extract_project("newproj_eval-math") == ""
+        assert extract_project("colortest_job") == ""
 
     @pytest.mark.unit
-    def test_auto_detect_not_triggered_without_underscore(self):
+    def test_no_match_for_bareword(self):
         assert extract_project("nounderscore") == ""
 
     @pytest.mark.unit
-    def test_auto_detect_assigns_color(self, monkeypatch):
-        monkeypatch.setattr("server.config._persist_projects", lambda: None)
-        extract_project("colortest_job")
-        assert PROJECTS.get("colortest", {}).get("color", "").startswith("#")
+    def test_does_not_mutate_projects(self, monkeypatch):
+        """extract_project must be side-effect free — no implicit registration."""
+        monkeypatch.setattr("server.config.PROJECTS", {})
+        from server.config import PROJECTS as live
+        before = dict(live)
+        extract_project("ghostproj_run-1")
+        assert dict(live) == before
 
     @pytest.mark.unit
     def test_longest_prefix_wins(self, monkeypatch):
@@ -176,12 +178,16 @@ class TestGetProjectColor:
         assert get_project_color("test-proj") == "#abcdef"
 
     @pytest.mark.unit
-    def test_auto_assigns_color(self, monkeypatch):
-        monkeypatch.setattr("server.config._persist_projects", lambda: None)
-        monkeypatch.setitem(PROJECTS, "new-proj", {"prefix": "new_"})
-        color = get_project_color("new-proj")
-        assert color.startswith("#")
-        assert len(color) == 7
+    def test_returns_empty_when_color_missing(self, monkeypatch):
+        """get_project_color is read-only — palette assignment happens at create time."""
+        monkeypatch.setitem(PROJECTS, "no-color", {"prefix": "noc_"})
+        assert get_project_color("no-color") == ""
+
+    @pytest.mark.unit
+    def test_does_not_mutate_projects(self, monkeypatch):
+        monkeypatch.setitem(PROJECTS, "no-color", {"prefix": "noc_"})
+        get_project_color("no-color")
+        assert "color" not in PROJECTS["no-color"]
 
     @pytest.mark.unit
     def test_unknown_project_returns_empty(self):
