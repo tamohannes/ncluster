@@ -1155,6 +1155,62 @@ def api_projects():
     return jsonify(projects)
 
 
+@api.route("/api/projects/all")
+def api_projects_all():
+    """Return every registered project, regardless of whether it has any jobs.
+
+    Includes the full record (color, emoji, prefixes, campaign delimiter,
+    description, timestamps). The sidebar endpoint (``GET /api/projects``)
+    only returns projects with cluster activity; this one is the canonical
+    list for project-management UIs and the ``list_projects`` MCP tool.
+    """
+    from .db import db_list_projects
+    return jsonify(db_list_projects())
+
+
+@api.route("/api/projects", methods=["POST"])
+def api_project_create():
+    from .db import db_create_project
+    payload = request.get_json(silent=True) or {}
+    result = db_create_project(
+        name=payload.get("name", ""),
+        color=payload.get("color"),
+        emoji=payload.get("emoji"),
+        prefixes=payload.get("prefixes"),
+        default_campaign=payload.get("default_campaign"),
+        campaign_delimiter=payload.get("campaign_delimiter") or "_",
+        description=payload.get("description") or "",
+    )
+    if result.get("status") == "error":
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@api.route("/api/projects/<name>", methods=["PUT"])
+def api_project_update(name):
+    from .db import db_update_project
+    payload = request.get_json(silent=True) or {}
+    fields = {k: payload.get(k) for k in (
+        "color", "emoji", "prefixes", "default_campaign",
+        "campaign_delimiter", "description",
+    ) if k in payload}
+    result = db_update_project(name, **fields)
+    if result.get("status") == "error":
+        status = 404 if "not found" in result.get("error", "") else 400
+        return jsonify(result), status
+    return jsonify(result)
+
+
+@api.route("/api/projects/<name>", methods=["DELETE"])
+def api_project_delete(name):
+    from .db import db_delete_project
+    result = db_delete_project(name)
+    if result.get("status") == "error":
+        status = 404 if "not found" in result.get("error", "") else 400
+        return jsonify(result), status
+    return jsonify(result)
+
+
 @api.route("/api/logbook_projects")
 def api_logbook_projects():
     from .logbooks import list_logbook_projects
@@ -1517,7 +1573,14 @@ def api_settings_post():
             del existing[gone]
         merged["clusters"] = existing
     if "projects" in patch:
-        merged["projects"] = patch["projects"]
+        # Projects moved to the SQLite ``projects`` table — manage them via
+        # ``/api/projects`` (POST/PUT/DELETE) or the matching MCP tools.
+        # Silently drop the field here so older clients don't blow up, but
+        # log it so we can spot any stale callers during the transition.
+        _log.warning(
+            "POST /api/settings included a 'projects' field — ignored. "
+            "Use /api/projects endpoints or the MCP project tools instead."
+        )
     if "team" in patch:
         merged["team"] = patch["team"]
     if "team_gpu_allocations" in patch:
