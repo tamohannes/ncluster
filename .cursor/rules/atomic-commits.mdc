@@ -1,0 +1,91 @@
+---
+description: Always commit in the smallest logically meaningful units
+alwaysApply: true
+---
+
+# Atomic Commits
+
+Every commit in this repo MUST be the smallest logically meaningful unit of change. Maximize the number of commits — never bundle unrelated changes together. Each commit should tell one clear story and be revertable in isolation without breaking anything else.
+
+## Core principle
+
+One commit = one logical change. If you find yourself writing "and" in the commit message, split it.
+
+## Splitting rules
+
+When staging changes, split them along these boundaries (in order of priority):
+
+1. **By concern** — bug fix, new feature, refactor, UI tweak, doc update, test addition are each their own commit.
+2. **By layer** — backend logic change, frontend rendering change, CSS tweak, schema migration are each their own commit when possible.
+3. **By file role** — a fix to `server/poller.py` and an unrelated tweak to `static/app.js` are two commits, not one.
+4. **By feature step** — for multi-step features, commit each step that compiles and passes tests on its own (e.g., add helper → wire it up → add UI → add tests).
+5. **By renaming/formatting** — pure renames, reformatting, or import reordering belong in their own commit, separate from logic changes.
+
+## What counts as ONE atomic commit
+
+- Adding a new function and the single caller that uses it
+- Fixing a bug and adding the regression test for that exact bug
+- Renaming a symbol everywhere it appears
+- Adding one new column + the migration that creates it
+- Adjusting a single CSS rule and the HTML class it targets
+
+## What must be SPLIT
+
+- "fix bug X and refactor module Y" → two commits
+- "add feature Z and unrelated cleanup" → two commits
+- "backend API + frontend wiring + new CSS" → three commits (unless they're tightly coupled and one breaks without the others)
+- "fix typo + add new endpoint" → two commits
+- "add tests for old code + add new feature" → two commits
+
+## How to split when changes are already mixed
+
+Use `git add -p` (patch mode) or `git add <specific-file>` to stage hunks selectively. Never use `git add .` or `git add -A` blindly when the working tree contains multiple logical changes.
+
+```bash
+git add -p server/poller.py    # stage only relevant hunks
+git commit -m "fix: ..."
+git add static/app.js
+git commit -m "ui: ..."
+```
+
+If you've already mixed changes in a single staged set, reset and re-stage:
+
+```bash
+git reset HEAD               # unstage everything
+git add -p                   # re-stage in atomic chunks
+```
+
+## Commit message style
+
+Match the existing project style (see `git log --oneline`):
+
+```
+<type>: <imperative present-tense summary in lowercase>
+```
+
+Types used in this repo:
+
+- `feat:` new user-visible functionality
+- `fix:` bug fix
+- `ui:` UI/UX tweaks (visual, layout, interaction)
+- `refactor:` internal restructuring with no behavior change
+- `docs:` documentation only
+- `test:` test additions or fixes only
+- `chore:` tooling, dependencies, build config
+
+Keep the summary under ~72 chars. Use the body only when the "why" needs explanation that the diff doesn't convey.
+
+## When NOT to split
+
+- Changes that don't compile or pass tests independently — keep them together so each commit leaves the repo in a working state.
+- A single conceptual change that genuinely spans multiple files (e.g., adding a new MCP tool requires the handler, the registration, and the schema — that's one commit).
+
+## Verification before committing
+
+Before each commit, ask:
+
+1. Does the diff describe ONE thing?
+2. Could I revert this commit cleanly without breaking unrelated functionality?
+3. Does the commit message describe a single change without using "and" or bullet points?
+
+If the answer to any is "no", split further.
