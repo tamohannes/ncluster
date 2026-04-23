@@ -1392,6 +1392,7 @@ async function _doRefreshPppAllocations(force, clusterName) {
   if (!isSingleCluster) _showComputeLoadBar(true);
   try {
     const q = _computeClusterQuery(clusterName, fetchForce);
+    const settingsNeeded = !Object.keys(_teamGpuAlloc).length;
     const results = await Promise.allSettled([
       fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
       _ensureOverlayData(true, fetchForce, clusterName),
@@ -1401,7 +1402,18 @@ async function _doRefreshPppAllocations(force, clusterName) {
       _fetchProjectColors(),
       _refreshLiveClusterData(clusterName, fetchForce),
       ...(isSingleCluster ? [] : [fetchWaitCalibration()]),
+      ...(settingsNeeded ? [fetchWithTimeout('/api/settings', {}, 10000)] : []),
     ]);
+    if (settingsNeeded) {
+      const sIdx = isSingleCluster ? 7 : 8;
+      const sr = results[sIdx];
+      if (sr?.status === 'fulfilled') {
+        try {
+          const sd = await sr.value.json();
+          if (sd.team_gpu_allocations) _teamGpuAlloc = sd.team_gpu_allocations;
+        } catch (_) {}
+      }
+    }
     const allocResult = results[0];
     if (allocResult.status === 'fulfilled') {
       const data = await allocResult.value.json();
