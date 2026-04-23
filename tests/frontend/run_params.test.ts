@@ -160,7 +160,7 @@ describe('_renderRunParams', () => {
   });
 
   it('truncates very long model paths with middle ellipsis', () => {
-    const longPath = '/lustre/fsw/portfolios/llmservice/hf_models/' +
+    const longPath = '/shared/storage/models/' +
       'a-very-deeply-nested-model-checkpoint-name-that-is-too-long';
     const host = render({ model: longPath });
     const row = _valueOf(host, 'Model');

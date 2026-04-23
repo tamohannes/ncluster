@@ -441,7 +441,7 @@ def _resolve_container_path(container_path, mounts_str):
     """Resolve a container-internal path to a host path using mount mappings.
 
     mounts_str is a comma-separated list of src:dst pairs, e.g.
-    '/lustre/fsw/htamoyan:/workspace,/lustre/models:/hf_models'
+    '/host/users/$USER:/workspace,/host/models:/hf_models'
     """
     if not container_path or not mounts_str:
         return ""

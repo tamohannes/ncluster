@@ -137,7 +137,7 @@ def _load_mount_aliases():
     """Build alias mapping: cluster -> list of (alias_prefix, mount_index).
 
     mount_aliases maps symlink paths on the cluster to the mount index they
-    resolve to.  E.g. {"hsg": [("/lustre/fsw/.../htamoyan", 0)]} means that
+    resolve to.  E.g. {"my-cluster": [("/path/to/symlink", 0)]} means that
     remote paths starting with that prefix should use mount root 0.
     """
     result = {}

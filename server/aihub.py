@@ -28,10 +28,10 @@ def cluster_name_map():
     """Map friendly cluster name → AI Hub OpenSearch identifier.
 
     Each cluster entry in ``conf/config.json`` may set ``aihub_name`` to
-    expose its OpenSearch ``s_cluster`` value (e.g. ``cw-dfw-cs-001``).
-    Clusters without ``aihub_name`` are skipped — they don't have AI Hub
-    data ingestion configured. Computed lazily from the live ``CLUSTERS``
-    dict so reload_config picks up new clusters without a restart.
+    expose its OpenSearch ``s_cluster`` value. Clusters without
+    ``aihub_name`` are skipped — they don't have AI Hub data ingestion
+    configured. Computed lazily from the live ``CLUSTERS`` dict so
+    reload_config picks up new clusters without a restart.
     """
     return {
         friendly: cfg["aihub_name"]
