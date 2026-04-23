@@ -395,115 +395,162 @@
     <div class="settings-layout">
       <div class="settings-nav">
         <div class="settings-nav-item active" data-section="sec-profile" onclick="showSettingsSection(this)">Profile</div>
-        <div class="settings-nav-item" data-section="sec-general" onclick="showSettingsSection(this)">General</div>
         <div class="settings-nav-item" data-section="sec-shortcuts" onclick="showSettingsSection(this)">Shortcuts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
         <div class="settings-nav-item" data-section="sec-projects" onclick="showSettingsSection(this)">Projects</div>
         <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
       </div>
       <div class="settings-content">
-        <!-- General: theme + refresh -->
-        <div class="settings-section" id="sec-general">
-          <div class="settings-sub-label">Theme</div>
-          <div class="theme-options" id="theme-options">
-            <button class="theme-option" data-theme="system" onclick="setTheme('system')">
-              <span class="theme-option-icon">&#9684;</span> System
-            </button>
-            <button class="theme-option" data-theme="light" onclick="setTheme('light')">
-              <span class="theme-option-icon">&#9728;</span> Light
-            </button>
-            <button class="theme-option" data-theme="dark" onclick="setTheme('dark')">
-              <span class="theme-option-icon">&#9790;</span> Dark
-            </button>
+        <!-- Profile (now also hosts theme + refresh that used to live in General) -->
+        <div class="settings-section active" id="sec-profile">
+          <div class="set-profile-card">
+            <img id="set-avatar" src="/api/user_avatar" alt="" class="set-avatar">
+            <div>
+              <div class="set-profile-name">{{ username }}</div>
+              <div class="set-profile-sub">clausius</div>
+            </div>
           </div>
-          <div class="settings-sub-label" style="margin-top:16px">Refresh</div>
-          <label class="settings-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()"></label>
-          <label class="settings-row"><span>Interval (sec)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30" style="width:60px" onchange="saveLocalSettings()"></label>
+
+          <div class="set-field">
+            <label for="set-team">Team name</label>
+            <input type="text" id="set-team" value="" placeholder="my-team">
+            <div class="set-help">Your team in the Science dashboard — used for GPU allocation tracking</div>
+          </div>
+
+          <details class="set-group" open>
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">PPPs (project quotas)</span></summary>
+            <div class="set-group-body">
+              <div id="ppp-editor"></div>
+              <button class="btn-ghost" onclick="addPppRow()">+ add PPP</button>
+            </div>
+          </details>
+
+          <div class="set-actions"><button class="btn" onclick="saveProfile()">save profile</button></div>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Theme</span></summary>
+            <div class="set-group-body">
+              <div class="theme-options" id="theme-options">
+                <button class="theme-option" data-theme="system" onclick="setTheme('system')"><span class="theme-option-icon">&#9684;</span>System</button>
+                <button class="theme-option" data-theme="light" onclick="setTheme('light')"><span class="theme-option-icon">&#9728;</span>Light</button>
+                <button class="theme-option" data-theme="dark" onclick="setTheme('dark')"><span class="theme-option-icon">&#9790;</span>Dark</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Auto-refresh</span></summary>
+            <div class="set-group-body">
+              <label class="set-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()"></label>
+              <label class="set-row"><span>Interval (seconds)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30" onchange="saveLocalSettings()"></label>
+            </div>
+          </details>
         </div>
 
-        <!-- Keyboard Shortcuts (populated by JS) -->
+        <!-- Keyboard Shortcuts -->
         <div class="settings-section" id="sec-shortcuts">
-          <div class="settings-sub-label">Keyboard Shortcuts</div>
           <div id="shortcuts-editor"></div>
         </div>
 
-        <!-- Clusters + Mounts -->
+        <!-- Clusters: allocations + mounts open by default, configuration last -->
         <div class="settings-section" id="sec-clusters">
-          <div class="settings-sub-label">Weekly GPU Allocations</div>
-          <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:6px">Your team's weekly GPU allocation per cluster. Update when your manager sends new numbers.</div>
-          <div id="gpu-alloc-editor"></div>
-          <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveGpuAllocations()">save allocations</button></div>
-          <div class="settings-sub-label" style="margin-top:16px">Cluster Configuration</div>
-          <div id="cluster-editor" style="max-height:40vh;overflow-y:auto"></div>
-          <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:14px">
-            <button class="btn" onclick="addClusterRow()">+ add cluster</button>
-            <button class="btn" onclick="saveClusters()">save clusters</button>
-          </div>
-          <div class="settings-sub-label" style="margin-top:16px">Mounts</div>
-          <div class="header-right" style="margin-bottom:10px">
-            <button class="btn" onclick="mountAll()">mount all</button>
-            <button class="btn" onclick="unmountAll()">unmount all</button>
-          </div>
-          <div id="mount-panel" class="mount-panel"></div>
+          <details class="set-group" open>
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Weekly GPU allocations</span></summary>
+            <div class="set-group-body">
+              <div class="set-help">Your team's weekly GPU allocation per cluster. Update when your manager sends new numbers.</div>
+              <div id="gpu-alloc-editor"></div>
+              <div class="set-actions"><button class="btn" onclick="saveGpuAllocations()">save allocations</button></div>
+            </div>
+          </details>
+
+          <details class="set-group" open>
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Mounts</span></summary>
+            <div class="set-group-body">
+              <div class="set-actions" style="justify-content:flex-start">
+                <button class="btn" onclick="mountAll()">mount all</button>
+                <button class="btn" onclick="unmountAll()">unmount all</button>
+              </div>
+              <div id="mount-panel" class="mount-panel"></div>
+            </div>
+          </details>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Cluster configuration</span></summary>
+            <div class="set-group-body">
+              <div id="cluster-editor"></div>
+              <div class="set-actions">
+                <button class="btn" onclick="addClusterRow()">+ add cluster</button>
+                <button class="btn" onclick="saveClusters()">save clusters</button>
+              </div>
+            </div>
+          </details>
         </div>
 
         <!-- Projects -->
         <div class="settings-section" id="sec-projects">
-          <div class="settings-sub-label">Project Prefixes &amp; Colors</div>
-          <div id="project-editor" style="max-height:45vh;overflow-y:auto"></div>
-          <div style="display:flex;gap:5px;justify-content:flex-end;margin-top:14px">
+          <div id="project-editor"></div>
+          <div class="set-actions">
             <button class="btn" onclick="addProjectRow()">+ add project</button>
             <button class="btn" onclick="saveProjects()">save projects</button>
           </div>
         </div>
 
-        <!-- Profile -->
-        <div class="settings-section active" id="sec-profile">
-          <div class="settings-sub" style="display:flex;align-items:center;gap:14px;padding:12px">
-            <img id="set-avatar" src="/api/user_avatar" alt="" style="width:52px;height:52px;border-radius:50%;border:2px solid var(--border);object-fit:cover;background:var(--bg)">
-            <div>
-              <div style="font-family:var(--mono);font-size:13px;font-weight:600">{{ username }}</div>
-              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">clausius</div>
-            </div>
-          </div>
-          <div class="settings-sub-label">Team</div>
-          <div class="settings-sub">
-            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="my-team" style="width:140px"></label>
-            <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Your team in the Science dashboard — used for GPU allocation tracking</div>
-          </div>
-          <div class="settings-sub-label" style="margin-top:10px">PPPs (Project Quotas)</div>
-          <div class="settings-sub">
-            <div id="ppp-editor"></div>
-            <button class="btn" style="margin-top:6px;width:100%" onclick="addPppRow()">+ add PPP</button>
-          </div>
-          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveProfile()">save profile</button></div>
-        </div>
-
-        <!-- Advanced: SSH, cache, display, process filters -->
+        <!-- Advanced: every subsection collapsed by default -->
         <div class="settings-section" id="sec-advanced">
-          <div class="settings-sub-label">Connection</div>
-          <label class="settings-row"><span>SSH timeout (sec)</span><input type="number" id="set-ssh-timeout" min="2" max="60" value="8" style="width:60px"></label>
-          <label class="settings-row"><span>Cache freshness (sec)</span><input type="number" id="set-cache-fresh" min="5" max="600" value="30" style="width:60px"></label>
-          <label class="settings-row"><span>GPU stats interval (sec)</span><input type="number" id="set-stats-interval" min="60" max="7200" value="1800" style="width:70px"></label>
-          <div class="settings-sub-label" style="margin-top:14px">Database Backups</div>
-          <label class="settings-row"><span>Backup interval (hours)</span><input type="number" id="set-backup-interval" min="1" max="168" value="24" style="width:60px"></label>
-          <label class="settings-row"><span>Keep last N backups</span><input type="number" id="set-backup-max" min="1" max="90" value="7" style="width:60px"></label>
-          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveAdvancedSettings()">save</button></div>
-          <div class="settings-sub-label" style="margin-top:16px">Display</div>
-          <label class="settings-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
-          <label class="settings-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" style="width:60px" onchange="saveLocalSettings()"></label>
-          <label class="settings-row"><span>JSONL load mode</span>
-            <select id="set-jsonl-mode" style="font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:5px;border:1px solid var(--border)" onchange="saveLocalSettings()">
-              <option value="first">first N</option><option value="last">last N</option><option value="all">all records</option>
-            </select>
-          </label>
-          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px;margin-top:8px"><span>Background run suffixes (comma-separated)</span><input type="text" id="set-bg-suffixes" style="width:100%" placeholder="_server, _proxy, ..."></label>
-          <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Runs ending with these suffixes appear translucent on the dashboard</div>
-          <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveBgSuffixes()">save suffixes</button></div>
-          <div class="settings-sub-label" style="margin-top:16px">Local Process Filters</div>
-          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="my-framework, my_framework, ..."></label>
-          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Exclude (comma-separated)</span><input type="text" id="set-proc-exclude" style="width:100%" placeholder="cursor, jupyter, ..."></label>
-          <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="saveProcessFilters()">save filters</button></div>
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Connection</span></summary>
+            <div class="set-group-body">
+              <label class="set-row"><span>SSH timeout (sec)</span><input type="number" id="set-ssh-timeout" min="2" max="60" value="8"></label>
+              <label class="set-row"><span>Cache freshness (sec)</span><input type="number" id="set-cache-fresh" min="5" max="600" value="30"></label>
+              <label class="set-row"><span>GPU stats interval (sec)</span><input type="number" id="set-stats-interval" min="60" max="7200" value="1800"></label>
+              <div class="set-actions"><button class="btn" onclick="saveAdvancedSettings()">save connection</button></div>
+            </div>
+          </details>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Database backups</span></summary>
+            <div class="set-group-body">
+              <label class="set-row"><span>Backup interval (hours)</span><input type="number" id="set-backup-interval" min="1" max="168" value="24"></label>
+              <label class="set-row"><span>Keep last N backups</span><input type="number" id="set-backup-max" min="1" max="90" value="7"></label>
+              <div class="set-actions"><button class="btn" onclick="saveAdvancedSettings()">save backups</button></div>
+            </div>
+          </details>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Display</span></summary>
+            <div class="set-group-body">
+              <label class="set-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50" onchange="saveLocalSettings()"></label>
+              <label class="set-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50" onchange="saveLocalSettings()"></label>
+              <label class="set-row"><span>JSONL load mode</span>
+                <select id="set-jsonl-mode" onchange="saveLocalSettings()">
+                  <option value="first">first N</option><option value="last">last N</option><option value="all">all records</option>
+                </select>
+              </label>
+              <div class="set-field">
+                <label for="set-bg-suffixes">Background run suffixes</label>
+                <input type="text" id="set-bg-suffixes" placeholder="_server, _proxy, ...">
+                <div class="set-help">Comma-separated. Runs ending with these suffixes appear translucent on the dashboard.</div>
+              </div>
+              <div class="set-actions"><button class="btn" onclick="saveBgSuffixes()">save display</button></div>
+            </div>
+          </details>
+
+          <details class="set-group">
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Local process filters</span></summary>
+            <div class="set-group-body">
+              <div class="set-field">
+                <label for="set-proc-include">Include</label>
+                <input type="text" id="set-proc-include" placeholder="my-framework, my_framework, ...">
+                <div class="set-help">Comma-separated patterns to include in the local process board.</div>
+              </div>
+              <div class="set-field">
+                <label for="set-proc-exclude">Exclude</label>
+                <input type="text" id="set-proc-exclude" placeholder="cursor, jupyter, ...">
+                <div class="set-help">Comma-separated patterns to exclude.</div>
+              </div>
+              <div class="set-actions"><button class="btn" onclick="saveProcessFilters()">save filters</button></div>
+            </div>
+          </details>
         </div>
       </div>
     </div>

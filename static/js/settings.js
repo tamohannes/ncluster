@@ -775,13 +775,13 @@ async function loadProjectEditor() {
 function renderPppEditor(ppps) {
   const el = document.getElementById('ppp-editor');
   el.innerHTML = Object.entries(ppps).map(([name, pid]) => `
-    <div class="cluster-edit-card" style="margin-bottom:4px">
+    <div class="cluster-edit-card">
       <div class="ce-head">
-        <span class="ce-name" style="font-size:10px">${name}</span>
+        <span class="ce-name">${name}</span>
         <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
       </div>
       <div class="ce-fields">
-        <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="${name}" style="font-size:10px"></div>
+        <div class="ce-field"><span>PPP name</span><input data-f="ppp-name" value="${name}"></div>
         <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="${pid}"></div>
       </div>
     </div>
@@ -792,7 +792,7 @@ function renderGpuAllocEditor(allocs) {
   const el = document.getElementById('gpu-alloc-editor');
   const clusterNames = Object.keys(CLUSTERS).filter(c => c !== 'local').sort();
   if (!clusterNames.length) {
-    el.innerHTML = '<div style="font-family:var(--mono);font-size:10px;color:var(--muted)">No clusters configured</div>';
+    el.innerHTML = '<div class="set-help">No clusters configured</div>';
     return;
   }
   let html = '<table class="gpu-alloc-table"><thead><tr><th>Cluster</th><th>GPUs</th><th></th></tr></thead><tbody>';
@@ -859,14 +859,13 @@ function addPppRow() {
   const el = document.getElementById('ppp-editor');
   const div = document.createElement('div');
   div.className = 'cluster-edit-card';
-  div.style.marginBottom = '4px';
   div.innerHTML = `
     <div class="ce-head">
-      <span class="ce-name" style="font-size:10px">new PPP</span>
+      <span class="ce-name">new PPP</span>
       <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
     </div>
     <div class="ce-fields">
-      <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="" placeholder="team_project_..." style="font-size:10px"></div>
+      <div class="ce-field"><span>PPP name</span><input data-f="ppp-name" value="" placeholder="team_project_..."></div>
       <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="" placeholder="12345"></div>
     </div>
   `;
