@@ -123,8 +123,9 @@ function _renderRunBody(run, cluster) {
   const _cancelableRunIds = jobs
     .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
     .map(j => String(j.job_id || j.jobid));
+  const _runLabel = run.run_name || run.name || '';
   const _cancelRunBtn = _cancelableRunIds.length > 0
-    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${JSON.stringify(_cancelableRunIds)},'${_escHtml(run.name || '')}')">cancel run</button>`
+    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${JSON.stringify(_cancelableRunIds)},'${escAttr(_runLabel)}')">cancel run</button>`
     : '';
 
   html += `<div class="run-resource-bar">
@@ -623,10 +624,12 @@ async function retryMetadata(cluster, rootJobId) {
 }
 
 async function _cancelRun(cluster, jobIds, runName) {
-  if (typeof _doCancelGroup === 'function') {
-    await _doCancelGroup(cluster, jobIds, runName);
-    refreshCluster(cluster, true);
+  if (!jobIds || !jobIds.length) {
+    toast('No cancelable jobs in this run', 'error');
+    return;
   }
+  await _doCancelGroup(cluster, jobIds, runName);
+  refreshCluster(cluster, true);
 }
 
 document.addEventListener('keydown', (e) => {
