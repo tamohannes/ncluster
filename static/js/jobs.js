@@ -541,6 +541,9 @@ function renderCard(name, data) {
       const runBadge = name !== 'local'
         ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
         : highlightedGk;
+      const noProjectBtn = (!_proj && name !== 'local' && /^[a-zA-Z][a-zA-Z0-9-]*_/.test(gk))
+        ? `<button class="no-project-btn" type="button" onclick="event.stopPropagation();openNewProjectPopover('${escAttr(gk)}', this)" title="No project matches this run — click to create one">+ project</button>`
+        : '';
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -566,7 +569,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);

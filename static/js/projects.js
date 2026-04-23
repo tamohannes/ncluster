@@ -446,3 +446,145 @@ function _renderProjPage() {
 
 function projPrev() { _projPage--; _renderProjPage(); }
 function projNext() { _projPage++; _renderProjPage(); }
+
+
+// ── New project popover (live board affordance) ──
+//
+// When a run on the live board has no registered project (e.g. a brand-new
+// naming pattern), `jobs.js` renders a "+ project" badge next to the run.
+// Clicking it opens this popover with name + prefix pre-filled from the
+// run name and lets the user create the project in one click.
+
+const _PALETTE_HINT = ['#9effbb', '#9ed5ff', '#ffb89e', '#ff8e8e', '#d4b3ff', '#9effe6', '#ffe89e'];
+
+let _nppEl = null;
+let _nppDismissBound = false;
+
+function _ensureNewProjectPopover() {
+  if (_nppEl) return _nppEl;
+  _nppEl = document.createElement('div');
+  _nppEl.className = 'new-project-popover';
+  _nppEl.innerHTML = `
+    <div class="npp-title">
+      <span>Create project</span>
+      <button class="npp-close" type="button" onclick="closeNewProjectPopover()">×</button>
+    </div>
+    <div class="npp-sub" data-f="source"></div>
+    <div class="npp-row">
+      <label for="npp-name">name</label>
+      <input id="npp-name" data-f="name" type="text" placeholder="my-project" autocomplete="off">
+    </div>
+    <div class="npp-row">
+      <label for="npp-prefix">prefix</label>
+      <input id="npp-prefix" data-f="prefix" type="text" placeholder="my-project_" autocomplete="off">
+    </div>
+    <div class="npp-row">
+      <label>style</label>
+      <input data-f="emoji" type="text" placeholder="🚀" maxlength="2">
+      <input data-f="color" type="color" value="#9ed5ff">
+    </div>
+    <div class="npp-error" data-f="error"></div>
+    <div class="npp-actions">
+      <button type="button" onclick="closeNewProjectPopover()">cancel</button>
+      <button type="button" class="npp-create" onclick="submitNewProjectFromPopover()">create</button>
+    </div>
+  `;
+  document.body.appendChild(_nppEl);
+  if (!_nppDismissBound) {
+    _nppDismissBound = true;
+    document.addEventListener('click', (ev) => {
+      if (!_nppEl || !_nppEl.classList.contains('open')) return;
+      if (_nppEl.contains(ev.target)) return;
+      if (ev.target.closest('.no-project-btn')) return;
+      closeNewProjectPopover();
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && _nppEl && _nppEl.classList.contains('open')) {
+        closeNewProjectPopover();
+      }
+    });
+  }
+  return _nppEl;
+}
+
+function _suggestProjectFromName(jobName) {
+  const m = (jobName || '').match(/^([a-zA-Z][a-zA-Z0-9-]*)_/);
+  if (!m) return { name: '', prefix: '' };
+  const name = m[1].toLowerCase();
+  return { name, prefix: `${name}_` };
+}
+
+function openNewProjectPopover(jobName, anchorEl) {
+  const el = _ensureNewProjectPopover();
+  const { name, prefix } = _suggestProjectFromName(jobName);
+  el.querySelector('[data-f="source"]').textContent = jobName ? `from: ${jobName}` : '';
+  el.querySelector('[data-f="name"]').value = name;
+  el.querySelector('[data-f="prefix"]').value = prefix;
+  el.querySelector('[data-f="emoji"]').value = '';
+  el.querySelector('[data-f="color"]').value = _PALETTE_HINT[Math.floor(Math.random() * _PALETTE_HINT.length)];
+  el.querySelector('[data-f="error"]').textContent = '';
+
+  el.classList.add('open');
+  el.style.visibility = 'hidden';
+  const rect = anchorEl ? anchorEl.getBoundingClientRect() : null;
+  const popW = el.offsetWidth || 320;
+  const popH = el.offsetHeight || 200;
+  let left, top;
+  if (rect) {
+    left = Math.min(window.innerWidth - popW - 12, Math.max(8, rect.left));
+    top = rect.bottom + 6;
+    if (top + popH > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - popH - 6);
+    }
+  } else {
+    left = (window.innerWidth - popW) / 2;
+    top = (window.innerHeight - popH) / 2;
+  }
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+  el.style.visibility = '';
+  setTimeout(() => el.querySelector('[data-f="name"]').focus(), 30);
+}
+
+function closeNewProjectPopover() {
+  if (_nppEl) _nppEl.classList.remove('open');
+}
+
+async function submitNewProjectFromPopover() {
+  if (!_nppEl) return;
+  const errEl = _nppEl.querySelector('[data-f="error"]');
+  errEl.textContent = '';
+  const name = (_nppEl.querySelector('[data-f="name"]').value || '').trim().toLowerCase();
+  const prefix = (_nppEl.querySelector('[data-f="prefix"]').value || '').trim();
+  const emoji = (_nppEl.querySelector('[data-f="emoji"]').value || '').trim();
+  const color = (_nppEl.querySelector('[data-f="color"]').value || '').trim();
+  if (!name) { errEl.textContent = 'name is required'; return; }
+  if (!prefix) { errEl.textContent = 'prefix is required'; return; }
+
+  const body = { name, prefixes: [prefix] };
+  if (color) body.color = color;
+  if (emoji) body.emoji = emoji;
+
+  try {
+    const res = await fetch('/api/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      errEl.textContent = d.error || 'create failed';
+      return;
+    }
+    closeNewProjectPopover();
+    if (typeof toast === 'function') {
+      const reassigned = (d.reassigned && d.reassigned.jobs_updated) || 0;
+      toast(`Created ${name}${reassigned ? ` · re-tagged ${reassigned} jobs` : ''}`);
+    }
+    _projectColors = null;
+    if (typeof loadProjectButtons === 'function') loadProjectButtons();
+    if (typeof fetchAll === 'function') fetchAll();
+  } catch (e) {
+    errEl.textContent = 'create failed';
+  }
+}
