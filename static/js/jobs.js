@@ -655,11 +655,9 @@ function renderCard(name, data) {
         backupBtn = ` <button class="${cls}" data-backups-toggle="${j.jobid}" onclick="event.stopPropagation();toggleBackups('${j.jobid}')">${n} backup${n !== 1 ? 's' : ''}</button>`;
       }
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
-      const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
-      const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
-      return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
+      return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
         <td>${isUnneeded
@@ -689,7 +687,9 @@ function renderCard(name, data) {
       const _dirBtn = _grpOutputDir && name !== 'local'
         ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openDir('${escAttr(name)}','${escAttr(_grpOutputDir)}','${safeGk}')">logs</button>`
         : '';
-      return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')">
+      const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
+      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
+      return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"${_headStyleAttr}>
         <td colspan="2"><span class="group-head-content">${groupLabel}</span></td>
         <td>${summaryHtml}</td>
         <td>${_dirBtn}</td>

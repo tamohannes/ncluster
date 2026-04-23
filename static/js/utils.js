@@ -975,6 +975,17 @@ function campaignShade(hexColor, campaign) {
   return _hslToHex(h + hueShift, s + satShift, l + lightShift);
 }
 
+// Inline-style declarations for tinting a run's collapsed group-head row
+// to its campaign color. Returns '' when the run has no project/campaign
+// color so callers can fall back to the static --group-bg shade.
+function campaignRowTintStyle(projectColor, campaign) {
+  const shaded = projectColor && campaign
+    ? campaignShade(projectColor, campaign)
+    : (projectColor || '');
+  if (!shaded) return '';
+  return `--row-tint:${lightenColor(shaded)};`;
+}
+
 function campaignDividerColor(hexColor) {
   if (!hexColor || !hexColor.startsWith('#')) return '';
   const [h, s, l] = _hexToHSL(hexColor);

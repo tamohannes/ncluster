@@ -204,7 +204,9 @@ function _renderHistPage() {
       const groupGpus = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
       const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span></span>`;
-      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
+      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 
     if (searchOnlyRuns && !hasMultiple) {
@@ -235,11 +237,8 @@ function _renderHistPage() {
 
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
-      const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
-      const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)}` : '';
       const _grpHidden = hasMultiple && !isGroupExpanded;
-      const _rowDisp = _grpHidden ? 'display:none' : '';
-      const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
+      const _rowStyle = _grpHidden ? 'display:none' : '';
       const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
       html += `<tr class="hist-compact ${pinKind}${bgClass}"${_grpAttr} style="${_rowStyle}">
         <td><span class="badge">${g.cluster}</span></td>

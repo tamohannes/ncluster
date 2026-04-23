@@ -736,9 +736,12 @@ tbody tr.backup-child-row:hover td {
 tr.bg-job td { opacity: 0.4; }
 tr.bg-job:hover td { opacity: 0.7; }
 
-/* Grouped runs within a cluster card */
+/* Grouped runs within a cluster card. The collapsed head row honors a
+   per-row --row-tint custom property set inline by campaignRowTintStyle so
+   each run's pre-toggle row is shaded by its campaign color; runs without
+   a project/campaign color fall back to the neutral --group-bg shade. */
 .group-head-row td {
-  background: var(--group-bg);
+  background: var(--row-tint, var(--group-bg));
   border-top: 1px solid var(--group-bd);
   border-bottom: 1px solid var(--group-bd);
   padding-top: 7px;

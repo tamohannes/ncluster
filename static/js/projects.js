@@ -386,7 +386,10 @@ function _renderProjPage() {
       const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}${gpuSuffix}</span></span>`;
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
-      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const _campaign = groupJobs[0]?.campaign || '';
+      const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
+      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 
       if (searchOnlyRuns && !hasMultiple) {
         return;
