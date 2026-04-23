@@ -94,6 +94,31 @@ class TestUpdateLogbookEntry:
         assert kwargs["json"]["title"] == "T"
         assert kwargs["json"]["body"] == "B"
 
+    def test_passes_entry_type_and_pinned(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            update_logbook_entry("alpha", 1, entry_type="plan", pinned=True)
+        _, kwargs = mock.call_args
+        assert kwargs["json"]["entry_type"] == "plan"
+        assert kwargs["json"]["pinned"] is True
+
+    def test_passes_new_project(self):
+        with patch("mcp_server._api", return_value={"status": "ok", "project": "beta"}) as mock:
+            result = update_logbook_entry("alpha", 1, new_project="beta")
+        _, kwargs = mock.call_args
+        # Lookup uses the source project; the body carries the rename target.
+        args, _ = mock.call_args
+        assert args[1] == "/api/logbook/alpha/entries/1"
+        assert kwargs["json"]["new_project"] == "beta"
+        assert result["project"] == "beta"
+
+    def test_omits_unset_fields(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            update_logbook_entry("alpha", 1, title="only-title")
+        _, kwargs = mock.call_args
+        # Only the explicitly-set field is sent; nothing else leaks into the
+        # request body so callers can mutate one attribute at a time.
+        assert kwargs["json"] == {"title": "only-title"}
+
 
 @pytest.mark.mcp
 class TestDeleteLogbookEntry:

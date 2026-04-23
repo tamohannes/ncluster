@@ -1597,6 +1597,22 @@ def api_settings_post():
         _log.exception("settings reload failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
+    # If any WDS input changed, kick off a fresh snapshot in the background
+    # so the next read of wds_history reflects the new value without waiting
+    # for the next periodic tick (default 15 min).
+    if any(k in patch for k in ("team_gpu_allocations", "ppps", "team")):
+        import threading
+        from .wds import compute_wds_snapshot
+
+        def _refresh_wds():
+            try:
+                compute_wds_snapshot()
+            except Exception:
+                _log.exception("WDS snapshot after settings change failed")
+
+        threading.Thread(target=_refresh_wds, daemon=True,
+                         name="wds-after-settings").start()
+
     return jsonify({"status": "ok", "settings": settings_response()})
 
 
@@ -2081,9 +2097,20 @@ def api_logbook_update(project, entry_id):
     if body is not None:
         body = body.strip()
     entry_type = payload.get("entry_type")
-    result = _lb_update(project, entry_id, title=title, body=body, entry_type=entry_type)
-    if result.get("status") == "error":
+    pinned = payload.get("pinned")
+    new_project = payload.get("new_project")
+    result = _lb_update(
+        project, entry_id,
+        title=title, body=body, entry_type=entry_type,
+        pinned=pinned, new_project=new_project,
+    )
+    status = result.get("status")
+    if status == "error":
         return jsonify(result), 404
+    if status == "error_validation":
+        # Drop the internal status discriminator from the public response
+        # body but keep the error message; surface as 400 instead of 404.
+        return jsonify({"status": "error", "error": result.get("error", "")}), 400
     return jsonify(result)
 
 

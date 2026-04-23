@@ -598,13 +598,38 @@ def update_logbook_entry(
     entry_id: int,
     title: Optional[str] = None,
     body: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    new_project: Optional[str] = None,
 ) -> dict:
-    """Update a logbook entry's title and/or body. Bumps edited_at."""
+    """Update any subset of a logbook entry's mutable attributes. Bumps edited_at.
+
+    Args:
+        project: The entry's current project (used to look it up).
+        entry_id: Globally unique entry id.
+        title: New title string.
+        body: New markdown body. Re-parses #N references and rebuilds the link table.
+        entry_type: "note" or "plan". Invalid values are silently ignored.
+        pinned: True to pin, False to unpin. Pinned entries sort to the top
+            of list_logbook_entries.
+        new_project: Move the entry to a different project. Entry IDs are
+            globally unique so cross-project #N references keep working.
+            Pass the bare project name (e.g. "hle"), not a URL.
+
+    All fields except project/entry_id are optional; pass only the ones you
+    want to change. Returns {"status": "ok", "id", "edited_at", "project"?}.
+    """
     payload = {}
     if title is not None:
         payload["title"] = title
     if body is not None:
         payload["body"] = body
+    if entry_type is not None:
+        payload["entry_type"] = entry_type
+    if pinned is not None:
+        payload["pinned"] = pinned
+    if new_project is not None:
+        payload["new_project"] = new_project
     return _api("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
 
 

@@ -153,7 +153,28 @@ def create_entry(project, title, body="", entry_type="note"):
     return {"status": "ok", "id": entry_id, "created_at": now}
 
 
-def update_entry(project, entry_id, title=None, body=None, entry_type=None):
+def update_entry(
+    project,
+    entry_id,
+    title=None,
+    body=None,
+    entry_type=None,
+    pinned=None,
+    new_project=None,
+):
+    """Mutate a logbook entry. Any subset of fields may be updated.
+
+    `new_project`, when provided, moves the entry to a different project.
+    Entry IDs are globally unique, so cross-project ``#N`` references keep
+    working after a move and ``logbook_links`` rows do not need to change.
+    """
+    moved_to = None
+    if new_project is not None:
+        target = new_project.strip()
+        if not target:
+            return {"status": "error_validation", "error": "new_project must be non-empty"}
+        moved_to = target
+
     with db_write() as con:
         row = con.execute(
             "SELECT id FROM logbook_entries WHERE id = ? AND project = ?",
@@ -173,6 +194,12 @@ def update_entry(project, entry_id, title=None, body=None, entry_type=None):
         if entry_type is not None and entry_type in ("note", "plan"):
             sets.append("entry_type = ?")
             params.append(entry_type)
+        if pinned is not None:
+            sets.append("pinned = ?")
+            params.append(1 if pinned else 0)
+        if moved_to is not None:
+            sets.append("project = ?")
+            params.append(moved_to)
         params.extend([entry_id, project])
         con.execute(
             f"UPDATE logbook_entries SET {', '.join(sets)} WHERE id = ? AND project = ?",
@@ -180,7 +207,10 @@ def update_entry(project, entry_id, title=None, body=None, entry_type=None):
         )
         if body is not None:
             _update_links(con, entry_id, body)
-    return {"status": "ok", "id": entry_id, "edited_at": now}
+    result = {"status": "ok", "id": entry_id, "edited_at": now}
+    if moved_to:
+        result["project"] = moved_to
+    return result
 
 
 def delete_entry(project, entry_id):
