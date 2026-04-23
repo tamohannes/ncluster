@@ -966,6 +966,13 @@ function fmtSize(bytes) {
   return (bytes/1024/1024).toFixed(1) + 'M';
 }
 
+// Files that should be loaded in one shot instead of paginated like a log.
+// metrics.json (NeMo-Skills and friends) is small but must be parsed as a
+// single JSON document — paging gives only the tail, which never parses.
+function _popupShouldLoadFully(path) {
+  return /(?:^|\/)metrics\.json$/i.test(path || '');
+}
+
 async function viewFile(path, force) {
   force = !!force;
   const shouldResumeLive = _liveActive;
@@ -1010,9 +1017,13 @@ async function viewFile(path, force) {
   _popupFullLoaded = false;
   _popupRawContent = '';
 
+  const fullLoad = _popupShouldLoadFully(path);
+  const reqPage = fullLoad ? 0 : 999999;
+  const reqPageSize = fullLoad ? 1000000 : _POPUP_PAGE_SIZE;
+
   const jobIdParam = _exJobId || '__dir__';
   try {
-    const res = await fetchWithTimeout(`/api/log_full/${_exCluster}/${jobIdParam}?path=${encodeURIComponent(path)}&page=999999&page_size=${_POPUP_PAGE_SIZE}`);
+    const res = await fetchWithTimeout(`/api/log_full/${_exCluster}/${jobIdParam}?path=${encodeURIComponent(path)}&page=${reqPage}&page_size=${reqPageSize}`);
     const data = await res.json();
     const el = document.getElementById('modal-content');
     if (data.status !== 'ok') {
@@ -1023,7 +1034,9 @@ async function viewFile(path, force) {
     _popupRawContent = data.content || '(empty)';
     _popupTopPage = data.page;
     _popupTotalPages = data.total_pages;
-    _popupFullLoaded = data.total_pages <= 1;
+    // Force fully-loaded for whole-file reads so the up-scroll handler never
+    // tries to prepend earlier pages on top of a parsed JSON document.
+    _popupFullLoaded = fullLoad || data.total_pages <= 1;
     _currentSource = data.source || 'ssh';
 
     const rendered = renderFileContentByType(path, _popupRawContent);
@@ -1035,7 +1048,9 @@ async function viewFile(path, force) {
     sourceEl.className = `source-pill ${_currentSource}`;
 
     const contentBody = el.parentElement;
-    contentBody.scrollTop = contentBody.scrollHeight;
+    // For full-loaded files (e.g. metrics.json) start at the top; for log
+    // tails keep the existing scroll-to-bottom behavior.
+    contentBody.scrollTop = fullLoad ? 0 : contentBody.scrollHeight;
 
     if (!_popupFullLoaded) {
       _setupPopupScroll(contentBody);

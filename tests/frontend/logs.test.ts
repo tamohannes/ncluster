@@ -56,6 +56,7 @@ declare const jsonlRecordSummary: (obj: any) => string;
 declare const guessIcon: (name: string) => string;
 declare const markdownToHtml: (raw: string) => string;
 declare const renderFileContentByType: (path: string, raw: string) => { cls: string; html: string };
+declare const _popupShouldLoadFully: (path: string) => boolean;
 declare const renderJsonlLazyViewer: (
   data: any,
   filePath: string,
@@ -146,6 +147,30 @@ describe('markdownToHtml', () => {
   it('converts code blocks', () => {
     const result = markdownToHtml('```\ncode\n```');
     expect(result).toContain('<pre><code>');
+  });
+});
+
+describe('_popupShouldLoadFully', () => {
+  it('matches metrics.json at any depth', () => {
+    expect(_popupShouldLoadFully('metrics.json')).toBe(true);
+    expect(_popupShouldLoadFully('/a/b/metrics.json')).toBe(true);
+    expect(_popupShouldLoadFully('/eval-results/gpqa/metrics.json')).toBe(true);
+  });
+  it('is case-insensitive on the filename', () => {
+    expect(_popupShouldLoadFully('/x/Metrics.JSON')).toBe(true);
+  });
+  it('does not match other json files', () => {
+    expect(_popupShouldLoadFully('/x/output.json')).toBe(false);
+    expect(_popupShouldLoadFully('/x/config.json')).toBe(false);
+  });
+  it('does not match metrics-like names that are not metrics.json', () => {
+    expect(_popupShouldLoadFully('/x/metrics.jsonl')).toBe(false);
+    expect(_popupShouldLoadFully('/x/my_metrics.json')).toBe(false);
+    expect(_popupShouldLoadFully('/x/metrics.json.bak')).toBe(false);
+  });
+  it('handles empty/missing path', () => {
+    expect(_popupShouldLoadFully('')).toBe(false);
+    expect(_popupShouldLoadFully(undefined as any)).toBe(false);
   });
 });
 
