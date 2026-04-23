@@ -1077,6 +1077,18 @@ function addProjectRow() {
   `;
   div.querySelector('[data-action="delete-project"]').addEventListener('click', () => div.remove());
   el.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const nameInput = div.querySelector('[data-f="name"]');
+  if (nameInput) {
+    setTimeout(() => nameInput.focus(), 50);
+    nameInput.addEventListener('input', () => {
+      const prefixInput = div.querySelector('[data-f="prefixes"]');
+      if (prefixInput && !prefixInput.value) {
+        const v = nameInput.value.trim().toLowerCase();
+        if (v) prefixInput.value = `${v}_`;
+      }
+    });
+  }
 }
 
 async function saveProjects() {
