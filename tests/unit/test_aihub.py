@@ -8,60 +8,72 @@ from server.aihub import (
     _friendly_cluster,
     _os_cluster_names,
     _pick_best_accounts,
-    CLUSTER_NAME_MAP,
-    CLUSTER_NAME_REV,
+    cluster_name_map,
+    cluster_name_rev,
 )
 from server.jobs import _parse_gres_gpu_count
 from server.config import _cache_get, _cache_set
 
 
+@pytest.fixture
+def fake_clusters(monkeypatch):
+    """Inject a synthetic CLUSTERS dict so the cluster-name-map tests stay
+    independent of the infrastructure identifiers in conf/config.json."""
+    fake = {
+        "alpha": {"aihub_name": "alpha-os-1"},
+        "beta":  {"aihub_name": "beta-os-2"},
+        "gamma": {"aihub_name": "gamma-shared"},
+        # No aihub_name → cluster has no AI Hub ingestion and is excluded.
+        "delta": {},
+    }
+    monkeypatch.setattr("server.aihub.CLUSTERS", fake)
+    return fake
+
+
 class TestClusterNameMapping:
     @pytest.mark.unit
-    def test_forward_mapping(self):
-        assert CLUSTER_NAME_MAP["eos"] == "eos"
-        assert CLUSTER_NAME_MAP["dfw"] == "cw-dfw-cs-001"
-        assert CLUSTER_NAME_MAP["aws-dfw"] == "aws-dfw-cs-001"
-        assert CLUSTER_NAME_MAP["hsg"] == "oci-hsg-cs-001"
+    def test_forward_mapping_skips_clusters_without_aihub_name(self, fake_clusters):
+        m = cluster_name_map()
+        assert m == {"alpha": "alpha-os-1", "beta": "beta-os-2", "gamma": "gamma-shared"}
+        assert "delta" not in m
 
     @pytest.mark.unit
-    def test_reverse_mapping(self):
-        assert CLUSTER_NAME_REV["eos"] == "eos"
-        assert CLUSTER_NAME_REV["cw-dfw-cs-001"] == "dfw"
-        assert CLUSTER_NAME_REV["aws-dfw-cs-001"] == "aws-dfw"
-        assert CLUSTER_NAME_REV["oci-hsg-cs-001"] == "hsg"
+    def test_reverse_mapping_round_trips(self, fake_clusters):
+        rev = cluster_name_rev()
+        assert rev["alpha-os-1"] == "alpha"
+        assert rev["beta-os-2"] == "beta"
 
     @pytest.mark.unit
-    def test_dfw_and_aws_dfw_are_distinct(self):
-        assert CLUSTER_NAME_MAP["dfw"] != CLUSTER_NAME_MAP["aws-dfw"]
-        assert CLUSTER_NAME_REV["cw-dfw-cs-001"] == "dfw"
-        assert CLUSTER_NAME_REV["aws-dfw-cs-001"] == "aws-dfw"
+    def test_friendly_cluster_known(self, fake_clusters):
+        assert _friendly_cluster("alpha-os-1") == "alpha"
+        assert _friendly_cluster("beta-os-2") == "beta"
 
     @pytest.mark.unit
-    def test_friendly_cluster_known(self):
-        assert _friendly_cluster("cw-dfw-cs-001") == "dfw"
-        assert _friendly_cluster("draco-oci-iad") == "iad"
-
-    @pytest.mark.unit
-    def test_friendly_cluster_unknown_passes_through(self):
+    def test_friendly_cluster_unknown_passes_through(self, fake_clusters):
         assert _friendly_cluster("unknown-cluster") == "unknown-cluster"
 
     @pytest.mark.unit
-    def test_os_cluster_names_specific(self):
-        result = _os_cluster_names(["eos", "dfw"])
-        assert "eos" in result
-        assert "cw-dfw-cs-001" in result
-        assert len(result) == 2
+    def test_os_cluster_names_specific(self, fake_clusters):
+        result = _os_cluster_names(["alpha", "beta"])
+        assert set(result) == {"alpha-os-1", "beta-os-2"}
 
     @pytest.mark.unit
-    def test_os_cluster_names_all(self):
+    def test_os_cluster_names_all(self, fake_clusters):
         result = _os_cluster_names(None)
-        assert len(result) == len(CLUSTER_NAME_MAP)
+        assert set(result) == {"alpha-os-1", "beta-os-2", "gamma-shared"}
 
     @pytest.mark.unit
-    def test_os_cluster_names_filters_unknown(self):
-        result = _os_cluster_names(["eos", "nonexistent"])
-        assert len(result) == 1
-        assert result[0] == "eos"
+    def test_os_cluster_names_filters_unknown(self, fake_clusters):
+        result = _os_cluster_names(["alpha", "nonexistent"])
+        assert result == ["alpha-os-1"]
+
+    @pytest.mark.unit
+    def test_legacy_constant_imports_still_work(self, fake_clusters):
+        """`from server.aihub import CLUSTER_NAME_MAP` keeps working through
+        the PEP 562 ``__getattr__`` shim so callers don't have to migrate."""
+        from server import aihub
+        assert aihub.CLUSTER_NAME_MAP == cluster_name_map()
+        assert aihub.CLUSTER_NAME_REV == cluster_name_rev()
 
 
 class TestPickBestAccounts:

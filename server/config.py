@@ -63,6 +63,10 @@ for _name, _cfg in _CONFIG.get("clusters", {}).items():
         "gpu_mem_gb": _cfg.get("gpu_mem_gb", 0),
         "gpus_per_node": _cfg.get("gpus_per_node", 0),
         "account": _cfg.get("account", ""),
+        # Optional AI Hub OpenSearch identifier for this cluster (the
+        # ``s_cluster`` field value). Leave unset when the cluster is not
+        # ingested into AI Hub — aihub.py will skip it.
+        "aihub_name": _cfg.get("aihub_name", ""),
     }
 CLUSTERS["local"] = {
     "host": None, "data_host": "", "user": None, "key": None,
@@ -533,6 +537,7 @@ def reload_config(new_cfg):
             "gpu_type": ccfg.get("gpu_type", ""),
             "gpus_per_node": ccfg.get("gpus_per_node", 0),
             "account": ccfg.get("account", ""),
+            "aihub_name": ccfg.get("aihub_name", ""),
         }
     new_clusters["local"] = {
         "host": None, "data_host": "", "user": None, "key": None,

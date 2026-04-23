@@ -24,16 +24,36 @@ log = logging.getLogger(__name__)
 
 _opensearch_sem = threading.Semaphore(6)
 
-CLUSTER_NAME_MAP = {
-    "eos": "eos",
-    "dfw": "cw-dfw-cs-001",
-    "aws-dfw": "aws-dfw-cs-001",
-    "hsg": "oci-hsg-cs-001",
-    "iad": "draco-oci-iad",
-    "ord": "cs-oci-ord",
-    "svg": "nsc-svg-slurm-1",
-}
-CLUSTER_NAME_REV = {v: k for k, v in CLUSTER_NAME_MAP.items()}
+def cluster_name_map():
+    """Map friendly cluster name → AI Hub OpenSearch identifier.
+
+    Each cluster entry in ``conf/config.json`` may set ``aihub_name`` to
+    expose its OpenSearch ``s_cluster`` value (e.g. ``cw-dfw-cs-001``).
+    Clusters without ``aihub_name`` are skipped — they don't have AI Hub
+    data ingestion configured. Computed lazily from the live ``CLUSTERS``
+    dict so reload_config picks up new clusters without a restart.
+    """
+    return {
+        friendly: cfg["aihub_name"]
+        for friendly, cfg in CLUSTERS.items()
+        if cfg.get("aihub_name")
+    }
+
+
+def cluster_name_rev():
+    """Inverse of cluster_name_map: OpenSearch identifier → friendly name."""
+    return {v: k for k, v in cluster_name_map().items()}
+
+
+def __getattr__(name):
+    """PEP 562 fallback so legacy `from server.aihub import CLUSTER_NAME_MAP`
+    callers (and tests) keep working — the map is now derived from config
+    on every access instead of being a frozen module-level constant."""
+    if name == "CLUSTER_NAME_MAP":
+        return cluster_name_map()
+    if name == "CLUSTER_NAME_REV":
+        return cluster_name_rev()
+    raise AttributeError(name)
 
 _aihub_cache = {}
 
@@ -81,14 +101,15 @@ def _opensearch_query(body, timeout=10):
 
 def _os_cluster_names(clusters=None):
     """Convert our cluster names to OpenSearch cluster names."""
+    name_map = cluster_name_map()
     if clusters:
-        return [CLUSTER_NAME_MAP.get(c, c) for c in clusters if c in CLUSTER_NAME_MAP]
-    return list(CLUSTER_NAME_MAP.values())
+        return [name_map.get(c, c) for c in clusters if c in name_map]
+    return list(name_map.values())
 
 
 def _friendly_cluster(os_name):
     """Convert OpenSearch cluster name back to our short name."""
-    return CLUSTER_NAME_REV.get(os_name, os_name)
+    return cluster_name_rev().get(os_name, os_name)
 
 
 def _date_str(days_ago):
@@ -398,7 +419,7 @@ def get_user_breakdown(account, cluster, days=7):
     if cached is not None:
         return cached
 
-    os_cluster = CLUSTER_NAME_MAP.get(cluster, cluster)
+    os_cluster = cluster_name_map().get(cluster, cluster)
 
     query = {
         "query": {

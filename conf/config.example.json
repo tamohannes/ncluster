@@ -33,6 +33,7 @@
       "gpu_type": "H100",
       "gpu_mem_gb": 80,
       "gpus_per_node": 8,
+      "aihub_name": "my-cluster-id-in-opensearch",
       "mount_paths": [
         "/shared/storage/users/$USER"
       ]
