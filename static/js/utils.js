@@ -1547,12 +1547,12 @@ function computeWds(cn, acct, ad, curGpuType) {
   const clTot = cd.cluster_total_gpus || 0;
   const occPct = clTot > 0 ? Math.round(clOcc / clTot * 100) : 100;
 
+  // Resource gate intentionally omits idle_nodes: on busy preemptable
+  // clusters every node is mixed/alloc most of the time, but jobs still
+  // start instantly thanks to fairshare and PPP headroom. idle_nodes
+  // still feeds the queue score below (pending vs. idle ratio).
   const hardCapacity = Math.max(pppHeadroom, freeForTeam);
-  const resourceGate = Math.min(
-    1,
-    hardCapacity / Math.max(reqGpus, 1),
-    idleNodes / Math.max(reqNodes, 1)
-  );
+  const resourceGate = Math.min(1, hardCapacity / Math.max(reqGpus, 1));
 
   const teamPenalty = (teamNum && teamNum > 0 && freeForTeam <= 0) ? 0.7 : 1.0;
 

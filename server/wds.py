@@ -21,15 +21,18 @@ log = logging.getLogger(__name__)
 def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
                  my_level_fs, ppp_level_fs, team_num,
                  occ_pct=100, req_nodes=1, req_gpn=8):
-    """Compute WDS score using the same equation as the frontend."""
+    """Compute WDS score using the same equation as the frontend.
+
+    The resource gate intentionally does NOT include ``idle_nodes``: on
+    busy preemptable clusters every node is in mixed/alloc state most of
+    the time, but jobs still start instantly thanks to fairshare and
+    PPP-account headroom. ``idle_nodes`` still influences the score via
+    ``queue_score`` (pending vs. idle ratio).
+    """
     req_gpus = req_nodes * req_gpn
 
     hard_capacity = max(ppp_headroom, free_for_team)
-    resource_gate = min(
-        1,
-        hard_capacity / max(req_gpus, 1),
-        idle_nodes / max(req_nodes, 1),
-    )
+    resource_gate = min(1, hard_capacity / max(req_gpus, 1))
 
     team_penalty = 0.7 if (team_num is not None and team_num > 0 and free_for_team <= 0) else 1.0
 
