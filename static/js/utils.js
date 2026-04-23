@@ -1376,63 +1376,108 @@ async function _refreshLiveClusterData(clusterName, force) {
   } catch (_) {}
 }
 
+// Fetch every per-cluster data source for a single cluster in parallel and
+// merge the results into the module-level state. Used both by the per-card
+// refresh button and as a building block for the bulk refresh below.
+async function _fetchClusterBundle(clusterName, force) {
+  const q = _computeClusterQuery(clusterName, force);
+  const results = await Promise.allSettled([
+    fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
+    _ensureOverlayData(true, force, clusterName),
+    fetchPartitions(force, clusterName),
+    _fetchMyFairshare(force, clusterName),
+    _fetchTeamJobs(force, clusterName),
+    _refreshLiveClusterData(clusterName, force),
+  ]);
+  const allocResult = results[0];
+  if (allocResult.status === 'fulfilled') {
+    try {
+      const data = await allocResult.value.json();
+      if (data.status === 'ok') {
+        _pppAllocData = _mergeClusterPayload(_pppAllocData, data, clusterName);
+      }
+    } catch (_) {}
+  }
+}
+
+// Fetch compute-page data that is not tied to a specific cluster (project
+// colors, wait calibration, optional settings). Cheap and runs once per
+// bulk refresh in parallel with the per-cluster bundles.
+async function _fetchSharedComputeData() {
+  const settingsNeeded = !Object.keys(_teamGpuAlloc).length;
+  const promises = [
+    _fetchProjectColors(),
+    fetchWaitCalibration(),
+  ];
+  if (settingsNeeded) {
+    promises.push(
+      fetchWithTimeout('/api/settings', {}, 10000)
+        .then(r => r.json())
+        .then(sd => { if (sd?.team_gpu_allocations) _teamGpuAlloc = sd.team_gpu_allocations; })
+        .catch(() => {})
+    );
+  }
+  await Promise.allSettled(promises);
+}
+
 async function _doRefreshPppAllocations(force, clusterName) {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
-  const isSingleCluster = !!clusterName;
 
-  const hadCache = !isSingleCluster && _loadComputeCache();
+  if (clusterName) {
+    try {
+      await _fetchClusterBundle(clusterName, force);
+    } finally {
+      _renderCurrentPppAllocations();
+      _saveComputeCache();
+    }
+    return;
+  }
+
+  const hadCache = _loadComputeCache();
   if (hadCache) {
     _renderPppAllocations(_pppAllocData || { clusters: {} });
   }
-
   // Always force-fetch live data so we never show stale backend cache
   const fetchForce = force || hadCache;
 
-  if (!isSingleCluster) _showComputeLoadBar(true);
+  _showComputeLoadBar(true);
+  const clusterNames = (typeof CLUSTERS !== 'undefined')
+    ? Object.keys(CLUSTERS).filter(c => c !== 'local')
+    : [];
+
+  // Mark every cluster as refreshing up front so each card's spinner shows
+  // immediately, then paint a skeleton render so the user sees the grid even
+  // before the first cluster's bundle resolves.
+  for (const cn of clusterNames) _computeRefreshingClusters.add(cn);
+  _renderPppAllocations(_pppAllocData || { clusters: {} });
+
+  // Fan out: one bundle per cluster runs in parallel, and each cluster's
+  // card refreshes as soon as its own bundle resolves rather than waiting
+  // for the slowest cluster.
+  const perClusterPromises = clusterNames.map(cn =>
+    _fetchClusterBundle(cn, fetchForce)
+      .catch(() => {})
+      .finally(() => {
+        _computeRefreshingClusters.delete(cn);
+        _renderPppAllocations(_pppAllocData || { clusters: {} });
+      })
+  );
+
   try {
-    const q = _computeClusterQuery(clusterName, fetchForce);
-    const settingsNeeded = !Object.keys(_teamGpuAlloc).length;
-    const results = await Promise.allSettled([
-      fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
-      _ensureOverlayData(true, fetchForce, clusterName),
-      fetchPartitions(fetchForce, clusterName),
-      _fetchMyFairshare(fetchForce, clusterName),
-      _fetchTeamJobs(fetchForce, clusterName),
-      _fetchProjectColors(),
-      _refreshLiveClusterData(clusterName, fetchForce),
-      ...(isSingleCluster ? [] : [fetchWaitCalibration()]),
-      ...(settingsNeeded ? [fetchWithTimeout('/api/settings', {}, 10000)] : []),
+    await Promise.allSettled([
+      _fetchSharedComputeData(),
+      ...perClusterPromises,
     ]);
-    if (settingsNeeded) {
-      const sIdx = isSingleCluster ? 7 : 8;
-      const sr = results[sIdx];
-      if (sr?.status === 'fulfilled') {
-        try {
-          const sd = await sr.value.json();
-          if (sd.team_gpu_allocations) _teamGpuAlloc = sd.team_gpu_allocations;
-        } catch (_) {}
-      }
-    }
-    const allocResult = results[0];
-    if (allocResult.status === 'fulfilled') {
-      const data = await allocResult.value.json();
-      if (data.status === 'ok') {
-        _pppAllocData = isSingleCluster
-          ? _mergeClusterPayload(_pppAllocData, data, clusterName)
-          : data;
-      } else if (!_pppAllocData) {
-        el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
-      }
-    }
-    _renderCurrentPppAllocations();
-    _saveComputeCache();
-  } catch (e) {
     if (!_pppAllocData && !_partitionData) {
       el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to load compute data</div>';
+      return;
     }
+    _renderPppAllocations(_pppAllocData || { clusters: {} });
+    _saveComputeCache();
   } finally {
-    if (!isSingleCluster) _showComputeLoadBar(false);
+    for (const cn of clusterNames) _computeRefreshingClusters.delete(cn);
+    _showComputeLoadBar(false);
   }
 }
 
