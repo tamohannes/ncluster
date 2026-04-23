@@ -16,7 +16,9 @@ from server.db import (
     db_get_project,
     db_list_projects,
     db_update_project,
+    get_db,
     init_db,
+    re_extract_unmatched_projects,
 )
 
 
@@ -255,3 +257,55 @@ class TestRoundTripWithExtractProject:
         assert extract_project("temp_run-1") == "temp"
         db_delete_project("temp")
         assert extract_project("temp_run-1") == ""
+
+
+@pytest.mark.unit
+class TestReExtractUnmatchedProjects:
+    """Verify the helper re-tags rows whose project was empty before."""
+
+    def _seed_jobs(self, jobs):
+        con = get_db()
+        for jid, name, project in jobs:
+            con.execute(
+                "INSERT INTO job_history (cluster, job_id, job_name, state, project) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("c", jid, name, "COMPLETED", project),
+            )
+        con.commit()
+
+    def test_fills_empty_project_for_matching_rows(self):
+        self._seed_jobs([
+            ("j1", "newproj_eval-r1", ""),
+            ("j2", "newproj_train-r1", ""),
+            ("j3", "other_run-1", ""),
+        ])
+        db_create_project("newproj", prefixes=["newproj_"])
+        result = re_extract_unmatched_projects()
+        assert result["jobs_updated"] == 2
+
+        con = get_db()
+        rows = {r["job_id"]: r["project"] for r in
+                con.execute("SELECT job_id, project FROM job_history").fetchall()}
+        assert rows["j1"] == "newproj"
+        assert rows["j2"] == "newproj"
+        assert rows["j3"] == ""
+
+    def test_does_not_touch_already_tagged_rows(self):
+        self._seed_jobs([
+            ("j1", "alpha_run-1", "alpha"),
+            ("j2", "alpha_run-2", ""),
+        ])
+        db_create_project("alpha", prefixes=["alpha_"])
+        result = re_extract_unmatched_projects()
+        assert result["jobs_updated"] == 1
+        con = get_db()
+        rows = {r["job_id"]: r["project"] for r in
+                con.execute("SELECT job_id, project FROM job_history").fetchall()}
+        assert rows["j1"] == "alpha"
+        assert rows["j2"] == "alpha"
+
+    def test_returns_zero_when_no_matches(self):
+        self._seed_jobs([("j1", "ghost_run", "")])
+        db_create_project("alpha", prefixes=["alpha_"])
+        result = re_extract_unmatched_projects()
+        assert result == {"jobs_updated": 0, "runs_updated": 0}

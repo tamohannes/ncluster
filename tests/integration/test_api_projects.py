@@ -43,6 +43,8 @@ class TestApiProjectCreate:
         data = resp.get_json()
         assert data["status"] == "ok"
         assert data["project"]["name"] == "alpha"
+        assert "reassigned" in data
+        assert data["reassigned"]["jobs_updated"] == 0
 
     def test_duplicate_returns_400(self, client):
         body = {"name": "alpha", "prefixes": ["alpha_"]}
@@ -58,6 +60,27 @@ class TestApiProjectCreate:
             content_type="application/json",
         )
         assert resp.status_code == 400
+
+    def test_create_re_tags_unmatched_jobs(self, client):
+        from server.db import get_db
+        con = get_db()
+        con.execute(
+            "INSERT INTO job_history (cluster, job_id, job_name, state, project) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("c", "j1", "newproj_eval-r1", "COMPLETED", ""),
+        )
+        con.commit()
+        resp = client.post(
+            "/api/projects",
+            data=json.dumps({"name": "newproj", "prefixes": ["newproj_"]}),
+            content_type="application/json",
+        )
+        data = resp.get_json()
+        assert data["reassigned"]["jobs_updated"] == 1
+        row = get_db().execute(
+            "SELECT project FROM job_history WHERE job_id=?", ("j1",)
+        ).fetchone()
+        assert row["project"] == "newproj"
 
 
 @pytest.mark.integration

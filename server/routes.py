@@ -1170,7 +1170,7 @@ def api_projects_all():
 
 @api.route("/api/projects", methods=["POST"])
 def api_project_create():
-    from .db import db_create_project
+    from .db import db_create_project, re_extract_unmatched_projects
     payload = request.get_json(silent=True) or {}
     result = db_create_project(
         name=payload.get("name", ""),
@@ -1183,12 +1183,13 @@ def api_project_create():
     )
     if result.get("status") == "error":
         return jsonify(result), 400
+    result["reassigned"] = re_extract_unmatched_projects()
     return jsonify(result)
 
 
 @api.route("/api/projects/<name>", methods=["PUT"])
 def api_project_update(name):
-    from .db import db_update_project
+    from .db import db_update_project, re_extract_unmatched_projects
     payload = request.get_json(silent=True) or {}
     fields = {k: payload.get(k) for k in (
         "color", "emoji", "prefixes", "default_campaign",
@@ -1198,6 +1199,8 @@ def api_project_update(name):
     if result.get("status") == "error":
         status = 404 if "not found" in result.get("error", "") else 400
         return jsonify(result), status
+    if "prefixes" in fields or "default_campaign" in fields:
+        result["reassigned"] = re_extract_unmatched_projects()
     return jsonify(result)
 
 

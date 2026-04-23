@@ -1168,6 +1168,47 @@ def db_delete_project(name):
     return {"status": "ok", "deleted": name}
 
 
+def re_extract_unmatched_projects():
+    """Re-extract ``project`` for ``job_history`` and ``runs`` rows whose project is empty.
+
+    Cheap to run: only touches rows where ``project IS NULL`` or ``project=''``.
+    Called after every project CRUD so newly-registered prefixes immediately
+    light up matching jobs in the UI without waiting for the next poller cycle.
+
+    Returns ``{"jobs_updated": int, "runs_updated": int}``.
+    """
+    from .config import extract_project, reload_projects_cache
+    reload_projects_cache()
+
+    con = get_db()
+    rows = con.execute(
+        "SELECT id, job_name FROM job_history WHERE project IS NULL OR project=''"
+    ).fetchall()
+    job_updates = []
+    for r in rows:
+        proj = extract_project(r["job_name"] or "")
+        if proj:
+            job_updates.append((proj, r["id"]))
+
+    run_rows = con.execute(
+        "SELECT id, run_name FROM runs WHERE project IS NULL OR project=''"
+    ).fetchall()
+    run_updates = []
+    for r in run_rows:
+        proj = extract_project(r["run_name"] or "")
+        if proj:
+            run_updates.append((proj, r["id"]))
+
+    if job_updates or run_updates:
+        with db_write() as wcon:
+            if job_updates:
+                wcon.executemany("UPDATE job_history SET project=? WHERE id=?", job_updates)
+            if run_updates:
+                wcon.executemany("UPDATE runs SET project=? WHERE id=?", run_updates)
+
+    return {"jobs_updated": len(job_updates), "runs_updated": len(run_updates)}
+
+
 def cleanup_local_on_startup():
     """Dismiss local process entries on startup.
 
