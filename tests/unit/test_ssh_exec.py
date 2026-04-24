@@ -23,9 +23,10 @@ def test_ssh_run_invokes_openssh_subprocess(mock_cluster, monkeypatch):
 
     captured = {}
 
-    def fake_run(argv, capture_output, text, timeout, check):
+    def fake_run(argv, capture_output, text, timeout, check, input=None):
         captured["argv"] = argv
         captured["timeout"] = timeout
+        captured["input"] = input
         return subprocess.CompletedProcess(argv, 0, "hello\n", "")
 
     monkeypatch.setattr("server.ssh.subprocess.run", fake_run)
@@ -36,7 +37,8 @@ def test_ssh_run_invokes_openssh_subprocess(mock_cluster, monkeypatch):
     assert err == ""
     assert captured["argv"][0] == "ssh"
     assert f"{CLUSTERS[mock_cluster]['user']}@{CLUSTERS[mock_cluster]['host']}" in captured["argv"]
-    assert captured["argv"][-1].startswith("bash -lc ")
+    # Single-line commands are embedded in the argv; multiline go via stdin.
+    assert captured["argv"][-1].startswith("bash -lc ") or captured["argv"][-1] == "bash -l"
     assert captured["timeout"] == 7
 
 
@@ -44,7 +46,7 @@ def test_ssh_run_invokes_openssh_subprocess(mock_cluster, monkeypatch):
 def test_ssh_timeout_trips_circuit_breaker(mock_cluster, monkeypatch):
     from server.ssh import _cb_is_open, ssh_run_with_timeout
 
-    def fake_run(*args, **kwargs):
+    def fake_run(*args, input=None, **kwargs):
         raise subprocess.TimeoutExpired("ssh", 5)
 
     monkeypatch.setattr("server.ssh.subprocess.run", fake_run)

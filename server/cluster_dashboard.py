@@ -16,7 +16,7 @@ import time
 import urllib.request
 import urllib.error
 
-from .config import DASHBOARD_URL
+from .settings import get_dashboard_url
 
 log = logging.getLogger(__name__)
 
@@ -29,9 +29,10 @@ _refreshing = False
 
 
 def _fetch_json(path, timeout=10):
-    if not DASHBOARD_URL:
+    base = get_dashboard_url()
+    if not base:
         return None
-    url = f"{DASHBOARD_URL}{path}"
+    url = f"{base}{path}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

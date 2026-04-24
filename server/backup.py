@@ -14,7 +14,11 @@ import tarfile
 import time
 from datetime import datetime, timedelta
 
-from .config import DB_PATH, PROJECT_ROOT, BACKUP_INTERVAL_HOURS, BACKUP_MAX_KEEP
+from .config import DB_PATH, PROJECT_ROOT
+from .settings import (
+    get_backup_interval_hours as _backup_interval_hours,
+    get_backup_max_keep as _backup_max_keep,
+)
 
 log = logging.getLogger(__name__)
 
@@ -98,8 +102,7 @@ def _cleanup_old_backups():
     """Remove backups older than the configured retention period."""
     if not os.path.isdir(BACKUP_DIR):
         return
-    from .config import BACKUP_MAX_KEEP
-    cutoff = datetime.now() - timedelta(days=BACKUP_MAX_KEEP)
+    cutoff = datetime.now() - timedelta(days=_backup_max_keep())
 
     prefixes = ("history-", "logbook-images-")
     suffixes = (".db", ".tar.gz")
@@ -128,6 +131,5 @@ def backup_loop():
                 _cleanup_old_backups()
         except Exception as e:
             log.warning("Backup loop error: %s", e)
-        from .config import BACKUP_INTERVAL_HOURS
-        sleep_sec = max(600, BACKUP_INTERVAL_HOURS * 3600 // 4)
+        sleep_sec = max(600, _backup_interval_hours() * 3600 // 4)
         time.sleep(sleep_sec)

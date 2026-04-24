@@ -11,9 +11,10 @@ import time
 from datetime import datetime, timedelta
 
 from .config import (
-    CLUSTERS, PPP_ACCOUNTS, TEAM_GPU_ALLOC, WDS_SNAPSHOT_INTERVAL,
+    CLUSTERS, PPP_ACCOUNTS, TEAM_GPU_ALLOC,
     DB_PATH,
 )
+from .settings import get_wds_snapshot_interval as _wds_snapshot_interval
 
 log = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def wds_snapshot_loop():
             compute_wds_snapshot()
         except Exception as e:
             log.warning("WDS snapshot loop error: %s", e)
-        time.sleep(max(60, WDS_SNAPSHOT_INTERVAL))
+        time.sleep(max(60, _wds_snapshot_interval()))
 
 
 def get_wds_history(cluster=None, account=None, days=30, limit=5000):

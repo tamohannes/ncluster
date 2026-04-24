@@ -13,7 +13,6 @@ from .config import (
     APP_ROOT, CLUSTERS, DEFAULT_USER, STATE_ORDER, SQUEUE_FMT, SQUEUE_HDR,
     LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE,
     PPP_ACCOUNTS, TEAM_MEMBERS,
-    SSH_TIMEOUT, CACHE_FRESH_SEC,
     _cache_lock, _cache, _seen_jobs, _last_polled,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, _stats_cache,
@@ -24,6 +23,7 @@ from .config import (
     EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
     extract_project,
 )
+from .settings import get_cache_fresh_sec as _cache_fresh_sec
 from .ssh import ssh_run, ssh_run_with_timeout, enable_standalone_ssh
 from .db import (
     upsert_job, get_db, db_write, get_board_pinned, invalidate_pinned_cache,
@@ -883,9 +883,9 @@ _SDK_POLL_MULTIPLIER = 4
 
 def _is_cache_fresh(cluster_name):
     ts = _last_polled.get(cluster_name, 0.0)
-    ttl = CACHE_FRESH_SEC
+    ttl = _cache_fresh_sec()
     if _cluster_is_sdk_only(cluster_name):
-        ttl = CACHE_FRESH_SEC * _SDK_POLL_MULTIPLIER
+        ttl = ttl * _SDK_POLL_MULTIPLIER
     return (time.monotonic() - ts) < ttl
 
 
@@ -1656,8 +1656,8 @@ def _extract_progress_with_source(cluster, job_id, files):
 
 
 def _get_stats_interval():
-    from .config import STATS_INTERVAL_SEC
-    return STATS_INTERVAL_SEC
+    from .settings import get_stats_interval
+    return get_stats_interval()
 
 
 def _parse_rss_bytes(val):

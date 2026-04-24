@@ -15,9 +15,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from .config import (
-    CLUSTERS, PPP_ACCOUNTS, TEAM_MEMBERS, AIHUB_CACHE_TTL,
-    AIHUB_OPENSEARCH_URL, DASHBOARD_URL,
-    TEAM_GPU_ALLOC, TEAM_NAME, _cache_get, _cache_set,
+    CLUSTERS, PPP_ACCOUNTS, TEAM_MEMBERS,
+    TEAM_GPU_ALLOC, _cache_get, _cache_set,
+)
+from .settings import (
+    get_aihub_cache_ttl as _aihub_cache_ttl,
+    get_aihub_opensearch_url as _aihub_opensearch_url,
+    get_dashboard_url as _dashboard_url,
+    get_team_name as _team_name,
 )
 
 log = logging.getLogger(__name__)
@@ -76,7 +81,8 @@ def _opensearch_query(body, timeout=10):
     A semaphore caps concurrent in-flight queries to prevent thread
     exhaustion when OpenSearch is slow or unreachable.
     """
-    if not AIHUB_OPENSEARCH_URL:
+    url = _aihub_opensearch_url()
+    if not url:
         log.warning("aihub_opensearch_url not configured")
         return None
     if not _opensearch_sem.acquire(timeout=2):
@@ -85,7 +91,7 @@ def _opensearch_query(body, timeout=10):
     try:
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
-            AIHUB_OPENSEARCH_URL,
+            url,
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -199,7 +205,7 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
     cluster_key = ",".join(sorted(clusters or [])) or "all"
     cache_key = f"ppp_alloc:{','.join(sorted(accts))}:{cluster_key}"
     if not force:
-        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        cached = _cache_get(_aihub_cache, cache_key, _aihub_cache_ttl())
         if cached is not None:
             _stamp_team_alloc(cached)
             return cached
@@ -321,7 +327,7 @@ def get_usage_history(accounts=None, clusters=None, days=14, interval="1d"):
     Returns daily (or hourly) buckets with allocation and consumption data.
     """
     cache_key = f"history_{days}_{interval}_{','.join(clusters or ['all'])}"
-    cached = _cache_get(_aihub_cache, cache_key, min(AIHUB_CACHE_TTL * 6, 1800))
+    cached = _cache_get(_aihub_cache, cache_key, min(_aihub_cache_ttl() * 6, 1800))
     if cached is not None:
         return cached
 
@@ -415,7 +421,7 @@ def get_usage_history(accounts=None, clusters=None, days=14, interval="1d"):
 def get_user_breakdown(account, cluster, days=7):
     """Get per-user GPU consumption breakdown for an account on a cluster."""
     cache_key = f"users_{account}_{cluster}_{days}"
-    cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+    cached = _cache_get(_aihub_cache, cache_key, _aihub_cache_ttl())
     if cached is not None:
         return cached
 
@@ -474,7 +480,7 @@ def get_user_breakdown(account, cluster, days=7):
 def get_cluster_occupancy(clusters=None, days=7):
     """Get cluster-level occupancy metrics over time."""
     cache_key = f"occupancy_{days}_{','.join(clusters or ['all'])}"
-    cached = _cache_get(_aihub_cache, cache_key, min(AIHUB_CACHE_TTL * 6, 1800))
+    cached = _cache_get(_aihub_cache, cache_key, min(_aihub_cache_ttl() * 6, 1800))
     if cached is not None:
         return cached
 
@@ -549,14 +555,14 @@ def _get_team_members():
     """Get team member list from config, falling back to the cluster dashboard."""
     if TEAM_MEMBERS:
         return list(TEAM_MEMBERS)
-    if not DASHBOARD_URL:
+    if not _dashboard_url():
         return []
     try:
-        req = urllib.request.Request(f"{DASHBOARD_URL}/api/config", method="GET")
+        req = urllib.request.Request(f"{_dashboard_url()}/api/config", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             cfg = json.loads(resp.read().decode())
         teams = cfg.get("teams", {})
-        return teams.get(TEAM_NAME, []) if TEAM_NAME else []
+        return teams.get(_team_name(), []) if _team_name() else []
     except Exception:
         return []
 
@@ -576,7 +582,7 @@ def get_user_overlay(users=None, accounts=None, clusters=None, force=False):
     acct_key = ",".join(sorted(accts))
     cache_key = f"user_overlay:{user_key}:{acct_key}:{cluster_key}"
     if not force:
-        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        cached = _cache_get(_aihub_cache, cache_key, _aihub_cache_ttl())
         if cached is not None:
             return cached
 
@@ -662,7 +668,7 @@ def get_team_overlay(clusters=None, force=False):
     data = get_user_overlay(users=all_users, clusters=clusters, force=force)
     data["current_user"] = DEFAULT_USER
     data["team_members"] = team_members
-    data["team_name"] = TEAM_NAME
+    data["team_name"] = _team_name()
     return data
 
 
@@ -681,7 +687,7 @@ def get_my_fairshare(user=None, accounts=None, clusters=None, force=False):
     cluster_key = ",".join(sorted(clusters or [])) or "all"
     cache_key = f"my_fs:{user}:{','.join(sorted(accts))}:{cluster_key}"
     if not force:
-        cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+        cached = _cache_get(_aihub_cache, cache_key, _aihub_cache_ttl())
         if cached is not None:
             return cached
 

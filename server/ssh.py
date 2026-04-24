@@ -14,7 +14,8 @@ import subprocess
 import threading
 import time
 
-from .config import CLUSTERS, SSH_TIMEOUT
+from .config import CLUSTERS
+from .settings import get_ssh_timeout as _ssh_timeout
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +108,8 @@ def _shell_quote(s):
 
 
 def _ssh_connect_timeout(timeout_sec):
-    return max(1, min(int(timeout_sec), int(SSH_TIMEOUT or timeout_sec or 1)))
+    cur_timeout = _ssh_timeout()
+    return max(1, min(int(timeout_sec), int(cur_timeout or timeout_sec or 1)))
 
 
 def _ssh_argv(cluster_name, timeout_sec, host_override=None):
@@ -145,6 +147,12 @@ def _build_remote_command(command):
     return f"bash -lc {_shell_quote(command)}"
 
 
+def _is_multiline(command):
+    """True when the command has newlines or special chars that benefit
+    from stdin transport instead of command-line embedding."""
+    return "\n" in command or len(command) > 1000
+
+
 def _run_ssh_subprocess(cluster_name, command, timeout_sec, *, host_override=None, record_breaker=True):
     if record_breaker and _cb_is_open(cluster_name):
         raise RuntimeError(
@@ -164,12 +172,24 @@ def _run_ssh_subprocess(cluster_name, command, timeout_sec, *, host_override=Non
             )
         try:
             argv = _ssh_argv(cluster_name, timeout_sec, host_override=host_override)
-            argv.append(_build_remote_command(command))
+
+            stdin_data = None
+            if _is_multiline(command):
+                # Pipe the script via stdin to avoid the remote login shell
+                # (often tcsh on HPC clusters) from interpreting special
+                # characters like '!' or complex quoting in the command body.
+                # SSH's -T flag ensures no pty allocation; bash reads stdin.
+                argv.append("bash -l")
+                stdin_data = command
+            else:
+                argv.append(_build_remote_command(command))
+
             try:
                 result = subprocess.run(
                     argv,
                     capture_output=True,
                     text=True,
+                    input=stdin_data,
                     timeout=timeout_sec,
                     check=False,
                 )
@@ -220,7 +240,7 @@ done"""
 
 
 def ssh_run(cluster_name, command):
-    return _run_ssh_subprocess(cluster_name, command, SSH_TIMEOUT)
+    return _run_ssh_subprocess(cluster_name, command, _ssh_timeout())
 
 
 def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
@@ -300,7 +320,7 @@ def cancel_jobs_with_report(cluster_name, job_ids, timeout_sec=20, chunk_size=25
 
 
 def ssh_run_data(cluster_name, command):
-    return _ssh_exec_data(cluster_name, command, SSH_TIMEOUT)
+    return _ssh_exec_data(cluster_name, command, _ssh_timeout())
 
 
 def ssh_run_data_with_timeout(cluster_name, command, timeout_sec=20):
