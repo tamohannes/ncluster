@@ -1,12 +1,10 @@
-"""Unit tests for server/config.py helpers."""
+"""Unit tests for server/config.py helpers (v4: live DB-backed accessors)."""
 
-import json
-import os
 import time
 import pytest
 
 from server.config import (
-    _cache_get, _cache_set, _warm_lock, _load_mount_map, settings_response,
+    _cache_get, _cache_set, _warm_lock, settings_response,
     extract_project, extract_campaign, get_project_color, PROJECTS,
 )
 
@@ -35,35 +33,6 @@ class TestCacheGetSet:
         _cache_set(store, "k1", "v1")
         _cache_set(store, "k1", "v2")
         assert _cache_get(store, "k1", ttl_sec=60) == "v2"
-
-
-class TestLoadMountMap:
-    @pytest.mark.unit
-    def test_default_when_env_empty(self, monkeypatch):
-        monkeypatch.delenv("CLAUSIUS_MOUNT_MAP", raising=False)
-        result = _load_mount_map()
-        assert isinstance(result, dict)
-
-    @pytest.mark.unit
-    def test_valid_json_env(self, monkeypatch, mock_cluster):
-        monkeypatch.setenv("CLAUSIUS_MOUNT_MAP",
-                           json.dumps({mock_cluster: ["~/.jm/mounts/test"]}))
-        result = _load_mount_map()
-        assert mock_cluster in result
-
-    @pytest.mark.unit
-    def test_malformed_json_falls_back(self, monkeypatch):
-        monkeypatch.setenv("CLAUSIUS_MOUNT_MAP", "not json{{{")
-        result = _load_mount_map()
-        assert isinstance(result, dict)
-
-    @pytest.mark.unit
-    def test_string_root_wrapped_in_list(self, monkeypatch, mock_cluster):
-        monkeypatch.setenv("CLAUSIUS_MOUNT_MAP",
-                           json.dumps({mock_cluster: "/single/path"}))
-        result = _load_mount_map()
-        if mock_cluster in result:
-            assert isinstance(result[mock_cluster], list)
 
 
 class TestSettingsResponse:
@@ -246,52 +215,52 @@ class TestMultiPrefixProject:
         assert extract_campaign("old_eval_x", "old") == "eval"
 
 
-class TestReloadConfigKeepsSharedDictsLive:
-    """Modules that import ``TEAM_GPU_ALLOC`` / ``PPPS`` by name (e.g.
-    ``server.wds`` and ``server.aihub``) must keep seeing fresh values
-    after a settings change. The fix is to mutate these dicts in place
-    rather than rebinding the module-level names — otherwise old
-    references stay frozen at the values captured at import time."""
+class TestLiveProxiesReflectDbChanges:
+    """In v4 ``CLUSTERS``, ``TEAM_GPU_ALLOC``, ``PPPS`` are live proxies
+    backed by the SQLite tables. Modules that imported them by name in
+    v3 (``wds.py``, ``aihub.py``) keep working because the proxy
+    re-fetches on every access — the captured reference itself is stable
+    but its contents always reflect the current DB state."""
 
     @pytest.mark.unit
-    def test_team_gpu_alloc_mutated_in_place(self):
-        from server import config
-        from server.config import reload_config, TEAM_GPU_ALLOC
+    def test_team_gpu_alloc_reflects_cluster_writes(self):
+        from server.clusters import add_cluster, remove_cluster, update_cluster
+        from server.config import TEAM_GPU_ALLOC
 
         captured_ref = TEAM_GPU_ALLOC
-        original = dict(captured_ref)
-
+        add_cluster("dfwtest", host="x", team_gpu_alloc="999")
         try:
-            reload_config({
-                **config._CONFIG,
-                "team_gpu_allocations": {"dfw": 999, "eos": "any"},
-            })
-            assert captured_ref is config.TEAM_GPU_ALLOC, (
-                "reload_config rebinding TEAM_GPU_ALLOC would break "
-                "wds.py / aihub.py which imported the symbol by name."
-            )
-            assert captured_ref["dfw"] == 999
-            assert captured_ref["eos"] == "any"
+            assert captured_ref["dfwtest"] == 999
+            update_cluster("dfwtest", team_gpu_alloc="any")
+            assert captured_ref["dfwtest"] == "any"
         finally:
-            reload_config({**config._CONFIG, "team_gpu_allocations": original})
+            remove_cluster("dfwtest")
 
     @pytest.mark.unit
-    def test_ppps_mutated_in_place(self):
-        from server import config
-        from server.config import reload_config, PPPS
+    def test_ppps_reflects_account_writes(self):
+        from server.config import PPPS
+        from server.team import add_ppp_account, remove_ppp_account
 
         captured_ref = PPPS
-        original = dict(captured_ref)
-
+        add_ppp_account("test_acct_a", ppp_id="42")
         try:
-            reload_config({
-                **config._CONFIG,
-                "ppps": {"new_ppp": "12345"},
-            })
-            assert captured_ref is config.PPPS
-            assert captured_ref["new_ppp"] == "12345"
+            assert captured_ref["test_acct_a"] == "42"
         finally:
-            reload_config({**config._CONFIG, "ppps": original})
+            remove_ppp_account("test_acct_a")
+
+    @pytest.mark.unit
+    def test_clusters_reflects_add_remove(self):
+        from server.clusters import add_cluster, remove_cluster
+        from server.config import CLUSTERS
+
+        captured_ref = CLUSTERS
+        add_cluster("livetest", host="x")
+        try:
+            assert "livetest" in captured_ref
+            assert captured_ref["livetest"]["host"] == "x"
+        finally:
+            remove_cluster("livetest")
+        assert "livetest" not in captured_ref
 
 
 class TestGetProjectColor:
@@ -319,3 +288,132 @@ class TestGetProjectColor:
     @pytest.mark.unit
     def test_empty_name_returns_empty(self):
         assert get_project_color("") == ""
+
+
+class TestLiveProxyCache:
+    """The live proxies cache their loader result for ``_LIVE_TTL_SEC``
+    so a hot loop like ``for c in CLUSTERS: CLUSTERS.get(c, ...)``
+    only triggers one DB query, not one per access. Writes through the
+    CRUD layer (which uses ``db_write``) auto-invalidate the cache so
+    readers still see fresh data immediately."""
+
+    @pytest.mark.unit
+    def test_repeated_access_calls_loader_once_within_ttl(self, monkeypatch):
+        from server import config as cfg
+
+        # Inflate the TTL so the cache stays warm for the whole test.
+        monkeypatch.setattr(cfg, "_LIVE_TTL_SEC", 60.0)
+
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return {"a": 1, "b": 2}
+
+        proxy = cfg._LiveMapping(loader, "TestProxy")
+        for _ in range(20):
+            _ = proxy["a"]
+            _ = proxy["b"]
+            _ = list(proxy.keys())
+            _ = "a" in proxy
+        assert calls["n"] == 1, f"loader called {calls['n']} times, expected 1"
+
+    @pytest.mark.unit
+    def test_loader_reruns_after_ttl_expiry(self, monkeypatch):
+        from server import config as cfg
+
+        # 0.0 TTL means every access misses the cache.
+        monkeypatch.setattr(cfg, "_LIVE_TTL_SEC", 0.0)
+
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return {"x": calls["n"]}
+
+        proxy = cfg._LiveMapping(loader, "TestProxy")
+        first = proxy["x"]
+        second = proxy["x"]
+        assert first == 1
+        assert second == 2
+        assert calls["n"] == 2
+
+    @pytest.mark.unit
+    def test_invalidate_forces_reload(self, monkeypatch):
+        from server import config as cfg
+
+        monkeypatch.setattr(cfg, "_LIVE_TTL_SEC", 60.0)
+
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return {"x": calls["n"]}
+
+        proxy = cfg._LiveMapping(loader, "TestProxy")
+        assert proxy["x"] == 1
+        assert proxy["x"] == 1  # cache hit
+        proxy.invalidate()
+        assert proxy["x"] == 2
+        assert calls["n"] == 2
+
+    @pytest.mark.unit
+    def test_sequence_cache_works_too(self, monkeypatch):
+        from server import config as cfg
+
+        monkeypatch.setattr(cfg, "_LIVE_TTL_SEC", 60.0)
+
+        calls = {"n": 0}
+
+        def loader():
+            calls["n"] += 1
+            return ["a", "b", "c"]
+
+        proxy = cfg._LiveSequence(loader, "TestProxy")
+        for _ in range(10):
+            _ = proxy[0]
+            _ = list(proxy)
+            _ = len(proxy)
+            _ = "b" in proxy
+        assert calls["n"] == 1
+
+    @pytest.mark.unit
+    def test_invalidate_live_caches_drops_every_proxy(self, monkeypatch):
+        from server import config as cfg
+
+        monkeypatch.setattr(cfg, "_LIVE_TTL_SEC", 60.0)
+
+        # Touch every proxy once so each has a populated cache.
+        for proxy in cfg._LIVE_PROXIES:
+            try:
+                _ = list(proxy)
+            except Exception:
+                # Some loaders may need a populated DB to succeed; fine
+                # for this smoke test — we still want to exercise
+                # ``invalidate``.
+                pass
+
+        cfg.invalidate_live_caches()
+        for proxy in cfg._LIVE_PROXIES:
+            assert proxy._cache_ts == float("-inf"), \
+                f"{proxy._name} cache_ts should be reset, got {proxy._cache_ts}"
+
+    @pytest.mark.unit
+    def test_db_write_auto_invalidates_caches(self):
+        """End-to-end: a CRUD write through ``db_write`` invalidates
+        live caches so the next read sees fresh data without an explicit
+        invalidate call."""
+        from server.config import CLUSTERS
+        from server.clusters import add_cluster, remove_cluster, update_cluster
+
+        # First read populates the cache.
+        _ = list(CLUSTERS)
+
+        add_cluster("autoinv", host="x", team_gpu_alloc="100")
+        try:
+            assert "autoinv" in CLUSTERS  # auto-invalidated by db_write commit
+            update_cluster("autoinv", team_gpu_alloc="200")
+            assert CLUSTERS["autoinv"].get("team_gpu_alloc") == "200"
+        finally:
+            remove_cluster("autoinv")
+        assert "autoinv" not in CLUSTERS

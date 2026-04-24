@@ -1,18 +1,17 @@
 """Shared fixtures for the clausius test suite.
 
-Two test modes:
-  - CI / GitHub:  No config.json, falls back to config.example.json.
-                  All tests use a mock cluster injected via CLUSTERS.
-  - Local dev:    config.json present with real clusters.
-                  Unit/integration tests still use mock cluster.
-                  `live` and `local_cluster` tests can use real clusters.
-
-DB isolation: every test automatically gets a temp DB via _isolate_db
+DB isolation: every test automatically gets a temp DB via ``_isolate_db``
 (autouse). No test can accidentally write to the production history.db.
+
+In v4 there is no on-disk JSON config — all config lives in the per-test
+SQLite DB. The mock cluster used by integration tests is injected
+directly via the ``server.clusters`` CRUD layer at the start of every
+test (autouse fixture below).
 """
 
 import os
-import json
+import shutil
+import tempfile
 
 import pytest
 
@@ -23,21 +22,15 @@ import pytest
 MOCK_CLUSTER_NAME = "mock-cluster"
 MOCK_CLUSTER_CFG = {
     "host": "mock-login.example.com",
-    "user": "testuser",
-    "key": "/tmp/nonexistent_key",
+    "ssh_user": "testuser",
+    "ssh_key": "/tmp/nonexistent_key",
     "port": 22,
     "gpu_type": "H100",
 }
 
 
-def _has_real_config():
-    """True if a real config.json exists (local dev environment)."""
-    from server.config import PROJECT_ROOT
-    return os.path.isfile(os.path.join(PROJECT_ROOT, "conf", "config.json"))
-
-
 def _first_real_cluster():
-    """Return (name, cfg) of the first non-local cluster from config.json, or None."""
+    """Return (name, cfg) of the first non-local cluster, or (None, None)."""
     from server.config import CLUSTERS
     for name, cfg in CLUSTERS.items():
         if name != "local" and cfg.get("host"):
@@ -46,45 +39,60 @@ def _first_real_cluster():
 
 
 # ---------------------------------------------------------------------------
-# Inject mock cluster into CLUSTERS for every test
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def _ensure_mock_cluster():
-    """Ensure MOCK_CLUSTER_NAME is always present in CLUSTERS so that
-    unit and integration tests have a deterministic remote cluster to use
-    without depending on config.json contents."""
-    from server import config
-    if MOCK_CLUSTER_NAME not in config.CLUSTERS:
-        config.CLUSTERS[MOCK_CLUSTER_NAME] = dict(MOCK_CLUSTER_CFG)
-    yield
-    config.CLUSTERS.pop(MOCK_CLUSTER_NAME, None)
-
-
-# ---------------------------------------------------------------------------
 # DB isolation — every test gets its own temporary DB
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _isolate_db(tmp_path, monkeypatch):
-    """Redirect ALL DB and config access to per-test temp files.
-    This is autouse so no test can accidentally write to production files.
+def _isolate_db(monkeypatch):
+    """Redirect every DB read/write to a per-test temp file.
 
+    Autouse so no test can accidentally write to ``data/history.db``.
     Also evicts the thread-local cached DB connection at start AND end of
     each test, otherwise a connection cached during one test would still
     point at the previous test's tmp DB (or the production DB if the test
     ran before any other test).
+
+    The DB lives in its own ``tempfile.mkdtemp()`` directory — kept
+    separate from ``tmp_path`` so tests that list ``tmp_path`` for their
+    own file fixtures (e.g. ``test_mounts_resolution``) don't see DB
+    artefacts polluting their listings.
     """
     from server.db import _force_close_thread_local_db
     _force_close_thread_local_db()
 
-    p = str(tmp_path / "test_history.db")
+    db_dir = tempfile.mkdtemp(prefix="clausius_test_db_")
+    p = os.path.join(db_dir, "test_history.db")
     monkeypatch.setattr("server.config.DB_PATH", p)
     monkeypatch.setattr("server.db.DB_PATH", p)
-    monkeypatch.setattr("server.config.CONFIG_PATH", str(tmp_path / "test_config.json"))
     yield p
 
     _force_close_thread_local_db()
+    shutil.rmtree(db_dir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Inject the mock cluster into the per-test DB
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _ensure_mock_cluster(_isolate_db):
+    """Seed the per-test DB with the mock cluster used by integration tests.
+
+    Runs after ``_isolate_db`` so the writes go to the tmp DB, not the
+    real one. ``init_db`` is called first because most tests don't trigger
+    schema setup themselves.
+    """
+    from server.db import init_db
+    from server.clusters import add_cluster, get_cluster, remove_cluster
+
+    init_db()
+    if get_cluster(MOCK_CLUSTER_NAME) is None:
+        add_cluster(MOCK_CLUSTER_NAME, **MOCK_CLUSTER_CFG)
+    yield
+    # tmp DB is discarded with the tmp_path; explicit remove_cluster only
+    # matters when a test points at a long-lived DB (none do today).
+    if get_cluster(MOCK_CLUSTER_NAME) is not None:
+        remove_cluster(MOCK_CLUSTER_NAME)
 
 
 # ---------------------------------------------------------------------------

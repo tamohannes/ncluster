@@ -253,6 +253,16 @@ def db_write():
     try:
         yield con
         con.commit()
+        # Invalidate the live config proxy caches so the next reader
+        # picks up any cluster/team/path/PPP write made through this
+        # context. Lazy import to avoid the config<->db cycle at module
+        # load. Best-effort: a callback failure must NEVER mask the
+        # successful commit.
+        try:
+            from .config import invalidate_live_caches
+            invalidate_live_caches()
+        except Exception:
+            pass
     except Exception:
         try:
             con.rollback()
