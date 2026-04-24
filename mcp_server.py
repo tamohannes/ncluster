@@ -71,31 +71,6 @@ mcp = FastMCP("clausius")
 log = logging.getLogger("server.mcp")
 
 
-# #region agent log
-import json as _dbg_json
-
-_DBG_LOG_PATH = "/home/htamoyan/clausius/.cursor/debug-295f53.log"
-_DBG_SESSION_ID = "295f53"
-
-
-def _dbg_log(event: str, **data) -> None:
-    """Append one NDJSON line for debug-mode runtime evidence collection."""
-    try:
-        line = _dbg_json.dumps({
-            "sessionId": _DBG_SESSION_ID,
-            "timestamp": int(time.time() * 1000),
-            "location": "mcp_server.py:_api_async",
-            "message": event,
-            "pid": os.getpid(),
-            "data": data,
-        })
-        with open(_DBG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
-# #endregion
-
-
 # ── Timeout / off-thread policy ──────────────────────────────────────────────
 #
 # Default per-call wall-clock budget. Long enough for legitimate multi-cluster
@@ -159,44 +134,19 @@ async def _api_async(method, path, *, timeout: Optional[float] = None, **kwargs)
     """
     if timeout is None:
         timeout = _DEFAULT_TIMEOUT_SEC
-    # #region agent log
-    _dbg_log("api_enter", method=method, path=path, timeout=timeout)
-    _t0 = time.monotonic()
-    # #endregion
     try:
-        result = await asyncio.wait_for(
+        return await asyncio.wait_for(
             anyio.to_thread.run_sync(lambda: _api(method, path, **kwargs)),
             timeout=timeout,
         )
-        # #region agent log
-        _dbg_log(
-            "api_exit",
-            method=method, path=path,
-            ms=int((time.monotonic() - _t0) * 1000),
-            outcome="ok",
-            result_kind=type(result).__name__,
-            result_len=(len(result) if isinstance(result, (list, dict, str)) else None),
-        )
-        # #endregion
-        return result
     except asyncio.TimeoutError:
         log.warning("MCP API call timed out after %.1fs: %s %s", timeout, method, path)
-        # #region agent log
-        _dbg_log("api_exit", method=method, path=path,
-                 ms=int((time.monotonic() - _t0) * 1000),
-                 outcome="timeout", timeout=timeout)
-        # #endregion
         return {
             "status": "error",
             "error": f"in-process API call timed out after {timeout:.0f}s; cluster may be slow or unreachable",
         }
     except Exception as exc:
         log.exception("MCP API call failed unexpectedly: %s %s", method, path)
-        # #region agent log
-        _dbg_log("api_exit", method=method, path=path,
-                 ms=int((time.monotonic() - _t0) * 1000),
-                 outcome="exception", error=str(exc)[:200])
-        # #endregion
         return {"status": "error", "error": str(exc)}
 
 
@@ -319,9 +269,6 @@ def _slim_job(cluster: str, job: dict) -> dict:
 @mcp.tool()
 async def health_check() -> dict:
     """Quick health check. Returns ok if the MCP server is running."""
-    # #region agent log
-    _dbg_log("tool_entry", tool="health_check")
-    # #endregion
     svc = await _api_async("GET", "/api/health")
     if isinstance(svc, dict) and svc.get("status") == "ok":
         return {
