@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from flask import Blueprint, g, jsonify, request, render_template, make_response
@@ -1946,12 +1946,28 @@ def api_where_to_submit():
     me = DEFAULT_USER
 
     def _fetch_parallel():
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # Fan out the per-cluster team_jobs fetches alongside alloc / fs /
+        # partition_summary. Pre-fix this branch ran a single worker that
+        # iterated CLUSTERS in a list comp, so 9 clusters × ~1.5 s each
+        # serialized into the wall time of the whole call (observed
+        # 12-17 s in production). Now every fetch is its own future and
+        # the overall call is bounded by the slowest single cluster.
+        cluster_names = [c for c in CLUSTERS if c != "local"]
+        n_workers = min(16, 3 + len(cluster_names) or 1)
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
             f_alloc = pool.submit(_wts_alloc)
             f_fs = pool.submit(_wts_fs)
             f_parts = pool.submit(_wts_ps)
-            f_tj = pool.submit(lambda: {c: _wts_tj(c) for c in CLUSTERS if c != "local"})
-        return f_alloc.result(), f_fs.result(), f_parts.result(), f_tj.result()
+            tj_futs = {pool.submit(_wts_tj, c): c for c in cluster_names}
+            tj = {}
+            for fut in as_completed(tj_futs):
+                cn = tj_futs[fut]
+                try:
+                    tj[cn] = fut.result()
+                except Exception:
+                    _log.exception("where_to_submit: team_jobs fetch failed for %s", cn)
+                    tj[cn] = None
+        return f_alloc.result(), f_fs.result(), f_parts.result(), tj
 
     try:
         alloc, my_fs, part_clusters, tj_clusters = _fetch_parallel()
