@@ -589,12 +589,19 @@ def api_team_jobs():
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
+    skipped = []
     if force:
         # Fan out fresh fetches across clusters. Sequentially this loop
         # was dominated by the slowest single cluster's SSH (observed
         # 2-4 s for /api/team_jobs in production logs); parallel keeps
         # us bounded by that slowest cluster instead of summing them.
-        targets = [c for c in cluster_list if c in CLUSTERS and c != "local"]
+        # Clusters whose SSH circuit breaker is open are skipped so a
+        # known-broken cluster doesn't cost the request a guaranteed
+        # SSH timeout.
+        from .ssh import is_cluster_reachable
+        all_targets = [c for c in cluster_list if c in CLUSTERS and c != "local"]
+        targets = [c for c in all_targets if is_cluster_reachable(c)]
+        skipped = [c for c in all_targets if c not in targets]
         if targets:
             with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
                 futs = {pool.submit(fetch_team_jobs, c): c for c in targets}
@@ -615,7 +622,7 @@ def api_team_jobs():
             if cached is not None:
                 results[c] = cached
 
-    return jsonify({"status": "ok", "clusters": results})
+    return jsonify({"status": "ok", "clusters": results, "skipped_clusters": skipped})
 
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
@@ -1959,7 +1966,13 @@ def api_where_to_submit():
         # serialized into the wall time of the whole call (observed
         # 12-17 s in production). Now every fetch is its own future and
         # the overall call is bounded by the slowest single cluster.
-        cluster_names = [c for c in CLUSTERS if c != "local"]
+        #
+        # Clusters whose SSH circuit breaker is open are skipped — they
+        # would otherwise cost ~3 s of guaranteed-failed SSH each.
+        from .ssh import is_cluster_reachable
+        all_names = [c for c in CLUSTERS if c != "local"]
+        cluster_names = [c for c in all_names if is_cluster_reachable(c)]
+        skipped = [c for c in all_names if c not in cluster_names]
         n_workers = min(16, 3 + len(cluster_names) or 1)
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             f_alloc = pool.submit(_wts_alloc)
@@ -1974,10 +1987,10 @@ def api_where_to_submit():
                 except Exception:
                     _log.exception("where_to_submit: team_jobs fetch failed for %s", cn)
                     tj[cn] = None
-        return f_alloc.result(), f_fs.result(), f_parts.result(), tj
+        return f_alloc.result(), f_fs.result(), f_parts.result(), tj, skipped
 
     try:
-        alloc, my_fs, part_clusters, tj_clusters = _fetch_parallel()
+        alloc, my_fs, part_clusters, tj_clusters, skipped_clusters = _fetch_parallel()
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
 
@@ -2089,7 +2102,8 @@ def api_where_to_submit():
     recommendations.sort(key=lambda r: -r["wds"])
     return jsonify({"status": "ok", "recommendations": recommendations,
                     "my_total_running": my_total_running, "my_total_pending": my_total_pending,
-                    "job_gpus_requested": job_gpus})
+                    "job_gpus_requested": job_gpus,
+                    "skipped_clusters": skipped_clusters})
 
 
 @api.route("/api/recommend", methods=["POST"])

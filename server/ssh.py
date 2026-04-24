@@ -84,6 +84,17 @@ def _cb_is_open(cluster):
         return True
 
 
+def is_cluster_reachable(cluster):
+    """Public predicate for callers that want to skip known-broken clusters.
+
+    Aggregator routes (where_to_submit, team_jobs force=1, etc.) call this
+    before fanning out per-cluster SSH work so a flapping cluster doesn't
+    cost the request the per-cluster timeout for nothing. Returns False
+    iff the SSH circuit breaker for ``cluster`` is currently open.
+    """
+    return not _cb_is_open(cluster)
+
+
 def get_circuit_breaker_status():
     """Return current CB state for diagnostics / the settings page."""
     with _cb_lock:
