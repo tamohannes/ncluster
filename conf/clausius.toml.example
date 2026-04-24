@@ -1,0 +1,36 @@
+# clausius v4 bootstrap config
+#
+# Copy this file to conf/clausius.toml and edit if you need anything other
+# than the defaults below. EVERY field is optional; an empty file is valid.
+#
+# Anything not in this file (clusters, team members, PPP accounts, search
+# paths, process filters, runtime tunables) lives in the SQLite database
+# and is managed via the Settings UI, the `python -m server.cli` CLI, or
+# the MCP tools (add_cluster, set_setting, etc.). Do NOT put cluster
+# configuration here — it will be silently ignored.
+#
+# Every field can also be overridden by an environment variable. Env vars
+# always win:
+#
+#   CLAUSIUS_DATA_DIR        — overrides bootstrap.data_dir
+#   CLAUSIUS_PORT            — overrides bootstrap.port
+#   CLAUSIUS_SSH_USER        — overrides ssh.user
+#   CLAUSIUS_SSH_KEY         — overrides ssh.key
+#   CLAUSIUS_BOOTSTRAP_FILE  — picks a different bootstrap file altogether
+
+[bootstrap]
+# Directory that holds history.db, backups/, logbook_images/, clausius.log.
+# Relative paths are resolved against the project root.
+data_dir = "./data"
+
+# Port the gunicorn / Flask UI listens on.
+port = 7272
+
+[ssh]
+# Default SSH user for clusters that don't override it. Use "$USER" to pick
+# up the current shell user at startup.
+user = "$USER"
+
+# Default SSH key path for clusters that don't override it. Tilde is
+# expanded to the current user's home directory.
+key = "~/.ssh/id_ed25519"
