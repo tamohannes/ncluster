@@ -17,7 +17,18 @@
 git clone https://github.com/tamohannes/clausius.git
 cd clausius
 pip install flask paramiko
-cp conf/config.example.json conf/config.json  # edit with your cluster details
+
+# Initialise the database (creates data/ and the schema)
+python -m server.cli setup --non-interactive
+
+# Add your first cluster
+python -m server.cli add-cluster my-cluster \
+    --host login-node.example.com \
+    --gpu-type H100 --gpus-per-node 8 \
+    --account my_ppp_account \
+    --mount-path /shared/storage/$USER
+
+# Start the server
 python app.py
 ```
 
@@ -28,6 +39,14 @@ Open [http://localhost:7272](http://localhost:7272)
 ![clausius architecture](docs/architecture.png)
 
 Three-lane SSH connection pool: **primary** (Slurm control), **background** (metadata), **data** (file I/O routed to data-copier nodes with automatic login-node fallback). AI Hub OpenSearch integration for formal GPU allocations and fairshare data.
+
+All runtime configuration lives in the SQLite database (`data/history.db`). The only file-based config is a tiny bootstrap TOML for the four values needed before the DB is reachable (data directory, port, SSH defaults). Everything else is managed through three equivalent interfaces:
+
+| Interface | Example |
+|-----------|---------|
+| **Settings UI** | Clusters tab, Profile > PPPs, Advanced |
+| **CLI** | `python -m server.cli add-cluster eos --host ...` |
+| **MCP tools** | `add_cluster_config(name="eos", host="...")` |
 
 ## Features
 
@@ -73,7 +92,7 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Visual map of entry relationships built from `#id` cross-references
 - **Tree view**: hierarchical layout with connector lines, sorted by edit time
 - **Graph view**: static DAG layout with D3.js, curved directed edges, zoom/pan/drag
-- Entry-centric graph: open from any entry's detail page with configurable neighbor depth (1–5 hops or all)
+- Entry-centric graph: open from any entry's detail page with configurable neighbor depth (1-5 hops or all)
 - Edge direction filter: show outgoing, incoming, or both connections
 - Focus controls shared between tree and graph views
 - Color-coded nodes: neutral for notes, red for plans (matching sidebar)
@@ -115,7 +134,7 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 35 tools covering every aspect of the dashboard:
+- 49 tools covering every aspect of the dashboard:
 
 | Category | Tools |
 |----------|-------|
@@ -124,14 +143,17 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 | History | `get_history`, `list_projects`, `get_project_jobs` |
 | Actions | `cancel_job`, `cancel_jobs` |
 | Runs | `get_run_info`, `run_script`, `cleanup_history` |
-| Clusters | `get_cluster_status`, `get_team_gpu_status`, `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
+| Clusters (config) | `list_cluster_configs`, `get_cluster_config`, `add_cluster_config`, `update_cluster_config`, `remove_cluster_config` |
+| Cluster (status) | `get_cluster_status`, `get_team_gpu_status`, `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
+| Team | `list_team_members`, `add_team_member`, `remove_team_member` |
+| PPP Accounts | `list_ppp_accounts`, `add_ppp_account`, `update_ppp_account`, `remove_ppp_account` |
+| Paths | `list_path_bases`, `add_path_base`, `remove_path_base` |
+| Process Filters | `list_process_filters`, `add_process_filter`, `remove_process_filter` |
+| App Settings | `get_app_setting`, `set_app_setting`, `list_app_settings` |
 | Mounts | `get_mounts`, `mount_cluster`, `clear_failed`, `clear_completed` |
 | Logbook | `list_logbook_entries`, `read_logbook_entry`, `bulk_read_logbooks`, `create_logbook_entry`, `update_logbook_entry`, `delete_logbook_entry`, `search_logbook`, `upload_logbook_image` |
 
 - `where_to_submit(nodes, gpu_type)` — **primary tool** for "where should I submit this job?" — ranks clusters by team headroom, fairshare, and GPU type match
-- `get_ppp_allocations()` — formal PPP allocations, consumption, fairshare per account per cluster from AI Hub
-- `get_gpu_usage_history()` — daily allocation vs consumption time-series
-- `recommend_submission()` — partition-level ranking with fairshare-aware scoring and PPP account recommendation
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
 - Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
 - **In-process Flask, no HTTP**: MCP boots the same Flask `app` as gunicorn but inside its own stdio process and dispatches each tool through `app.test_client()`. Both processes share SQLite (WAL) and `server.ssh`; gunicorn crashes don't take MCP down.
@@ -142,7 +164,7 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Runs appear on the board in `SUBMITTING` state immediately, before any Slurm job exists
 - Lifecycle: `SUBMITTING` -> `PENDING` (Slurm accepts) -> `RUNNING`/`COMPLETED`/`FAILED`
 - Submit command, git commit, hostname, and working directory captured automatically
-- Ingest endpoint: `POST /api/sdk/events` with optional bearer-token auth (`sdk_ingest_token` in config)
+- Ingest endpoint: `POST /api/sdk/events` with optional bearer-token auth (`sdk_ingest_token` setting)
 - If submission fails, the run is auto-marked `FAILED` with "submission interrupted"
 - Run popup shows full provenance: exact command, git SHA, launcher hostname, working directory
 
@@ -155,6 +177,95 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - No background polling — login nodes are not contacted when nobody is looking
 
 ## Setup
+
+### Adding a Cluster
+
+Three equivalent ways to register a cluster:
+
+**CLI** (recommended for first setup):
+```bash
+python -m server.cli add-cluster my-cluster \
+    --host login-node.example.com \
+    --gpu-type H100 --gpus-per-node 8 \
+    --account my_ppp_account \
+    --mount-path /shared/storage/$USER
+```
+
+**MCP tool** (from your AI agent):
+```
+add_cluster_config(
+    name="my-cluster",
+    host="login-node.example.com",
+    gpu_type="H100",
+    gpus_per_node=8,
+    account="my_ppp_account",
+    mount_paths=["/shared/storage/$USER"],
+)
+```
+
+**Settings UI**: Open Settings > Clusters > Add Cluster, fill in the fields.
+
+### Bootstrap Configuration
+
+The only file-based config is `conf/clausius.toml` (optional — clausius boots with sensible defaults if this file is missing). Copy the example to get started:
+
+```bash
+cp conf/clausius.toml.example conf/clausius.toml
+```
+
+```toml
+[bootstrap]
+data_dir = "./data"     # SQLite DB, backups, logbook images
+port     = 7272         # UI listen port
+
+[ssh]
+user = "$USER"          # default SSH user for all clusters
+key  = "~/.ssh/id_ed25519"
+```
+
+Every field can also be set via environment variable (`CLAUSIUS_DATA_DIR`, `CLAUSIUS_PORT`, `CLAUSIUS_SSH_USER`, `CLAUSIUS_SSH_KEY`). Env vars always win.
+
+Everything else (clusters, team members, PPP accounts, search paths, process filters, runtime tunables) lives in the SQLite database and is managed through the Settings UI, CLI, or MCP tools.
+
+### Database Schema
+
+The canonical schema is in [`server/schema.py`](server/schema.py). Key v4 tables:
+
+| Table | Purpose |
+|-------|---------|
+| `clusters` | Cluster registry (host, GPU type, mount paths, team quota) |
+| `team_members` | Team roster for usage overlays |
+| `ppp_accounts` | PPP accounts tracked across clusters |
+| `path_bases` | Log search paths, NeMo-Run output dirs, Lustre mount prefixes |
+| `process_filters` | Local process scanner include/exclude patterns |
+| `app_settings` | Runtime tunables (SSH timeout, cache TTL, backup interval, ...) |
+| `projects` | Project registry with prefixes and colors |
+| `job_history` | Every Slurm job ever observed |
+| `runs` | Logical experiment runs (groups multiple Slurm jobs) |
+| `logbook_entries` | Per-project structured notes with FTS5 search |
+
+Run `python -m server.cli setup` to create all tables from scratch.
+
+### CLI Reference
+
+```bash
+python -m server.cli setup [--non-interactive]
+python -m server.cli add-cluster <name> --host <host> [--gpu-type ...] [--mount-path ...]
+python -m server.cli list-clusters
+python -m server.cli remove-cluster <name>
+python -m server.cli add-team-member <username> [--display-name ...]
+python -m server.cli list-team
+python -m server.cli add-ppp <name> [--id 12345]
+python -m server.cli list-ppp
+python -m server.cli add-path --kind log_search <path>
+python -m server.cli list-paths [--kind log_search]
+python -m server.cli add-filter --mode include <pattern>
+python -m server.cli list-filters
+python -m server.cli set <key> <value>
+python -m server.cli get <key>
+python -m server.cli settings
+python -m server.cli import-json <path/to/config.json>   # v3->v4 migration
+```
 
 ### MCP Server
 
@@ -186,174 +297,48 @@ mkdir -p ~/.cursor/skills/clausius
 cp skills/SKILL.md ~/.cursor/skills/clausius/SKILL.md
 ```
 
-This registers clausius as a user-level skill. The agent will automatically discover it and use the MCP tools instead of raw SSH commands when you ask about jobs, logs, cluster availability, or submission recommendations.
+### Migrating from v3
 
-## Configuration
+If you have an existing `conf/config.json` from clausius v3:
 
-### config.json
-
-Primary configuration file. Editable from the UI Settings panel or directly.
-
-```json
-{
-  "port": 7272,
-  "clusters": {
-    "my-cluster": {
-      "host": "login-node.example.com",
-      "data_host": "dc-node.example.com",
-      "port": 22,
-      "gpu_type": "H100",
-      "gpus_per_node": 8,
-      "mount_paths": ["/lustre/.../users/$USER"]
-    }
-  },
-  "team": "my-team",
-  "team_members": ["jack", "bob", "gexam"],
-  "ppp_accounts": ["my_ppp_account_1", "my_ppp_account_2"],
-  "team_gpu_allocations": {"my-cluster": 500},
-  "aihub_opensearch_url": "",
-  "dashboard_url": "",
-  "aihub_cache_ttl_sec": 300,
-  "log_search_bases": ["/lustre/.../users/$USER"],
-  "nemo_run_bases": ["/lustre/.../users/$USER/nemo-run"],
-  "mount_lustre_prefixes": ["lustre/fsw/..."],
-  "local_process_filters": {
-    "include": ["my-framework", "python -m my_framework"],
-    "exclude": ["cursor", "jupyter"]
-  },
-  "ssh_timeout": 8,
-  "cache_fresh_sec": 30,
-  "stats_interval_sec": 1800,
-  "backup_interval_hours": 24,
-  "backup_max_keep": 7
-}
+```bash
+python tools/import_legacy_config.py
 ```
 
-| Field | Purpose |
-|-------|---------|
-| `team` | Team name for dashboard integration |
-| `team_members` | List of team member usernames for usage overlay |
-| `ppp_accounts` | Slurm PPP accounts to track across clusters |
-| `team_gpu_allocations` | Informal per-cluster GPU quotas (number or `"any"`) |
-| `aihub_opensearch_url` | OpenSearch endpoint for GPU allocation data |
-| `dashboard_url` | Science dashboard URL for team membership fallback |
-| `aihub_cache_ttl_sec` | Cache TTL for AI Hub queries (default 300s) |
-
-The optional `data_host` routes file-explorer I/O to a data-copier node, reducing login-node load. Falls back to `host` when omitted or unreachable.
+This imports all clusters, team members, PPP accounts, paths, process filters, and settings into the database and renames `config.json` to `config.json.bak`. Safe to re-run — skips entries that already exist.
 
 ### Environment Variables
 
-- `CLAUSIUS_SSH_USER` (default: `$USER`)
-- `CLAUSIUS_SSH_KEY` (default: `~/.ssh/id_ed25519`)
-- `CLAUSIUS_MOUNT_MAP` (JSON map of cluster -> mount roots)
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CLAUSIUS_DATA_DIR` | `./data` | Override data directory |
+| `CLAUSIUS_PORT` | `7272` | Override listen port |
+| `CLAUSIUS_SSH_USER` | `$USER` | Default SSH user for all clusters |
+| `CLAUSIUS_SSH_KEY` | `~/.ssh/id_ed25519` | Default SSH key for all clusters |
+| `CLAUSIUS_BOOTSTRAP_FILE` | `conf/clausius.toml` | Override bootstrap config path |
+| `CLAUSIUS_MOUNT_MAP` | (auto) | JSON map of cluster -> mount roots |
 
 ## Job Name Prefix Protocol
 
 Jobs are grouped by project using a name prefix convention:
 
 ```
-<project>_<run-name>
+<project>_<campaign>_<run-details>
 ```
 
 | Component | Rules | Example |
 |-----------|-------|---------|
 | `<project>` | Lowercase letters, digits, hyphens. Starts with a letter. | `my-project`, `eval-suite`, `training` |
 | `_` | Required underscore separator | |
-| `<run-name>` | The experiment/eval name | `eval-math`, `train-v3` |
+| `<campaign>` | Groups related runs visually (distinct shade of project color) | `mpsf`, `eval`, `train` |
+| `_` | Second underscore separator | |
+| `<run-details>` | The experiment/eval name | `nem120b-r9`, `kimi-k25-no-tool-r22` |
 
 The monitor auto-detects projects on first encounter, assigning a color and emoji. Customize in Settings > Projects.
 
 Dependency chain auto-detection from run name suffixes:
 - `*-judge-rs<N>` — linked as child of the base eval
 - `*-summarize-results` — linked as child of the judge run
-
-## API Endpoints
-
-### Jobs & Clusters
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/jobs` | All clusters with jobs, mounts, dependency info |
-| GET | `/api/jobs/<cluster>` | Force-refresh one cluster |
-| GET | `/api/run_info/<cluster>/<root_job_id>` | Run metadata (batch script, env, conda/pip, scontrol) |
-| GET | `/api/history?cluster=&limit=&project=` | Job history, filterable by cluster and project |
-| GET | `/api/projects` | All known projects with job counts |
-| GET | `/api/spotlight?q=` | Search across projects, logbook, and history |
-
-### Logs & Files
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/log_files/<cluster>/<job_id>` | Discover log files |
-| GET | `/api/log/<cluster>/<job_id>?path=&lines=` | Read log content (tail) |
-| GET | `/api/log_full/<cluster>/<job_id>?path=&page=` | Full log with pagination |
-| GET | `/api/ls/<cluster>?path=` | Directory listing |
-| GET | `/api/jsonl_index/<cluster>/<job_id>?path=&mode=` | JSONL file index |
-| GET | `/api/jsonl_record/<cluster>/<job_id>?path=&line=` | Single JSONL record |
-
-### Stats & Prefetch
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats (GPU/CPU/memory) with time series |
-| POST | `/api/prefetch_visible` | Prefetch log index, content, and stats for visible jobs |
-| POST | `/api/progress` | Batch-fetch progress for multiple jobs |
-
-### Actions
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/api/cancel/<cluster>/<job_id>` | Cancel a single job |
-| POST | `/api/cancel_jobs/<cluster>` | Cancel multiple jobs (JSON body: `job_ids`) |
-| POST | `/api/run_script/<cluster>` | Run script on cluster via SSH |
-| POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
-| POST | `/api/clear_cancelled/<cluster>` | Dismiss cancelled pins |
-| POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
-| POST | `/api/cleanup` | Delete old history records |
-
-### GPU Allocations (AI Hub)
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/aihub/allocations` | PPP allocations, fairshare, cluster occupancy |
-| GET | `/api/aihub/history?days=&cluster=` | Allocation vs consumption time-series |
-| GET | `/api/aihub/users?account=&cluster=&days=` | Per-user GPU breakdown for an account |
-| GET | `/api/aihub/team_overlay` | Team member usage across all accounts |
-| GET | `/api/team_jobs?cluster=` | Running/pending/dependent jobs per user across PPP accounts |
-
-### Partitions & Recommendations
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/partitions` | Partition data for all clusters |
-| GET | `/api/partitions/<cluster>` | Partition data for one cluster |
-| GET | `/api/partition_summary` | Compact cross-cluster partition overview |
-| POST | `/api/recommend` | Recommend best cluster+partition+account for a job (JSON body) |
-| GET | `/api/storage_quota/<cluster>` | Lustre filesystem and PPP quotas |
-
-### Mounts & Settings
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/mounts` | Mount status for all clusters |
-| POST | `/api/mount/<action>/<cluster>` | Mount/unmount one cluster |
-| POST | `/api/mount/<action>` | Mount/unmount all clusters |
-| GET | `/api/settings` | Current configuration |
-| POST | `/api/settings` | Update configuration (hot-reload) |
-
-### Logbooks
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/api/logbook/<project>/entries?q=&sort=&limit=&type=` | List or BM25-search entries |
-| POST | `/api/logbook/<project>/entries` | Create entry `{title, body, entry_type}` |
-| GET | `/api/logbook/<project>/entries/<id>` | Read single entry |
-| PUT | `/api/logbook/<project>/entries/<id>` | Update entry `{title?, body?, entry_type?}` |
-| DELETE | `/api/logbook/<project>/entries/<id>` | Delete entry |
-| GET | `/api/logbook/search?q=&project=&from=&to=` | Cross-project BM25 search |
-| POST | `/api/logbook/<project>/images` | Upload image or HTML file |
-| GET | `/api/logbook/<project>/images/<filename>` | Serve uploaded file |
-| GET | `/api/logbook/<project>/map` | Map data (nodes + links from #id refs) |
 
 ## Systemd (User Service)
 
@@ -382,7 +367,7 @@ systemctl --user enable --now clausius.service
 
 ## Testing
 
-442 tests across unit, integration, and MCP layers.
+898 tests across unit, integration, MCP, and CLI layers.
 
 ```bash
 pip install pytest pytest-cov
@@ -395,12 +380,12 @@ pytest -m live               # real cluster tests (requires running app)
 
 | Layer | Directory | What it covers |
 |-------|-----------|----------------|
-| Unit | `tests/unit/` | Parsers, DB ops, cache, mount resolution, config, entry refs |
-| Integration | `tests/integration/` | All Flask routes via test client, logbook map, storage quota |
-| MCP | `tests/mcp/` | Tool contracts, bulk read, transport errors, edge cases |
+| Unit | `tests/unit/` | Bootstrap, schema, CRUD (clusters, team, paths, settings), parsers, DB ops, cache, mount resolution, config proxies, entry refs |
+| Integration | `tests/integration/` | All Flask routes via test client (including new per-namespace endpoints), logbook map, storage quota, CLI |
+| MCP | `tests/mcp/` | Tool contracts, bulk read, config management, transport errors, edge cases |
 | Live | `tests/live/` | Real SSH/Slurm reads + job cancel |
 
-CI runs without `config.json` — falls back to `config.example.json` with a mock cluster.
+CI runs without any config files — falls back to bootstrap defaults with a mock cluster injected via `tests/conftest.py`.
 
 ## Built With
 
