@@ -1945,15 +1945,29 @@ def api_partition_summary():
 
 @api.route("/api/where_to_submit", methods=["POST"])
 def api_where_to_submit():
-    """Rank clusters by WDS score for job submission (MCP proxy target)."""
+    """Rank clusters by WDS score for job submission (MCP proxy target).
+
+    Results are cached for ``AGGREGATOR_CACHE_TTL_SEC`` keyed by the
+    request payload so multiple agents calling the same tool within the
+    window share one underlying multi-cluster fetch instead of each one
+    triggering its own SSH wave.
+    """
     from .aihub import get_ppp_allocations as _wts_alloc, get_my_fairshare as _wts_fs
     from .partitions import get_partition_summary as _wts_ps
     from .jobs import fetch_team_jobs as _wts_tj
+    from .config import _aggregator_cache, AGGREGATOR_CACHE_TTL_SEC
 
     payload = request.get_json(silent=True) or {}
     nodes = int(payload.get("nodes", 1))
     gpus_per_node = int(payload.get("gpus_per_node", 8))
     gpu_type = payload.get("gpu_type", "")
+    bypass_cache = bool(payload.get("force"))
+
+    cache_key = f"wts:{nodes}:{gpus_per_node}:{gpu_type}"
+    if not bypass_cache:
+        cached = _cache_get(_aggregator_cache, cache_key, AGGREGATOR_CACHE_TTL_SEC)
+        if cached is not None:
+            return jsonify(cached)
 
     job_gpus = nodes * gpus_per_node
     pref_gpu = gpu_type.lower() if gpu_type else ""
@@ -2100,10 +2114,12 @@ def api_where_to_submit():
         })
 
     recommendations.sort(key=lambda r: -r["wds"])
-    return jsonify({"status": "ok", "recommendations": recommendations,
-                    "my_total_running": my_total_running, "my_total_pending": my_total_pending,
-                    "job_gpus_requested": job_gpus,
-                    "skipped_clusters": skipped_clusters})
+    result = {"status": "ok", "recommendations": recommendations,
+              "my_total_running": my_total_running, "my_total_pending": my_total_pending,
+              "job_gpus_requested": job_gpus,
+              "skipped_clusters": skipped_clusters}
+    _cache_set(_aggregator_cache, cache_key, result)
+    return jsonify(result)
 
 
 @api.route("/api/recommend", methods=["POST"])

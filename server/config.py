@@ -94,6 +94,13 @@ _est_start_cache: dict = {}
 _team_usage_cache: dict = {}
 _prefetch_last: dict = {}
 
+# Aggregator-level cache for slow multi-cluster routes that fan out
+# SSH work (where_to_submit primarily). Multiple Cursor agents tend to
+# call the same tool within seconds of each other; a 30 s TTL lets them
+# share one result instead of duplicating the underlying SSH wave.
+_aggregator_cache: dict = {}
+AGGREGATOR_CACHE_TTL_SEC = 30
+
 
 # ─── Live proxies for DB-backed values ──────────────────────────────────────
 #
