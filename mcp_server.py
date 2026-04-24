@@ -1,4 +1,4 @@
-"""MCP server for clausius — in-process Flask architecture.
+"""MCP server for clausius — in-process Flask, async-safe tool dispatch.
 
 The MCP server runs the same Flask app as gunicorn but inside its own
 process. Tool calls go through Werkzeug's WSGI loop via `app.test_client()`,
@@ -6,7 +6,33 @@ so there is no HTTP dependency on the gunicorn UI service: when gunicorn
 crashes or restarts, the MCP server keeps serving every tool against the
 same SQLite database.
 
+Concurrency model
+-----------------
+FastMCP runs sync tool handlers directly on its asyncio event loop (see
+``mcp.server.fastmcp.utilities.func_metadata.call_fn_with_arg_validation``).
+Several of our routes (live cluster polling, ``where_to_submit``,
+``run_script``) trigger SSH work that can block for many seconds when a
+cluster flaps. If a sync handler ran on the event loop, that block would
+prevent FastMCP from reading Cursor's stdio heartbeats, and Cursor would
+close the transport — observed once already, ~2 s after an SSH circuit
+breaker opened.
+
+We therefore do two things:
+
+  * Every tool is ``async def`` and routes through ``_api_async`` /
+    ``_api_text_async``, which off-load the synchronous ``test_client``
+    call to a worker thread via ``anyio.to_thread.run_sync``. The event
+    loop stays responsive while the SSH work runs in the background.
+  * Every off-threaded call is wrapped in ``asyncio.wait_for`` with a
+    wall-clock timeout. On timeout we return a structured error so the
+    agent sees the failure clearly instead of an opaque "Connection
+    closed". The underlying request keeps running until it finishes —
+    Python can't cancel a thread — but the per-cluster SSH semaphore
+    inside ``server.ssh`` (max 2 in-flight per cluster, 8 globally)
+    bounds how badly this can pile up.
+
 Both processes share:
+
   - SQLite (WAL mode, multi-process safe)
   - The `server.ssh` module (each process has its own bounded semaphores)
   - The on-disk config and mounts
@@ -23,12 +49,15 @@ process so MCP keeps reporting fresh data. The first successful probe
 hands polling back to gunicorn.
 """
 
+import asyncio
 import logging
 import os
 import threading
 import time
+from io import BytesIO
 from typing import Optional
 
+import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 
 from app import app, mcp_init
@@ -42,14 +71,60 @@ mcp = FastMCP("clausius")
 log = logging.getLogger("server.mcp")
 
 
+# #region agent log
+import json as _dbg_json
+
+_DBG_LOG_PATH = "/home/htamoyan/clausius/.cursor/debug-295f53.log"
+_DBG_SESSION_ID = "295f53"
+
+
+def _dbg_log(event: str, **data) -> None:
+    """Append one NDJSON line for debug-mode runtime evidence collection."""
+    try:
+        line = _dbg_json.dumps({
+            "sessionId": _DBG_SESSION_ID,
+            "timestamp": int(time.time() * 1000),
+            "location": "mcp_server.py:_api_async",
+            "message": event,
+            "pid": os.getpid(),
+            "data": data,
+        })
+        with open(_DBG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+# #endregion
+
+
+# ── Timeout / off-thread policy ──────────────────────────────────────────────
+#
+# Default per-call wall-clock budget. Long enough for legitimate multi-cluster
+# work (``where_to_submit`` SSHes to up to 8 clusters; observed 12 s on a
+# normal day), short enough that we can return a structured error before any
+# upstream MCP transport health check times out.
+_DEFAULT_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_TOOL_TIMEOUT_SEC", "25"))
+
+# Logbook image uploads buffer the full multipart payload before returning,
+# so they need more headroom than the default tool budget.
+_UPLOAD_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_UPLOAD_TIMEOUT_SEC", "60"))
+
+# anyio's default thread limiter (40 tokens) is left untouched — the real
+# cap on inflight cluster work is the per-cluster SSH semaphore inside
+# ``server.ssh`` (max 2 per cluster, 8 globally). Non-SSH calls are fast
+# and won't pile up. Setting ``current_default_thread_limiter`` would have
+# to happen inside the running event loop, which we don't have here at
+# import time.
+
+
 # ── In-process API helpers ───────────────────────────────────────────────────
 
 def _api(method, path, **kwargs):
     """Invoke a Flask route through the test client and return parsed JSON.
 
-    Mirrors the previous httpx-based signature so tool implementations stay
-    untouched. Errors are surfaced as `{"status": "error", "error": "..."}`
-    so callers don't need exception handling.
+    Synchronous: must only be called from a worker thread (see
+    ``_api_async`` for the event-loop-safe wrapper). Errors are surfaced as
+    ``{"status": "error", "error": "..."}`` so callers don't need exception
+    handling.
     """
     try:
         resp = _client.open(path=path, method=method, **kwargs)
@@ -67,12 +142,79 @@ def _api(method, path, **kwargs):
 
 
 def _api_text(method, path, **kwargs):
-    """Like `_api` but returns the raw response body as text."""
+    """Like ``_api`` but returns the raw response body as text."""
     try:
         resp = _client.open(path=path, method=method, **kwargs)
     except Exception as exc:
         return f"Error: {exc}"
     return resp.get_data(as_text=True)
+
+
+async def _api_async(method, path, *, timeout: Optional[float] = None, **kwargs):
+    """Off-thread ``_api`` with a wall-clock ``timeout``.
+
+    Lets the FastMCP event loop keep reading stdin while the underlying
+    Flask route blocks on SSH or disk I/O. On timeout we return a
+    structured error rather than letting the call hang the transport.
+    """
+    if timeout is None:
+        timeout = _DEFAULT_TIMEOUT_SEC
+    # #region agent log
+    _dbg_log("api_enter", method=method, path=path, timeout=timeout)
+    _t0 = time.monotonic()
+    # #endregion
+    try:
+        result = await asyncio.wait_for(
+            anyio.to_thread.run_sync(lambda: _api(method, path, **kwargs)),
+            timeout=timeout,
+        )
+        # #region agent log
+        _dbg_log(
+            "api_exit",
+            method=method, path=path,
+            ms=int((time.monotonic() - _t0) * 1000),
+            outcome="ok",
+            result_kind=type(result).__name__,
+            result_len=(len(result) if isinstance(result, (list, dict, str)) else None),
+        )
+        # #endregion
+        return result
+    except asyncio.TimeoutError:
+        log.warning("MCP API call timed out after %.1fs: %s %s", timeout, method, path)
+        # #region agent log
+        _dbg_log("api_exit", method=method, path=path,
+                 ms=int((time.monotonic() - _t0) * 1000),
+                 outcome="timeout", timeout=timeout)
+        # #endregion
+        return {
+            "status": "error",
+            "error": f"in-process API call timed out after {timeout:.0f}s; cluster may be slow or unreachable",
+        }
+    except Exception as exc:
+        log.exception("MCP API call failed unexpectedly: %s %s", method, path)
+        # #region agent log
+        _dbg_log("api_exit", method=method, path=path,
+                 ms=int((time.monotonic() - _t0) * 1000),
+                 outcome="exception", error=str(exc)[:200])
+        # #endregion
+        return {"status": "error", "error": str(exc)}
+
+
+async def _api_text_async(method, path, *, timeout: Optional[float] = None, **kwargs):
+    """Off-thread ``_api_text`` with a wall-clock ``timeout``."""
+    if timeout is None:
+        timeout = _DEFAULT_TIMEOUT_SEC
+    try:
+        return await asyncio.wait_for(
+            anyio.to_thread.run_sync(lambda: _api_text(method, path, **kwargs)),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        log.warning("MCP API text call timed out after %.1fs: %s %s", timeout, method, path)
+        return f"Error: in-process API call timed out after {timeout:.0f}s"
+    except Exception as exc:
+        log.exception("MCP API text call failed unexpectedly: %s %s", method, path)
+        return f"Error: {exc}"
 
 
 # ── Follower poller ──────────────────────────────────────────────────────────
@@ -175,9 +317,12 @@ def _slim_job(cluster: str, job: dict) -> dict:
 # ── tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def health_check() -> dict:
+async def health_check() -> dict:
     """Quick health check. Returns ok if the MCP server is running."""
-    svc = _api("GET", "/api/health")
+    # #region agent log
+    _dbg_log("tool_entry", tool="health_check")
+    # #endregion
+    svc = await _api_async("GET", "/api/health")
     if isinstance(svc, dict) and svc.get("status") == "ok":
         return {
             "status": "ok",
@@ -189,19 +334,19 @@ def health_check() -> dict:
 
 
 @mcp.tool()
-def list_jobs(cluster: Optional[str] = None, project: Optional[str] = None) -> list[dict]:
+async def list_jobs(cluster: Optional[str] = None, project: Optional[str] = None) -> list[dict]:
     """List active jobs across all clusters, or filtered by cluster/project.
 
     Returns compact job records with state, progress, dependencies, and est_start.
     Includes both live squeue jobs and board-pinned terminal jobs.
     """
     if cluster:
-        data = _api("GET", f"/api/jobs/{cluster}")
+        data = await _api_async("GET", f"/api/jobs/{cluster}")
         if data.get("status") == "error":
             return [{"error": data.get("error", "Unknown error")}]
         jobs = [_slim_job(cluster, j) for j in data.get("jobs", [])]
     else:
-        snapshot = _api("GET", "/api/jobs")
+        snapshot = await _api_async("GET", "/api/jobs")
         jobs = []
         if isinstance(snapshot, dict):
             for cname, cdata in snapshot.items():
@@ -216,16 +361,16 @@ def list_jobs(cluster: Optional[str] = None, project: Optional[str] = None) -> l
 
 
 @mcp.tool()
-def list_log_files(cluster: str, job_id: str) -> dict:
+async def list_log_files(cluster: str, job_id: str) -> dict:
     """Discover available log and result files for a job.
 
     Returns lists of direct log files and explorable directories.
     """
-    return _api("GET", f"/api/log_files/{cluster}/{job_id}", query_string={"force": "1"})
+    return await _api_async("GET", f"/api/log_files/{cluster}/{job_id}", query_string={"force": "1"})
 
 
 @mcp.tool()
-def get_job_log(
+async def get_job_log(
     cluster: str,
     job_id: str,
     path: Optional[str] = None,
@@ -238,7 +383,7 @@ def get_job_log(
     params = {"lines": str(lines)}
     if path:
         params["path"] = path
-    data = _api("GET", f"/api/log/{cluster}/{job_id}", query_string=params)
+    data = await _api_async("GET", f"/api/log/{cluster}/{job_id}", query_string=params)
     if isinstance(data, dict):
         if data.get("status") == "error":
             return f"Error: {data.get('error', 'Unknown error')}"
@@ -247,19 +392,19 @@ def get_job_log(
 
 
 @mcp.tool()
-def get_job_stats(cluster: str, job_id: str) -> dict:
+async def get_job_stats(cluster: str, job_id: str) -> dict:
     """Get resource stats for a running job (CPU, memory, GPU utilisation)."""
-    return _api("GET", f"/api/stats/{cluster}/{job_id}")
+    return await _api_async("GET", f"/api/stats/{cluster}/{job_id}")
 
 
 @mcp.tool()
-def get_run_info(cluster: str, root_job_id: str) -> dict:
+async def get_run_info(cluster: str, root_job_id: str) -> dict:
     """Get detailed run info: batch script, scontrol, env vars, conda state, and associated jobs."""
-    return _api("GET", f"/api/run_info/{cluster}/{root_job_id}")
+    return await _api_async("GET", f"/api/run_info/{cluster}/{root_job_id}")
 
 
 @mcp.tool()
-def get_history(
+async def get_history(
     cluster: Optional[str] = None,
     project: Optional[str] = None,
     campaign: Optional[str] = None,
@@ -291,7 +436,7 @@ def get_history(
         params["q"] = search
     if days is not None:
         params["days"] = str(days)
-    data = _api("GET", "/api/history", query_string=params)
+    data = await _api_async("GET", "/api/history", query_string=params)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
@@ -300,19 +445,19 @@ def get_history(
 
 
 @mcp.tool()
-def cancel_job(cluster: str, job_id: str) -> dict:
+async def cancel_job(cluster: str, job_id: str) -> dict:
     """Cancel a running or pending job. Destructive — only when user explicitly asks."""
-    return _api("POST", f"/api/cancel/{cluster}/{job_id}")
+    return await _api_async("POST", f"/api/cancel/{cluster}/{job_id}")
 
 
 @mcp.tool()
-def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
+async def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
     """Cancel multiple jobs on a cluster. Destructive — only when user explicitly asks."""
-    return _api("POST", f"/api/cancel_jobs/{cluster}", json={"job_ids": job_ids})
+    return await _api_async("POST", f"/api/cancel_jobs/{cluster}", json={"job_ids": job_ids})
 
 
 @mcp.tool()
-def run_script(
+async def run_script(
     cluster: str,
     script: str,
     interpreter: str = "python3",
@@ -326,29 +471,37 @@ def run_script(
         interpreter: "python3" (default), "bash", or "sh".
         timeout: Max seconds (1-300, default 120).
     """
-    return _api("POST", f"/api/run_script/{cluster}", json={
-        "script": script,
-        "interpreter": interpreter,
-        "timeout": timeout,
-    })
+    # Give the wrapper enough wall-clock slack on top of the user-requested
+    # script timeout so a script that genuinely runs for ``timeout`` seconds
+    # doesn't trip our outer ``asyncio.wait_for`` first.
+    wrapper_timeout = max(_DEFAULT_TIMEOUT_SEC, float(timeout) + 15.0)
+    return await _api_async(
+        "POST", f"/api/run_script/{cluster}",
+        timeout=wrapper_timeout,
+        json={
+            "script": script,
+            "interpreter": interpreter,
+            "timeout": timeout,
+        },
+    )
 
 
 # ── cluster info ──────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_partitions(cluster: Optional[str] = None) -> dict:
+async def get_partitions(cluster: Optional[str] = None) -> dict:
     """Get Slurm partition details: state, time limits, priority, nodes, GPUs, queue depth.
 
     Returns per-partition data including idle_nodes, pending_jobs, gpus_per_node,
     priority_tier, preempt_mode, and access restrictions.
     """
     if cluster:
-        return _api("GET", f"/api/partitions/{cluster}")
-    return _api("GET", "/api/partitions")
+        return await _api_async("GET", f"/api/partitions/{cluster}")
+    return await _api_async("GET", "/api/partitions")
 
 
 @mcp.tool()
-def where_to_submit(
+async def where_to_submit(
     nodes: int = 1,
     gpus_per_node: int = 8,
     gpu_type: str = "",
@@ -363,7 +516,7 @@ def where_to_submit(
         gpus_per_node: GPUs per node (default 8).
         gpu_type: Prefer clusters with this GPU (e.g. "H100", "B200").
     """
-    return _api("POST", "/api/where_to_submit", json={
+    return await _api_async("POST", "/api/where_to_submit", json={
         "nodes": nodes,
         "gpus_per_node": gpus_per_node,
         "gpu_type": gpu_type,
@@ -373,41 +526,41 @@ def where_to_submit(
 # ── mount & board tools ──────────────────────────────────────────────────────
 
 @mcp.tool()
-def get_mounts() -> dict:
+async def get_mounts() -> dict:
     """Get SSHFS mount status for all clusters."""
-    return _api("GET", "/api/mounts")
+    return await _api_async("GET", "/api/mounts")
 
 
 @mcp.tool()
-def mount_cluster(cluster: str, action: str = "mount") -> dict:
+async def mount_cluster(cluster: str, action: str = "mount") -> dict:
     """Mount or unmount a cluster's remote filesystem via SSHFS."""
     if action not in ("mount", "unmount"):
         return {"status": "error", "error": "action must be 'mount' or 'unmount'"}
-    return _api("POST", f"/api/mount/{action}/{cluster}")
+    return await _api_async("POST", f"/api/mount/{action}/{cluster}")
 
 
 @mcp.tool()
-def clear_failed(cluster: str) -> dict:
+async def clear_failed(cluster: str) -> dict:
     """Dismiss all failed/cancelled/timeout job pins from a cluster's board."""
-    return _api("POST", f"/api/clear_failed/{cluster}")
+    return await _api_async("POST", f"/api/clear_failed/{cluster}")
 
 
 @mcp.tool()
-def clear_completed(cluster: str) -> dict:
+async def clear_completed(cluster: str) -> dict:
     """Dismiss all completed job pins from a cluster's board."""
-    return _api("POST", f"/api/clear_completed/{cluster}")
+    return await _api_async("POST", f"/api/clear_completed/{cluster}")
 
 
 # ── project tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_projects() -> list[dict]:
+async def list_projects() -> list[dict]:
     """List every registered project with its color, emoji, prefixes, and metadata.
 
     Each entry contains: name, color, emoji, prefixes (list of {prefix,
     default_campaign?}), campaign_delimiter, description, created_at, updated_at.
     """
-    data = _api("GET", "/api/projects/all")
+    data = await _api_async("GET", "/api/projects/all")
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
@@ -416,7 +569,7 @@ def list_projects() -> list[dict]:
 
 
 @mcp.tool()
-def create_project(
+async def create_project(
     name: str,
     prefixes: Optional[list] = None,
     color: Optional[str] = None,
@@ -454,11 +607,11 @@ def create_project(
         payload["emoji"] = emoji
     if default_campaign:
         payload["default_campaign"] = default_campaign
-    return _api("POST", "/api/projects", json=payload)
+    return await _api_async("POST", "/api/projects", json=payload)
 
 
 @mcp.tool()
-def update_project(
+async def update_project(
     name: str,
     color: Optional[str] = None,
     emoji: Optional[str] = None,
@@ -487,21 +640,260 @@ def update_project(
         payload["campaign_delimiter"] = campaign_delimiter
     if description is not None:
         payload["description"] = description
-    return _api("PUT", f"/api/projects/{name}", json=payload)
+    return await _api_async("PUT", f"/api/projects/{name}", json=payload)
 
 
 @mcp.tool()
-def delete_project(name: str) -> dict:
+async def delete_project(name: str) -> dict:
     """Delete a registered project. Destructive — does not touch job history,
     but jobs that referenced this project name will stop appearing in the
     project sidebar (their stored ``project`` string is left as-is)."""
-    return _api("DELETE", f"/api/projects/{name}")
+    return await _api_async("DELETE", f"/api/projects/{name}")
+
+
+# ── v4 config management tools ────────────────────────────────────────────────
+
+# Clusters -------------------------------------------------------------------
+
+@mcp.tool()
+async def list_cluster_configs() -> list[dict]:
+    """List every registered cluster with SSH, GPU, mount, and allocation details.
+
+    Returns full cluster records (not the live-job data — use ``list_jobs`` for that).
+    """
+    data = await _api_async("GET", "/api/clusters")
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def get_cluster_config(name: str) -> dict:
+    """Read the full configuration record for one cluster."""
+    return await _api_async("GET", f"/api/clusters/{name}")
+
+
+@mcp.tool()
+async def add_cluster_config(
+    name: str,
+    host: str,
+    gpu_type: str = "",
+    gpus_per_node: int = 0,
+    gpu_mem_gb: int = 0,
+    port: int = 22,
+    ssh_user: str = "",
+    ssh_key: str = "",
+    account: str = "",
+    aihub_name: str = "",
+    data_host: str = "",
+    mount_paths: Optional[list[str]] = None,
+    mount_aliases: Optional[dict] = None,
+    team_gpu_alloc: str = "",
+    enabled: bool = True,
+) -> dict:
+    """Register a new cluster. ``name`` and ``host`` are required; everything
+    else has sensible defaults. SSH user/key fall back to the bootstrap values.
+    """
+    payload = {
+        "name": name, "host": host, "gpu_type": gpu_type,
+        "gpus_per_node": gpus_per_node, "gpu_mem_gb": gpu_mem_gb,
+        "port": port, "ssh_user": ssh_user, "ssh_key": ssh_key,
+        "account": account, "aihub_name": aihub_name,
+        "data_host": data_host, "team_gpu_alloc": team_gpu_alloc,
+        "enabled": enabled,
+    }
+    if mount_paths is not None:
+        payload["mount_paths"] = mount_paths
+    if mount_aliases is not None:
+        payload["mount_aliases"] = mount_aliases
+    return await _api_async("POST", "/api/clusters", json=payload)
+
+
+@mcp.tool()
+async def update_cluster_config(name: str, **fields) -> dict:
+    """Update one or more fields on an existing cluster.
+
+    Pass only the fields you want to change (e.g. ``gpu_type="B200"``).
+    Accepted fields: host, data_host, port, ssh_user, ssh_key, account,
+    gpu_type, gpu_mem_gb, gpus_per_node, aihub_name, mount_paths,
+    mount_aliases, team_gpu_alloc, enabled, position.
+    """
+    return await _api_async("PUT", f"/api/clusters/{name}", json=fields)
+
+
+@mcp.tool()
+async def remove_cluster_config(name: str) -> dict:
+    """Remove a registered cluster. Destructive — does not delete historical
+    jobs; they stay queryable in History. Only when explicitly asked."""
+    return await _api_async("DELETE", f"/api/clusters/{name}")
+
+
+# Team members ---------------------------------------------------------------
+
+@mcp.tool()
+async def list_team_members() -> list[dict]:
+    """List every team member (username, display_name, email)."""
+    data = await _api_async("GET", "/api/team/members")
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def add_team_member(
+    username: str,
+    display_name: str = "",
+    email: str = "",
+) -> dict:
+    """Add a team member by username."""
+    return await _api_async("POST", "/api/team/members", json={
+        "username": username, "display_name": display_name, "email": email,
+    })
+
+
+@mcp.tool()
+async def remove_team_member(username: str) -> dict:
+    """Remove a team member. Does not delete their historical job data."""
+    return await _api_async("DELETE", f"/api/team/members/{username}")
+
+
+# PPP accounts ---------------------------------------------------------------
+
+@mcp.tool()
+async def list_ppp_accounts() -> list[dict]:
+    """List every PPP (Performance Project) account with name and id."""
+    data = await _api_async("GET", "/api/team/ppps")
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def add_ppp_account(
+    name: str,
+    ppp_id: str = "",
+    description: str = "",
+) -> dict:
+    """Add a PPP account. ``ppp_id`` is the numeric project id used by AI Hub."""
+    return await _api_async("POST", "/api/team/ppps", json={
+        "name": name, "ppp_id": ppp_id, "description": description,
+    })
+
+
+@mcp.tool()
+async def update_ppp_account(
+    name: str,
+    ppp_id: Optional[str] = None,
+    description: Optional[str] = None,
+) -> dict:
+    """Update PPP account fields. Pass only the fields to change."""
+    payload = {}
+    if ppp_id is not None:
+        payload["ppp_id"] = ppp_id
+    if description is not None:
+        payload["description"] = description
+    return await _api_async("PUT", f"/api/team/ppps/{name}", json=payload)
+
+
+@mcp.tool()
+async def remove_ppp_account(name: str) -> dict:
+    """Remove a PPP account. Only when explicitly asked."""
+    return await _api_async("DELETE", f"/api/team/ppps/{name}")
+
+
+# Path bases -----------------------------------------------------------------
+
+@mcp.tool()
+async def list_path_bases(kind: Optional[str] = None) -> list[dict]:
+    """List registered path entries.
+
+    ``kind`` is one of: ``log_search``, ``nemo_run``, ``mount_lustre_prefix``.
+    Omit to list all kinds.
+    """
+    if kind:
+        data = await _api_async("GET", f"/api/paths/{kind}")
+    else:
+        results = []
+        for k in ("log_search", "nemo_run", "mount_lustre_prefix"):
+            d = await _api_async("GET", f"/api/paths/{k}")
+            if isinstance(d, list):
+                results.extend(d)
+        return results
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def add_path_base(kind: str, path: str) -> dict:
+    """Add a path entry. ``kind`` is ``log_search``, ``nemo_run``, or
+    ``mount_lustre_prefix``. ``path`` may contain ``$USER``."""
+    return await _api_async("POST", f"/api/paths/{kind}", json={"path": path})
+
+
+@mcp.tool()
+async def remove_path_base(kind: str, path: str) -> dict:
+    """Remove a path entry by kind and exact path."""
+    return await _api_async("DELETE", f"/api/paths/{kind}", json={"path": path})
+
+
+# Process filters ------------------------------------------------------------
+
+@mcp.tool()
+async def list_process_filters(mode: Optional[str] = None) -> list[dict]:
+    """List local-process filter patterns.
+
+    ``mode`` is ``include`` or ``exclude``. Omit to list both.
+    """
+    if mode:
+        data = await _api_async("GET", f"/api/process_filters/{mode}")
+    else:
+        results = []
+        for m in ("include", "exclude"):
+            d = await _api_async("GET", f"/api/process_filters/{m}")
+            if isinstance(d, list):
+                results.extend(d)
+        return results
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def add_process_filter(mode: str, pattern: str) -> dict:
+    """Add an include/exclude pattern for local process scanning."""
+    return await _api_async("POST", f"/api/process_filters/{mode}", json={"pattern": pattern})
+
+
+@mcp.tool()
+async def remove_process_filter(mode: str, pattern: str) -> dict:
+    """Remove a process filter pattern."""
+    return await _api_async("DELETE", f"/api/process_filters/{mode}", json={"pattern": pattern})
+
+
+# App settings ---------------------------------------------------------------
+
+@mcp.tool()
+async def get_app_setting(key: str) -> dict:
+    """Read one app setting. Returns value, default, description, and source."""
+    return await _api_async("GET", f"/api/settings/{key}")
+
+
+@mcp.tool()
+async def set_app_setting(key: str, value) -> dict:
+    """Set one app setting. Value is type-checked against the registered schema.
+
+    Well-known keys: ssh_timeout, cache_fresh_sec, stats_interval_sec,
+    backup_interval_hours, backup_max_keep, team_name,
+    aihub_opensearch_url, dashboard_url, aihub_cache_ttl_sec,
+    wds_snapshot_interval_sec, sdk_ingest_token.
+    """
+    return await _api_async("PUT", f"/api/settings/{key}", json={"value": value})
+
+
+@mcp.tool()
+async def list_app_settings() -> dict:
+    """List every app setting with its current value, default, and source."""
+    data = await _api_async("GET", "/api/settings")
+    if isinstance(data, dict):
+        return data
+    return {}
 
 
 # ── logbook tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def list_logbook_entries(
+async def list_logbook_entries(
     project: str,
     query: Optional[str] = None,
     sort: str = "edited_at",
@@ -518,7 +910,7 @@ def list_logbook_entries(
         params["q"] = query
     if entry_type:
         params["type"] = entry_type
-    data = _api("GET", f"/api/logbook/{project}/entries", query_string=params)
+    data = await _api_async("GET", f"/api/logbook/{project}/entries", query_string=params)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
@@ -527,13 +919,13 @@ def list_logbook_entries(
 
 
 @mcp.tool()
-def read_logbook_entry(project: str, entry_id: int) -> dict:
+async def read_logbook_entry(project: str, entry_id: int) -> dict:
     """Read a single logbook entry with full markdown body."""
-    return _api("GET", f"/api/logbook/{project}/entries/{entry_id}")
+    return await _api_async("GET", f"/api/logbook/{project}/entries/{entry_id}")
 
 
 @mcp.tool()
-def bulk_read_logbooks(
+async def bulk_read_logbooks(
     project: Optional[str] = None,
     entry_type: Optional[str] = None,
     sort: str = "created_at",
@@ -549,11 +941,11 @@ def bulk_read_logbooks(
         body["project"] = project
     if entry_type:
         body["entry_type"] = entry_type
-    return _api("POST", "/api/logbook/bulk_read", json=body)
+    return await _api_async("POST", "/api/logbook/bulk_read", json=body)
 
 
 @mcp.tool()
-def find_logbook_entries(
+async def find_logbook_entries(
     pattern: str,
     project: Optional[str] = None,
     field: str = "title",
@@ -575,17 +967,17 @@ def find_logbook_entries(
         body["project"] = project
     if entry_type:
         body["entry_type"] = entry_type
-    return _api("POST", "/api/logbook/find", json=body)
+    return await _api_async("POST", "/api/logbook/find", json=body)
 
 
 @mcp.tool()
-def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
+async def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
     """Create a new logbook entry. Supports markdown, #N cross-refs, @run-name refs, images.
 
     See the project-logbook workspace rule for full formatting guidelines.
     entry_type: "note" (results/findings) or "plan" (plans/designs).
     """
-    return _api("POST", f"/api/logbook/{project}/entries", json={
+    return await _api_async("POST", f"/api/logbook/{project}/entries", json={
         "title": title,
         "body": body,
         "entry_type": entry_type,
@@ -593,7 +985,7 @@ def create_logbook_entry(project: str, title: str, body: str = "", entry_type: s
 
 
 @mcp.tool()
-def update_logbook_entry(
+async def update_logbook_entry(
     project: str,
     entry_id: int,
     title: Optional[str] = None,
@@ -630,17 +1022,17 @@ def update_logbook_entry(
         payload["pinned"] = pinned
     if new_project is not None:
         payload["new_project"] = new_project
-    return _api("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
+    return await _api_async("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
 
 
 @mcp.tool()
-def delete_logbook_entry(project: str, entry_id: int) -> dict:
+async def delete_logbook_entry(project: str, entry_id: int) -> dict:
     """Delete a logbook entry. Destructive."""
-    return _api("DELETE", f"/api/logbook/{project}/entries/{entry_id}")
+    return await _api_async("DELETE", f"/api/logbook/{project}/entries/{entry_id}")
 
 
 @mcp.tool()
-def upload_logbook_image(project: str, image_path: str) -> dict:
+async def upload_logbook_image(project: str, image_path: str) -> dict:
     """Upload a local image/HTML file to a project's logbook image store.
 
     Supported: .png, .jpg, .jpeg, .gif, .webp, .svg, .html, .htm
@@ -651,30 +1043,42 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
     filename = os.path.basename(image_path)
     with open(image_path, "rb") as f:
         data = f.read()
-    try:
-        # Werkzeug's test client accepts a `(BytesIO, filename)` tuple under
-        # the multipart field name; this matches what httpx's `files=` did
-        # against the live HTTP endpoint.
-        from io import BytesIO
 
-        resp = _client.post(
-            f"/api/logbook/{project}/images",
-            data={"file": (BytesIO(data), filename)},
-            content_type="multipart/form-data",
+    def _do_upload():
+        try:
+            # Werkzeug's test client accepts a `(BytesIO, filename)` tuple
+            # under the multipart field name; this matches what httpx's
+            # `files=` did against the live HTTP endpoint.
+            resp = _client.post(
+                f"/api/logbook/{project}/images",
+                data={"file": (BytesIO(data), filename)},
+                content_type="multipart/form-data",
+            )
+            if resp.is_json:
+                return resp.get_json()
+            return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.get_data(as_text=True)[:200]}"}
+        except Exception as exc:
+            return {"status": "error", "error": str(exc)}
+
+    try:
+        return await asyncio.wait_for(
+            anyio.to_thread.run_sync(_do_upload),
+            timeout=_UPLOAD_TIMEOUT_SEC,
         )
-        if resp.is_json:
-            return resp.get_json()
-        return {"status": "error", "error": f"HTTP {resp.status_code}: {resp.get_data(as_text=True)[:200]}"}
+    except asyncio.TimeoutError:
+        log.warning("logbook image upload timed out after %.1fs: %s", _UPLOAD_TIMEOUT_SEC, image_path)
+        return {"status": "error", "error": f"image upload timed out after {_UPLOAD_TIMEOUT_SEC:.0f}s"}
     except Exception as exc:
+        log.exception("logbook image upload failed unexpectedly: %s", image_path)
         return {"status": "error", "error": str(exc)}
 
 
 # ── resources ────────────────────────────────────────────────────────────────
 
 @mcp.resource("jobs://summary")
-def jobs_summary() -> str:
+async def jobs_summary() -> str:
     """Quick overview of all clusters: running/pending/failed counts."""
-    data = _api("GET", "/api/jobs_summary")
+    data = await _api_async("GET", "/api/jobs_summary")
     if isinstance(data, dict) and data.get("status") == "ok":
         return data.get("summary", "")
     return f"Error: {data.get('error', 'Unknown error')}" if isinstance(data, dict) else str(data)
