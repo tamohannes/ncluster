@@ -76,6 +76,26 @@ mcp = FastMCP("clausius")
 log = logging.getLogger("server.mcp")
 
 
+# ── Per-PID log tagging ──────────────────────────────────────────────────────
+#
+# When more than one MCP process is alive (parent agent restart, palette
+# reload), they all write to the shared ``data/clausius.log`` and the
+# only way to tell their lines apart was to correlate timestamps with
+# ``ps``. Tag every ``server.mcp`` log line with ``[mcp:pid=NNNNN]`` so
+# the source process is obvious in the file.
+
+class _PidTagFilter(logging.Filter):
+    """Inject ``pid=N`` into every record on the server.mcp logger."""
+    _PID = os.getpid()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = f"[mcp:pid={self._PID}] {record.msg}"
+        return True
+
+
+log.addFilter(_PidTagFilter())
+
+
 # ── Tool-handler exception isolation ─────────────────────────────────────────
 #
 # A bare exception from a tool handler is a worst-case failure mode for the
@@ -87,18 +107,50 @@ log = logging.getLogger("server.mcp")
 # to a structured error envelope. The wrapping is hooked via a tiny shim
 # around ``mcp.tool()`` so individual tool definitions stay untouched.
 
+# Per-tool counters: {tool_name: {"calls": int, "errors": int,
+# "samples_ms": list[float] (bounded)}}. Surfaced via ``mcp_self_check``
+# so an agent can spot a single misbehaving tool without grepping logs.
+_TOOL_STATS_LOCK = threading.Lock()
+_TOOL_STATS: dict = {}
+_TOOL_STATS_SAMPLE_CAP = 100
+
+
+def _record_tool_call(tool_name: str, elapsed_ms: float, errored: bool) -> None:
+    with _TOOL_STATS_LOCK:
+        rec = _TOOL_STATS.setdefault(tool_name, {
+            "calls": 0, "errors": 0, "samples_ms": [],
+        })
+        rec["calls"] += 1
+        if errored:
+            rec["errors"] += 1
+        samples = rec["samples_ms"]
+        samples.append(elapsed_ms)
+        # Bound the sample buffer so a long-lived process doesn't grow
+        # without bound. Reservoir-style drop the oldest.
+        if len(samples) > _TOOL_STATS_SAMPLE_CAP:
+            del samples[0:len(samples) - _TOOL_STATS_SAMPLE_CAP]
+
+
 def _isolate_tool(fn):
-    """Wrap an async tool fn so any Exception becomes a structured error."""
+    """Wrap an async tool fn so any Exception becomes a structured error,
+    and record per-tool call/error counters + latency samples."""
+    name = getattr(fn, "__name__", "?")
+
     @functools.wraps(fn)
     async def _wrapper(*args, **kwargs):
+        t0 = time.monotonic()
+        errored = False
         try:
             return await fn(*args, **kwargs)
         except Exception as exc:
-            log.exception("tool %s raised: %s", getattr(fn, "__name__", "?"), exc)
+            errored = True
+            log.exception("tool %s raised: %s", name, exc)
             return {
                 "status": "error",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+        finally:
+            _record_tool_call(name, (time.monotonic() - t0) * 1000.0, errored)
     return _wrapper
 
 
@@ -401,6 +453,9 @@ def _slim_job(cluster: str, job: dict) -> dict:
 
 # ── tools ─────────────────────────────────────────────────────────────────────
 
+_PROCESS_START_TS = time.monotonic()
+
+
 @mcp.tool()
 async def health_check() -> dict:
     """Quick health check. Returns ok if the MCP server is running."""
@@ -413,6 +468,57 @@ async def health_check() -> dict:
             "follower_active": poller_running(),
         }
     return {"status": "ok", "service": "degraded", "note": "in-process API responded with an error"}
+
+
+@mcp.tool()
+async def mcp_self_check() -> dict:
+    """Diagnostic snapshot of THIS MCP process.
+
+    Lets agents distinguish 'MCP slow' from 'MCP dead' from 'cluster
+    slow' before reaching for the gunicorn log. Returns:
+
+      - ``pid``: this MCP process's PID
+      - ``uptime_sec``: seconds since this process started
+      - ``last_activity_sec_ago``: seconds since the most recent tool
+        call (relevant to the idle-shutdown watchdog)
+      - ``follower_active``: True iff this process is currently running
+        the cluster poller (gunicorn is down)
+      - ``leader_url`` / ``leader_reachable``: gunicorn liveness probe
+      - ``tool_stats``: per-tool {calls, errors, p50_ms, p99_ms} for
+        the latest sample window (capped at 100 samples per tool)
+    """
+
+    def _percentile(values, p):
+        if not values:
+            return None
+        s = sorted(values)
+        k = max(0, min(len(s) - 1, int(round((p / 100.0) * (len(s) - 1)))))
+        return round(s[k], 2)
+
+    with _TOOL_STATS_LOCK:
+        snapshot = {}
+        for name, rec in _TOOL_STATS.items():
+            samples = list(rec["samples_ms"])
+            snapshot[name] = {
+                "calls": rec["calls"],
+                "errors": rec["errors"],
+                "p50_ms": _percentile(samples, 50),
+                "p99_ms": _percentile(samples, 99),
+                "samples_in_window": len(samples),
+            }
+
+    with _activity_lock:
+        idle_sec = time.monotonic() - _last_activity_ts
+
+    return {
+        "pid": os.getpid(),
+        "uptime_sec": round(time.monotonic() - _PROCESS_START_TS, 1),
+        "last_activity_sec_ago": round(idle_sec, 1),
+        "follower_active": poller_running(),
+        "leader_url": _FOLLOWER_URL,
+        "leader_reachable": _probe_leader(),
+        "tool_stats": snapshot,
+    }
 
 
 @mcp.tool()
