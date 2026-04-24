@@ -50,10 +50,13 @@ hands polling back to gunicorn.
 """
 
 import asyncio
+import builtins
 import fcntl
+import functools
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 from io import BytesIO
@@ -71,6 +74,74 @@ _client = app.test_client()
 mcp = FastMCP("clausius")
 
 log = logging.getLogger("server.mcp")
+
+
+# ── Tool-handler exception isolation ─────────────────────────────────────────
+#
+# A bare exception from a tool handler is a worst-case failure mode for the
+# MCP transport: FastMCP turns the exception into a JSON-RPC error response,
+# but if the exception happens after we've started writing or the message
+# framing is mid-flight, the stdio stream can desync and Cursor closes the
+# connection. We therefore wrap every ``@mcp.tool()``-decorated function in
+# an ``_isolate_tool`` decorator that catches any Exception and converts it
+# to a structured error envelope. The wrapping is hooked via a tiny shim
+# around ``mcp.tool()`` so individual tool definitions stay untouched.
+
+def _isolate_tool(fn):
+    """Wrap an async tool fn so any Exception becomes a structured error."""
+    @functools.wraps(fn)
+    async def _wrapper(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:
+            log.exception("tool %s raised: %s", getattr(fn, "__name__", "?"), exc)
+            return {
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+    return _wrapper
+
+
+_original_mcp_tool = mcp.tool
+
+
+def _isolated_mcp_tool(*decorator_args, **decorator_kwargs):
+    """Drop-in for ``mcp.tool()`` that auto-isolates the decorated fn."""
+    def _outer(fn):
+        return _original_mcp_tool(*decorator_args, **decorator_kwargs)(_isolate_tool(fn))
+    return _outer
+
+
+# Replace mcp.tool BEFORE any tool definitions execute.
+mcp.tool = _isolated_mcp_tool
+
+
+# ── Stdout discipline ────────────────────────────────────────────────────────
+#
+# The MCP stdio transport owns sys.stdout for JSON-RPC framing. ANY
+# stray ``print()`` call from a tool handler (or library it imports)
+# can corrupt the framing and close the stream. Redirect builtins.print
+# so accidental writes go to stderr instead. We only install this in
+# the __main__ path so test imports of ``mcp_server`` don't change
+# global print behaviour out from under pytest.
+
+_original_print = builtins.print
+
+
+def _safe_print(*args, **kwargs):
+    """Drop-in for ``print()`` that forces output to stderr."""
+    kwargs["file"] = sys.stderr
+    _original_print(*args, **kwargs)
+
+
+def _install_stdout_safety() -> None:
+    """Replace ``builtins.print`` with a stderr-safe variant."""
+    builtins.print = _safe_print
+
+
+def _restore_stdout() -> None:
+    """Undo :func:`_install_stdout_safety` — used in tests."""
+    builtins.print = _original_print
 
 
 # ── Timeout / off-thread policy ──────────────────────────────────────────────
@@ -1198,6 +1269,7 @@ def _acquire_singleton_lock(
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _install_stdout_safety()
     _singleton_lock_fd = _acquire_singleton_lock()
     if _singleton_lock_fd is None:
         log.error("singleton: could not acquire MCP lock; exiting cleanly")
