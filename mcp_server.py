@@ -65,13 +65,42 @@ from typing import Optional
 import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
 
-from app import app, mcp_init
+# Heavy imports (Flask app + every route + ssh + db) are deferred to the
+# first tool call via ``_ensure_initialized``. Cursor's MCP client gives
+# the child a few seconds after spawn before it considers the connection
+# stuck; doing the full init inline at module import added enough latency
+# that 'MCP took too long to start, marking failed' was a real risk.
+# Server.poller is light (no Flask), so we keep its imports eager — we
+# need ``poller_running`` for ``health_check`` and ``mcp_self_check``.
 from server.poller import poller_running, start_poller, stop_poller
 
-mcp_init()
-_client = app.test_client()
-
 mcp = FastMCP("clausius")
+
+_init_lock = threading.Lock()
+_initialized = False
+_app = None
+_client = None
+
+
+def _ensure_initialized() -> None:
+    """Lazily import ``app`` and create the Flask test client.
+
+    Called from inside ``_api`` / ``_api_text`` (i.e. on a worker thread
+    via anyio.to_thread.run_sync) so the heavy import doesn't block
+    module load — and therefore doesn't block Cursor's MCP startup
+    handshake. Idempotent and thread-safe.
+    """
+    global _app, _client, _initialized
+    if _initialized:
+        return
+    with _init_lock:
+        if _initialized:
+            return
+        from app import app as _imported_app, mcp_init as _imported_mcp_init
+        _imported_mcp_init()
+        _app = _imported_app
+        _client = _app.test_client()
+        _initialized = True
 
 log = logging.getLogger("server.mcp")
 
@@ -286,6 +315,7 @@ def _api(method, path, **kwargs):
     ``{"status": "error", "error": "..."}`` so callers don't need exception
     handling.
     """
+    _ensure_initialized()
     try:
         resp = _client.open(path=path, method=method, **kwargs)
     except Exception as exc:
@@ -303,6 +333,7 @@ def _api(method, path, **kwargs):
 
 def _api_text(method, path, **kwargs):
     """Like ``_api`` but returns the raw response body as text."""
+    _ensure_initialized()
     try:
         resp = _client.open(path=path, method=method, **kwargs)
     except Exception as exc:
@@ -1234,6 +1265,7 @@ async def upload_logbook_image(project: str, image_path: str) -> dict:
         data = f.read()
 
     def _do_upload():
+        _ensure_initialized()
         try:
             # Werkzeug's test client accepts a `(BytesIO, filename)` tuple
             # under the multipart field name; this matches what httpx's
