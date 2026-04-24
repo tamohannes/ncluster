@@ -50,8 +50,10 @@ hands polling back to gunicorn.
 """
 
 import asyncio
+import fcntl
 import logging
 import os
+import signal
 import threading
 import time
 from io import BytesIO
@@ -1031,8 +1033,111 @@ async def jobs_summary() -> str:
     return f"Error: {data.get('error', 'Unknown error')}" if isinstance(data, dict) else str(data)
 
 
+# ── singleton lock ───────────────────────────────────────────────────────────
+#
+# Cursor's MCP client occasionally spawns a fresh ``mcp_server.py`` child
+# without reaping the previous one (tab reload, sleep/wake, MCP restart
+# from the command palette, parent agent crash). In production we have
+# observed up to 3 mcp_server processes alive simultaneously, each with
+# its own DB connections, follower poller thread, and SSH semaphore
+# budget. This is wasteful AND the orphan processes make it harder to
+# debug "Not connected" errors because nobody can tell which one Cursor
+# is actually talking to.
+#
+# A POSIX file lock on a per-user lock file gives us "only one MCP
+# server alive at a time" with new-wins semantics: when a new process
+# starts and finds the lock held, it reads the holder's PID, sends
+# SIGTERM, waits up to ``_SINGLETON_EVICT_GRACE_SEC`` for graceful exit,
+# then SIGKILL if needed. The new process is the one Cursor is currently
+# talking to, so it should win.
+
+_SINGLETON_LOCK_PATH = os.path.expanduser(
+    os.environ.get("CLAUSIUS_MCP_LOCK_PATH", "~/.clausius/mcp.lock")
+)
+_SINGLETON_EVICT_GRACE_SEC = float(
+    os.environ.get("CLAUSIUS_MCP_EVICT_GRACE_SEC", "5")
+)
+
+# Module-level handle so the lock fd stays open for the process lifetime.
+_singleton_lock_fd: Optional[int] = None
+
+
+def _acquire_singleton_lock(
+    lock_path: str = _SINGLETON_LOCK_PATH,
+    grace_sec: float = _SINGLETON_EVICT_GRACE_SEC,
+) -> Optional[int]:
+    """Acquire the MCP singleton lock, evicting any prior holder.
+
+    Returns the open file descriptor (caller must keep it alive for the
+    process lifetime so the lock stays held), or ``None`` if we couldn't
+    get the lock.
+    """
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        # Another process holds the lock. Read the holder's PID, ask it
+        # to exit, then reclaim.
+        try:
+            with open(lock_path) as f:
+                holder_pid = int(f.read().strip() or "0")
+        except (ValueError, OSError):
+            holder_pid = 0
+
+        if holder_pid > 0 and holder_pid != os.getpid():
+            log.warning("singleton: evicting prior MCP holder pid=%s", holder_pid)
+            try:
+                os.kill(holder_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError as exc:
+                log.warning("singleton: kill(SIGTERM, %s) failed: %s", holder_pid, exc)
+
+        deadline = time.monotonic() + grace_sec
+        while time.monotonic() < deadline:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                time.sleep(0.1)
+        else:
+            # Grace expired — escalate to SIGKILL and try once more.
+            if holder_pid > 0 and holder_pid != os.getpid():
+                log.warning(
+                    "singleton: holder pid=%s did not exit in %.1fs, SIGKILL",
+                    holder_pid, grace_sec,
+                )
+                try:
+                    os.kill(holder_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except OSError as exc:
+                    log.warning("singleton: kill(SIGKILL, %s) failed: %s", holder_pid, exc)
+                time.sleep(0.5)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError) as exc:
+                log.error("singleton: could not acquire lock after escalation: %s", exc)
+                os.close(fd)
+                return None
+
+    # Got the lock. Stamp our PID so the next would-be holder knows who
+    # to evict.
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except OSError as exc:
+        log.warning("singleton: writing PID to lock file failed: %s", exc)
+    return fd
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _singleton_lock_fd = _acquire_singleton_lock()
+    if _singleton_lock_fd is None:
+        log.error("singleton: could not acquire MCP lock; exiting cleanly")
+        os._exit(1)
     _start_follower()
     mcp.run()
