@@ -93,6 +93,66 @@ _UPLOAD_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_UPLOAD_TIMEOUT_SEC", "6
 # import time.
 
 
+# ── Idle-timeout watchdog ────────────────────────────────────────────────────
+#
+# Even with the singleton lock, an MCP process can end up idle indefinitely
+# (Cursor crashes without sending a clean shutdown, the parent goes to
+# sleep, the user closes the IDE without exiting). Without a watchdog
+# the process holds DB connections, threads, and the singleton lock
+# forever. The watchdog tracks the last successful tool-call timestamp
+# and ``os._exit(0)``s the process if it's been idle longer than
+# ``CLAUSIUS_MCP_IDLE_SHUTDOWN_SEC`` (default 30 minutes).
+
+_IDLE_SHUTDOWN_SEC = float(
+    os.environ.get("CLAUSIUS_MCP_IDLE_SHUTDOWN_SEC", "1800")
+)
+_activity_lock = threading.Lock()
+_last_activity_ts: float = time.monotonic()
+
+
+def _record_activity() -> None:
+    """Mark NOW as the last successful MCP activity. Called from every
+    ``_api_async`` / ``_api_text_async`` entry so the idle watchdog
+    measures real usage, not just liveness probes."""
+    global _last_activity_ts
+    with _activity_lock:
+        _last_activity_ts = time.monotonic()
+
+
+def _idle_shutdown_step(idle_threshold_sec: float) -> bool:
+    """One pass of the idle-watchdog decision. Returns True iff the
+    process has been idle longer than ``idle_threshold_sec`` and should
+    exit. Pulled out of the loop so the decision is unit-testable
+    without timers or threads."""
+    with _activity_lock:
+        idle = time.monotonic() - _last_activity_ts
+    return idle > idle_threshold_sec
+
+
+def _idle_watchdog_loop() -> None:
+    """Daemon loop that periodically checks the idle threshold and
+    exits the process via ``os._exit(0)`` if exceeded."""
+    interval = min(60.0, max(1.0, _IDLE_SHUTDOWN_SEC / 4))
+    while True:
+        time.sleep(interval)
+        try:
+            if _idle_shutdown_step(_IDLE_SHUTDOWN_SEC):
+                log.warning(
+                    "idle: no MCP activity for >%.0fs; exiting cleanly",
+                    _IDLE_SHUTDOWN_SEC,
+                )
+                os._exit(0)
+        except Exception:
+            log.exception("idle watchdog tick failed")
+
+
+def _start_idle_watchdog() -> threading.Thread:
+    t = threading.Thread(target=_idle_watchdog_loop, daemon=True,
+                         name="mcp-idle-watchdog")
+    t.start()
+    return t
+
+
 # ── In-process API helpers ───────────────────────────────────────────────────
 
 def _api(method, path, **kwargs):
@@ -136,6 +196,7 @@ async def _api_async(method, path, *, timeout: Optional[float] = None, **kwargs)
     """
     if timeout is None:
         timeout = _DEFAULT_TIMEOUT_SEC
+    _record_activity()
     try:
         return await asyncio.wait_for(
             anyio.to_thread.run_sync(lambda: _api(method, path, **kwargs)),
@@ -156,6 +217,7 @@ async def _api_text_async(method, path, *, timeout: Optional[float] = None, **kw
     """Off-thread ``_api_text`` with a wall-clock ``timeout``."""
     if timeout is None:
         timeout = _DEFAULT_TIMEOUT_SEC
+    _record_activity()
     try:
         return await asyncio.wait_for(
             anyio.to_thread.run_sync(lambda: _api_text(method, path, **kwargs)),
@@ -989,6 +1051,7 @@ async def upload_logbook_image(project: str, image_path: str) -> dict:
     """
     if not os.path.isfile(image_path):
         return {"status": "error", "error": f"File not found: {image_path}"}
+    _record_activity()
     filename = os.path.basename(image_path)
     with open(image_path, "rb") as f:
         data = f.read()
@@ -1140,4 +1203,5 @@ if __name__ == "__main__":
         log.error("singleton: could not acquire MCP lock; exiting cleanly")
         os._exit(1)
     _start_follower()
+    _start_idle_watchdog()
     mcp.run()
