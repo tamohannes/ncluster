@@ -1,7 +1,10 @@
 """MCP project tool contract tests.
 
-Mocks ``mcp_server._api`` to verify each tool sends the right HTTP call to the
-in-process Flask test client. Mirrors the logbook test pattern.
+Mocks ``mcp_server._api`` (the synchronous Flask test_client wrapper) to
+verify each tool sends the right HTTP call to the in-process Flask test
+client. ``_api_async`` runs the lambda in a worker thread, so the patch
+on the underlying sync ``_api`` still intercepts every call. Mirrors the
+logbook test pattern.
 """
 
 import pytest
@@ -17,33 +20,33 @@ from mcp_server import (
 
 @pytest.mark.mcp
 class TestListProjects:
-    def test_returns_list(self):
+    async def test_returns_list(self):
         rows = [
             {"name": "alpha", "color": "#abcdef", "emoji": "🧪", "prefixes": [{"prefix": "alpha_"}]},
         ]
         with patch("mcp_server._api", return_value=rows):
-            result = list_projects()
+            result = await list_projects()
         assert isinstance(result, list)
         assert result[0]["name"] == "alpha"
 
-    def test_passes_path(self):
+    async def test_passes_path(self):
         with patch("mcp_server._api", return_value=[]) as mock:
-            list_projects()
+            await list_projects()
         mock.assert_called_once_with("GET", "/api/projects/all")
 
-    def test_wraps_error_dict(self):
+    async def test_wraps_error_dict(self):
         with patch("mcp_server._api", return_value={"status": "error", "error": "boom"}):
-            result = list_projects()
+            result = await list_projects()
         assert isinstance(result, list)
         assert result[0]["status"] == "error"
 
 
 @pytest.mark.mcp
 class TestCreateProject:
-    def test_basic_create(self):
+    async def test_basic_create(self):
         resp = {"status": "ok", "project": {"name": "alpha"}}
         with patch("mcp_server._api", return_value=resp) as mock:
-            result = create_project("alpha", prefixes=["alpha_"])
+            result = await create_project("alpha", prefixes=["alpha_"])
         assert result["status"] == "ok"
         mock.assert_called_once()
         args, kwargs = mock.call_args
@@ -54,57 +57,57 @@ class TestCreateProject:
         assert body["campaign_delimiter"] == "_"
         assert body["description"] == ""
 
-    def test_passes_color_emoji(self):
+    async def test_passes_color_emoji(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            create_project("alpha", prefixes=["a_"], color="#abcdef", emoji="🧪")
+            await create_project("alpha", prefixes=["a_"], color="#abcdef", emoji="🧪")
         body = mock.call_args.kwargs["json"]
         assert body["color"] == "#abcdef"
         assert body["emoji"] == "🧪"
 
-    def test_passes_default_campaign(self):
+    async def test_passes_default_campaign(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            create_project("alpha", prefixes=["a_"], default_campaign="forced")
+            await create_project("alpha", prefixes=["a_"], default_campaign="forced")
         body = mock.call_args.kwargs["json"]
         assert body["default_campaign"] == "forced"
 
-    def test_omits_optional_fields_when_none(self):
+    async def test_omits_optional_fields_when_none(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            create_project("alpha", prefixes=["a_"])
+            await create_project("alpha", prefixes=["a_"])
         body = mock.call_args.kwargs["json"]
         assert "color" not in body
         assert "emoji" not in body
         assert "default_campaign" not in body
 
-    def test_no_prefixes_defaults_to_empty_list(self):
+    async def test_no_prefixes_defaults_to_empty_list(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            create_project("manual")
+            await create_project("manual")
         body = mock.call_args.kwargs["json"]
         assert body["prefixes"] == []
 
 
 @pytest.mark.mcp
 class TestUpdateProject:
-    def test_path_includes_name(self):
+    async def test_path_includes_name(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_project("alpha", color="#000000")
+            await update_project("alpha", color="#000000")
         args, _ = mock.call_args
         assert args == ("PUT", "/api/projects/alpha")
 
-    def test_only_provided_fields_sent(self):
+    async def test_only_provided_fields_sent(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_project("alpha", color="#000000", description="updated")
+            await update_project("alpha", color="#000000", description="updated")
         body = mock.call_args.kwargs["json"]
         assert body == {"color": "#000000", "description": "updated"}
 
-    def test_empty_patch_when_all_none(self):
+    async def test_empty_patch_when_all_none(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_project("alpha")
+            await update_project("alpha")
         body = mock.call_args.kwargs["json"]
         assert body == {}
 
-    def test_passes_prefixes(self):
+    async def test_passes_prefixes(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_project(
+            await update_project(
                 "alpha",
                 prefixes=[{"prefix": "x_", "default_campaign": "forced"}],
             )
@@ -114,8 +117,8 @@ class TestUpdateProject:
 
 @pytest.mark.mcp
 class TestDeleteProject:
-    def test_path_and_method(self):
+    async def test_path_and_method(self):
         with patch("mcp_server._api", return_value={"status": "ok", "deleted": "alpha"}) as mock:
-            result = delete_project("alpha")
+            result = await delete_project("alpha")
         assert result["status"] == "ok"
         mock.assert_called_once_with("DELETE", "/api/projects/alpha")

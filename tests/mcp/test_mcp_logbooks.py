@@ -1,6 +1,9 @@
-"""MCP logbook tool contract tests — HTTP proxy architecture.
+"""MCP logbook tool contract tests — in-process Flask architecture.
 
-Mocks mcp_server._api to verify each logbook tool sends the right HTTP call.
+Mocks ``mcp_server._api`` (the synchronous Flask test_client wrapper) to
+verify each logbook tool sends the right HTTP call. ``_api_async`` runs
+the lambda in a worker thread, so the patch on the underlying sync
+``_api`` still intercepts every call.
 """
 
 import pytest
@@ -14,63 +17,63 @@ from mcp_server import (
 
 @pytest.mark.mcp
 class TestListLogbookEntries:
-    def test_returns_list(self):
+    async def test_returns_list(self):
         entries = [{"id": 1, "title": "Note", "body_preview": "...", "created_at": "2026-03-28", "edited_at": "2026-03-28"}]
         with patch("mcp_server._api", return_value=entries):
-            result = list_logbook_entries("alpha")
+            result = await list_logbook_entries("alpha")
         assert isinstance(result, list)
         assert result[0]["title"] == "Note"
 
-    def test_with_search_query(self):
+    async def test_with_search_query(self):
         with patch("mcp_server._api", return_value=[]) as mock:
-            list_logbook_entries("alpha", query="CUDA")
+            await list_logbook_entries("alpha", query="CUDA")
         mock.assert_called_once()
         _, kwargs = mock.call_args
         # Now uses Werkzeug's test client (`query_string=`) instead of httpx
         # (`params=`) since MCP runs the Flask app in-process.
         assert kwargs["query_string"]["q"] == "CUDA"
 
-    def test_with_entry_type(self):
+    async def test_with_entry_type(self):
         with patch("mcp_server._api", return_value=[]) as mock:
-            list_logbook_entries("alpha", entry_type="plan")
+            await list_logbook_entries("alpha", entry_type="plan")
         _, kwargs = mock.call_args
         assert kwargs["query_string"]["type"] == "plan"
 
-    def test_with_sort(self):
+    async def test_with_sort(self):
         with patch("mcp_server._api", return_value=[]) as mock:
-            list_logbook_entries("alpha", sort="created_at")
+            await list_logbook_entries("alpha", sort="created_at")
         _, kwargs = mock.call_args
         assert kwargs["query_string"]["sort"] == "created_at"
 
 
 @pytest.mark.mcp
 class TestReadLogbookEntry:
-    def test_returns_entry(self):
+    async def test_returns_entry(self):
         entry = {"id": 1, "project": "alpha", "title": "Note", "body": "full content",
                  "created_at": "2026-03-28", "edited_at": "2026-03-28"}
         with patch("mcp_server._api", return_value=entry):
-            result = read_logbook_entry("alpha", 1)
+            result = await read_logbook_entry("alpha", 1)
         assert result["title"] == "Note"
         assert result["body"] == "full content"
 
-    def test_passes_args(self):
+    async def test_passes_args(self):
         with patch("mcp_server._api", return_value={}) as mock:
-            read_logbook_entry("alpha", 42)
+            await read_logbook_entry("alpha", 42)
         mock.assert_called_once_with("GET", "/api/logbook/alpha/entries/42")
 
 
 @pytest.mark.mcp
 class TestCreateLogbookEntry:
-    def test_creates_entry(self):
+    async def test_creates_entry(self):
         resp = {"status": "ok", "id": 1, "created_at": "2026-03-28T10:00:00"}
         with patch("mcp_server._api", return_value=resp):
-            result = create_logbook_entry("alpha", "New note", "body text")
+            result = await create_logbook_entry("alpha", "New note", "body text")
         assert result["status"] == "ok"
         assert result["id"] == 1
 
-    def test_passes_args(self):
+    async def test_passes_args(self):
         with patch("mcp_server._api", return_value={"status": "ok", "id": 1}) as mock:
-            create_logbook_entry("alpha", "Title", "Body", entry_type="plan")
+            await create_logbook_entry("alpha", "Title", "Body", entry_type="plan")
         mock.assert_called_once()
         _, kwargs = mock.call_args
         assert kwargs["json"]["title"] == "Title"
@@ -80,30 +83,30 @@ class TestCreateLogbookEntry:
 
 @pytest.mark.mcp
 class TestUpdateLogbookEntry:
-    def test_updates_entry(self):
+    async def test_updates_entry(self):
         resp = {"status": "ok", "id": 1, "edited_at": "2026-03-28T11:00:00"}
         with patch("mcp_server._api", return_value=resp):
-            result = update_logbook_entry("alpha", 1, title="Updated")
+            result = await update_logbook_entry("alpha", 1, title="Updated")
         assert result["status"] == "ok"
 
-    def test_passes_args(self):
+    async def test_passes_args(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_logbook_entry("alpha", 1, title="T", body="B")
+            await update_logbook_entry("alpha", 1, title="T", body="B")
         mock.assert_called_once()
         _, kwargs = mock.call_args
         assert kwargs["json"]["title"] == "T"
         assert kwargs["json"]["body"] == "B"
 
-    def test_passes_entry_type_and_pinned(self):
+    async def test_passes_entry_type_and_pinned(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_logbook_entry("alpha", 1, entry_type="plan", pinned=True)
+            await update_logbook_entry("alpha", 1, entry_type="plan", pinned=True)
         _, kwargs = mock.call_args
         assert kwargs["json"]["entry_type"] == "plan"
         assert kwargs["json"]["pinned"] is True
 
-    def test_passes_new_project(self):
+    async def test_passes_new_project(self):
         with patch("mcp_server._api", return_value={"status": "ok", "project": "beta"}) as mock:
-            result = update_logbook_entry("alpha", 1, new_project="beta")
+            result = await update_logbook_entry("alpha", 1, new_project="beta")
         _, kwargs = mock.call_args
         # Lookup uses the source project; the body carries the rename target.
         args, _ = mock.call_args
@@ -111,9 +114,9 @@ class TestUpdateLogbookEntry:
         assert kwargs["json"]["new_project"] == "beta"
         assert result["project"] == "beta"
 
-    def test_omits_unset_fields(self):
+    async def test_omits_unset_fields(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            update_logbook_entry("alpha", 1, title="only-title")
+            await update_logbook_entry("alpha", 1, title="only-title")
         _, kwargs = mock.call_args
         # Only the explicitly-set field is sent; nothing else leaks into the
         # request body so callers can mutate one attribute at a time.
@@ -122,12 +125,12 @@ class TestUpdateLogbookEntry:
 
 @pytest.mark.mcp
 class TestDeleteLogbookEntry:
-    def test_deletes_entry(self):
+    async def test_deletes_entry(self):
         with patch("mcp_server._api", return_value={"status": "ok"}):
-            result = delete_logbook_entry("alpha", 1)
+            result = await delete_logbook_entry("alpha", 1)
         assert result["status"] == "ok"
 
-    def test_passes_args(self):
+    async def test_passes_args(self):
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
-            delete_logbook_entry("alpha", 42)
+            await delete_logbook_entry("alpha", 42)
         mock.assert_called_once_with("DELETE", "/api/logbook/alpha/entries/42")

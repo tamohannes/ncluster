@@ -13,20 +13,20 @@ class TestMcpImport:
         assert hasattr(mcp_server, "mcp")
         assert hasattr(mcp_server, "health_check")
 
-    def test_health_check_returns_ok(self):
+    async def test_health_check_returns_ok(self):
         """Healthy in-process Flask response."""
         with patch("mcp_server._api", return_value={"status": "ok", "board_version": 42}):
-            result = health_check()
+            result = await health_check()
         assert result["status"] == "ok"
         assert result["service"] == "in-process"
         assert result["board_version"] == 42
         assert "follower_active" in result
 
-    def test_health_check_service_degraded(self):
+    async def test_health_check_service_degraded(self):
         """If the in-process API itself returns an error envelope, MCP labels
         the service 'degraded' rather than 'unreachable' — there is no remote
         service to be unreachable any more, just an internal error."""
         with patch("mcp_server._api", return_value={"status": "error", "error": "boom"}):
-            result = health_check()
+            result = await health_check()
         assert result["status"] == "ok"
         assert result["service"] == "degraded"
