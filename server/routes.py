@@ -590,16 +590,23 @@ def api_team_jobs():
 
     results = {}
     if force:
-        for c in cluster_list:
-            if c not in CLUSTERS or c == "local":
-                continue
-            try:
-                fetched = fetch_team_jobs(c)
-            except Exception:
-                _log.exception("team_jobs fetch failed for %s", c)
-                fetched = None
-            if fetched is not None:
-                results[c] = fetched
+        # Fan out fresh fetches across clusters. Sequentially this loop
+        # was dominated by the slowest single cluster's SSH (observed
+        # 2-4 s for /api/team_jobs in production logs); parallel keeps
+        # us bounded by that slowest cluster instead of summing them.
+        targets = [c for c in cluster_list if c in CLUSTERS and c != "local"]
+        if targets:
+            with ThreadPoolExecutor(max_workers=min(8, len(targets))) as pool:
+                futs = {pool.submit(fetch_team_jobs, c): c for c in targets}
+                for fut in as_completed(futs):
+                    c = futs[fut]
+                    try:
+                        fetched = fut.result()
+                    except Exception:
+                        _log.exception("team_jobs fetch failed for %s", c)
+                        fetched = None
+                    if fetched is not None:
+                        results[c] = fetched
     else:
         for c in cluster_list:
             if c not in CLUSTERS or c == "local":
