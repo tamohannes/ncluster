@@ -125,7 +125,7 @@ function _renderRunBody(run, cluster) {
     .map(j => String(j.job_id || j.jobid));
   const _runLabel = run.run_name || run.name || '';
   const _cancelRunBtn = _cancelableRunIds.length > 0
-    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${JSON.stringify(_cancelableRunIds)},'${escAttr(_runLabel)}')">cancel run</button>`
+    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`
     : '';
 
   html += `<div class="run-resource-bar">
