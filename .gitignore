@@ -25,9 +25,11 @@ history.db
 .env
 .env.*
 
-# Site-specific config (copy config.example.json to config.json)
+# Site-specific config (v3 legacy + v4 bootstrap)
 config.json
 conf/config.json
+conf/config.json.bak
+conf/clausius.toml
 
 # Runtime data
 data/
