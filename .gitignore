@@ -48,3 +48,4 @@ node_modules/
 # IDE
 .vscode/
 .idea/
+tests/integration/test_debug_isolation.py
