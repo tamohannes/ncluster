@@ -260,6 +260,13 @@ systemctl --user restart clausius.service
 systemctl --user is-active clausius.service
 ```
 
+If `mcp_server.py` changed, also restart the standalone MCP service:
+
+```bash
+systemctl --user restart clausius-mcp.service
+systemctl --user is-active clausius-mcp.service
+```
+
 Key architecture constraints when modifying:
 - Keep on-demand — do NOT add background polling loops
 - Use `db_connection()` context manager for DB access

@@ -133,7 +133,7 @@ All runtime configuration lives in the SQLite database (`data/history.db`). The 
 - Old backups automatically cleaned up
 
 ### MCP Server (AI Agent API)
-- Stdio-based MCP server for Cursor and other MCP-compatible agents
+- Standalone local Streamable HTTP MCP server (recommended for Cursor and other MCP-compatible agents)
 - 49 tools covering every aspect of the dashboard:
 
 | Category | Tools |
@@ -156,7 +156,7 @@ All runtime configuration lives in the SQLite database (`data/history.db`). The 
 - `where_to_submit(nodes, gpu_type)` — **primary tool** for "where should I submit this job?" — ranks clusters by team headroom, fairshare, and GPU type match
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
 - Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
-- **In-process Flask, no HTTP**: MCP boots the same Flask `app` as gunicorn but inside its own stdio process and dispatches each tool through `app.test_client()`. Both processes share SQLite (WAL) and `server.ssh`; gunicorn crashes don't take MCP down.
+- **Standalone local service, no HTTP hop back into the UI**: `clausius-mcp.service` runs `mcp_server.py` as its own user service and exposes FastMCP over Streamable HTTP at `http://127.0.0.1:7273/mcp`. Inside that process, MCP still boots the same Flask `app` as gunicorn and dispatches each tool through `app.test_client()`. Both processes share SQLite (WAL) and `server.ssh`; gunicorn crashes don't take MCP down.
 - **Follower poller**: MCP probes the gunicorn `/api/health` endpoint every 10 s and starts the cluster poller in its own process after ~30 s of silence, then steps back as soon as gunicorn answers again. Single-writer work (backups, mount remounts, WDS snapshots, the progress scraper) stays gunicorn-only.
 
 ### SDK Experiment Tracking (v3)
@@ -273,20 +273,28 @@ python -m server.cli import-json <path/to/config.json>   # v3->v4 migration
 pip install mcp
 ```
 
-Add to `~/.cursor/mcp.json`:
+Install and start the standalone MCP service:
+
+```bash
+cp systemd/clausius-mcp.service ~/.config/systemd/user/clausius-mcp.service
+systemctl --user daemon-reload
+systemctl --user enable --now clausius-mcp.service
+systemctl --user status clausius-mcp.service
+```
+
+Then add to `~/.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "clausius": {
-      "command": "python3",
-      "args": ["/path/to/clausius/mcp_server.py"]
+      "url": "http://127.0.0.1:7273/mcp"
     }
   }
 }
 ```
 
-Reload Cursor to activate. Requires the Flask app to be running.
+Reload Cursor (or restart MCP servers) to activate. The web UI service on `:7272` can restart independently; the MCP service stays up on `:7273`.
 
 ### Cursor Agent Skill
 
