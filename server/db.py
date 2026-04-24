@@ -270,254 +270,33 @@ def db_write():
 
 
 def init_db():
+    """Create every table, index, trigger, and apply idempotent migrations.
+
+    Schema definitions live in :mod:`server.schema` — this function is a
+    thin runner that loops over them inside a single transaction. Safe to
+    call repeatedly on an existing DB; ``CREATE … IF NOT EXISTS`` makes
+    fresh-install statements no-op, and ``ALTER TABLE … ADD COLUMN``
+    statements are wrapped in try/except so they no-op against an
+    already-migrated DB.
+    """
+    from . import schema as _schema
+
     con = get_db()
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS job_history (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            cluster       TEXT NOT NULL,
-            job_id        TEXT NOT NULL,
-            job_name      TEXT,
-            state         TEXT,
-            exit_code     TEXT,
-            reason        TEXT,
-            elapsed       TEXT,
-            nodes         TEXT,
-            gres          TEXT,
-            partition     TEXT,
-            submitted     TEXT,
-            ended_at      TEXT,
-            log_path      TEXT,
-            board_visible INTEGER DEFAULT 0,
-            dependency    TEXT DEFAULT '',
-            UNIQUE(cluster, job_id)
-        )
-    """)
-    for col, default in [("board_visible", "INTEGER DEFAULT 0"),
-                         ("started", "TEXT"),
-                         ("dependency", "TEXT DEFAULT ''"),
-                         ("project", "TEXT DEFAULT ''"),
-                         ("run_id", "INTEGER DEFAULT NULL"),
-                         ("node_list", "TEXT DEFAULT ''"),
-                         ("account", "TEXT DEFAULT ''")]:
+    for ddl in _schema.SCHEMA:
+        con.execute(ddl)
+    for ddl in _schema.INDEXES:
+        con.execute(ddl)
+    for ddl in _schema.TRIGGERS:
+        con.execute(ddl)
+    for table, column, definition in _schema.MIGRATIONS:
         try:
-            con.execute(f"ALTER TABLE job_history ADD COLUMN {col} {default}")
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         except Exception:
+            # Column already exists on this DB — expected on every run
+            # except the first against a pre-v4 schema.
             pass
 
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS runs (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            cluster       TEXT NOT NULL,
-            root_job_id   TEXT NOT NULL,
-            run_name      TEXT DEFAULT '',
-            project       TEXT DEFAULT '',
-            batch_script  TEXT DEFAULT '',
-            scontrol_raw  TEXT DEFAULT '',
-            env_vars      TEXT DEFAULT '',
-            conda_state   TEXT DEFAULT '',
-            started_at    TEXT,
-            ended_at      TEXT,
-            created_at    TEXT DEFAULT (datetime('now')),
-            meta_fetched  INTEGER DEFAULT 0,
-            UNIQUE(cluster, root_job_id)
-        )
-    """)
-    for col, default in [("starred", "INTEGER DEFAULT 0"),
-                         ("notes", "TEXT DEFAULT ''"),
-                         ("run_uuid", "TEXT DEFAULT ''"),
-                         ("source", "TEXT DEFAULT 'legacy'"),
-                         ("submit_command", "TEXT DEFAULT ''"),
-                         ("submit_cwd", "TEXT DEFAULT ''"),
-                         ("git_commit", "TEXT DEFAULT ''"),
-                         ("launcher_hostname", "TEXT DEFAULT ''"),
-                         ("primary_output_dir", "TEXT DEFAULT ''"),
-                         ("sdk_status", "TEXT DEFAULT ''"),
-                         ("params_json", "TEXT DEFAULT ''")]:
-        try:
-            con.execute(f"ALTER TABLE runs ADD COLUMN {col} {default}")
-        except Exception:
-            pass
-
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_board ON job_history(cluster, board_visible)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_ended ON job_history(cluster, ended_at)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_project ON job_history(project)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_run_id ON job_history(run_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_runs_cluster_root ON runs(cluster, root_job_id)")
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS logbook_entries (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            project    TEXT NOT NULL,
-            title      TEXT NOT NULL,
-            body       TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            edited_at  TEXT NOT NULL
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_project ON logbook_entries(project)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_title ON logbook_entries(project, title)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_created ON logbook_entries(project, created_at)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_edited ON logbook_entries(project, edited_at)")
-
-    for col, default in [
-        ("entry_type", "TEXT NOT NULL DEFAULT 'note'"),
-        ("pinned", "INTEGER NOT NULL DEFAULT 0"),
-    ]:
-        try:
-            con.execute(f"ALTER TABLE logbook_entries ADD COLUMN {col} {default}")
-        except Exception:
-            pass
-    con.execute("CREATE INDEX IF NOT EXISTS idx_logbook_type ON logbook_entries(project, entry_type)")
-
-    con.execute("""
-        CREATE VIRTUAL TABLE IF NOT EXISTS logbook_fts USING fts5(
-            title, body,
-            content=logbook_entries,
-            content_rowid=id,
-            tokenize='porter unicode61'
-        )
-    """)
-
-    con.execute("""
-        CREATE TRIGGER IF NOT EXISTS logbook_ai AFTER INSERT ON logbook_entries BEGIN
-            INSERT INTO logbook_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
-        END
-    """)
-    con.execute("""
-        CREATE TRIGGER IF NOT EXISTS logbook_ad AFTER DELETE ON logbook_entries BEGIN
-            INSERT INTO logbook_fts(logbook_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
-        END
-    """)
-    con.execute("""
-        CREATE TRIGGER IF NOT EXISTS logbook_au AFTER UPDATE ON logbook_entries BEGIN
-            INSERT INTO logbook_fts(logbook_fts, rowid, title, body) VALUES ('delete', old.id, old.title, old.body);
-            INSERT INTO logbook_fts(rowid, title, body) VALUES (new.id, new.title, new.body);
-        END
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS job_stats_snapshots (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            cluster       TEXT NOT NULL,
-            job_id        TEXT NOT NULL,
-            ts            TEXT NOT NULL,
-            gpu_util      REAL,
-            gpu_mem_used  REAL,
-            gpu_mem_total REAL,
-            cpu_util      TEXT,
-            rss_used      REAL,
-            max_rss       REAL,
-            gpu_details   TEXT DEFAULT ''
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job ON job_stats_snapshots(cluster, job_id)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_stats_cluster_job_ts ON job_stats_snapshots(cluster, job_id, ts)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_state ON job_history(cluster, state)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_jobname ON job_history(cluster, job_name)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_ended ON job_history(ended_at)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_runid ON job_history(cluster, run_id)")
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS logbook_links (
-            source_id INTEGER NOT NULL,
-            target_id INTEGER NOT NULL,
-            PRIMARY KEY (source_id, target_id),
-            FOREIGN KEY (source_id) REFERENCES logbook_entries(id) ON DELETE CASCADE,
-            FOREIGN KEY (target_id) REFERENCES logbook_entries(id) ON DELETE CASCADE
-        )
-    """)
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS wds_history (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts              TEXT NOT NULL,
-            cluster         TEXT NOT NULL,
-            account         TEXT NOT NULL,
-            wds             INTEGER NOT NULL,
-            resource_gate   REAL,
-            my_level_fs     REAL,
-            ppp_level_fs    REAL,
-            queue_score     REAL,
-            idle_nodes      INTEGER,
-            pending_queue   INTEGER,
-            ppp_headroom    INTEGER,
-            free_for_team   INTEGER,
-            gpus_consumed   INTEGER,
-            gpus_allocated  INTEGER,
-            team_running    INTEGER,
-            my_running      INTEGER,
-            my_pending      INTEGER,
-            req_nodes       INTEGER DEFAULT 1,
-            req_gpus_per_node INTEGER DEFAULT 8,
-            occupancy_factor REAL
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_wds_ts ON wds_history(ts)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_wds_cluster ON wds_history(cluster, account, ts)")
-
-    try:
-        con.execute("ALTER TABLE wds_history ADD COLUMN occupancy_factor REAL")
-    except Exception:
-        pass
-
-    # ── v2 DB-first tables ────────────────────────────────────────────────
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS live_jobs (
-            cluster    TEXT NOT NULL,
-            job_id     TEXT NOT NULL,
-            data_json  TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (cluster, job_id)
-        )
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS cluster_state (
-            cluster    TEXT PRIMARY KEY,
-            status     TEXT NOT NULL DEFAULT 'ok',
-            updated    TEXT,
-            last_error TEXT
-        )
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS cache_store (
-            namespace  TEXT NOT NULL,
-            key        TEXT NOT NULL,
-            value_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            PRIMARY KEY (namespace, key)
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_store(expires_at)")
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS sdk_events (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_uuid     TEXT NOT NULL,
-            event_type   TEXT NOT NULL,
-            event_seq    INTEGER NOT NULL,
-            ts           REAL,
-            payload_json TEXT DEFAULT '{}',
-            UNIQUE(run_uuid, event_seq)
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_runs_uuid ON runs(run_uuid)")
-
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS projects (
-            name               TEXT PRIMARY KEY,
-            color              TEXT NOT NULL DEFAULT '#9CA3AF',
-            emoji              TEXT NOT NULL DEFAULT '📁',
-            prefixes_json      TEXT NOT NULL DEFAULT '[]',
-            campaign_delimiter TEXT NOT NULL DEFAULT '_',
-            description        TEXT NOT NULL DEFAULT '',
-            created_at         TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    con.execute("CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)")
-
+    # SDK synthetic jobs should never be pinned on the live board.
     con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")
 
     con.commit()
