@@ -20,14 +20,14 @@ _DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".cur
 _DEBUG_SESSION_ID = "41bcda"
 
 from .config import (
-    CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
-    _CONFIG, _cache_lock, _cache,
+    CLUSTERS, DEFAULT_USER, TERMINAL_STATES, RESULT_DIR_NAMES,
+    _cache_lock, _cache,
     _cache_get, _cache_set,
     _log_content_cache, _dir_list_cache, _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
     _team_usage_cache,
     LOG_CONTENT_TTL_SEC, DIR_LIST_TTL_SEC, PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
     TEAM_USAGE_TTL_SEC,
-    reload_config, settings_response,
+    settings_response,
     get_project_color, get_project_emoji, extract_project, extract_campaign,
 )
 from .db import (
@@ -260,7 +260,8 @@ def _log_slow(response):
 
 @api.route("/")
 def index():
-    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=TEAM_NAME))
+    from .settings import get_team_name
+    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=get_team_name()))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -1551,75 +1552,255 @@ def api_settings_get():
 
 @api.route("/api/settings", methods=["POST"])
 def api_settings_post():
-    patch = request.get_json(silent=True)
-    if not patch or not isinstance(patch, dict):
-        return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
+    """Deprecated in v4 — replaced by per-namespace endpoints.
 
-    import copy
-    from . import config as _cfgmod
-    _cfgmod._sync_config()
-    merged = copy.deepcopy(_cfgmod._CONFIG)
-    for key in ("port", "ssh_timeout", "cache_fresh_sec", "stats_interval_sec",
-                "backup_interval_hours", "backup_max_keep",
-                "log_search_bases", "nemo_run_bases", "mount_lustre_prefixes",
-                "local_process_filters"):
-        if key in patch:
-            merged[key] = patch[key]
-    if "clusters" in patch:
-        existing = merged.get("clusters", {})
-        for cname, cpatch in patch["clusters"].items():
-            if cname in existing:
-                existing[cname].update(cpatch)
-            else:
-                existing[cname] = cpatch
-        for gone in set(existing) - set(patch["clusters"]):
-            del existing[gone]
-        merged["clusters"] = existing
-    if "projects" in patch:
-        # Projects moved to the SQLite ``projects`` table — manage them via
-        # ``/api/projects`` (POST/PUT/DELETE) or the matching MCP tools.
-        # Silently drop the field here so older clients don't blow up, but
-        # log it so we can spot any stale callers during the transition.
-        _log.warning(
-            "POST /api/settings included a 'projects' field — ignored. "
-            "Use /api/projects endpoints or the MCP project tools instead."
-        )
-    if "team" in patch:
-        merged["team"] = patch["team"]
-    if "team_gpu_allocations" in patch:
-        merged["team_gpu_allocations"] = patch["team_gpu_allocations"]
-    if "ppps" in patch:
-        merged["ppps"] = patch["ppps"]
+    Returns 410 Gone with a pointer to the new endpoints. The v3
+    blob-shaped patch was unsafe at scale (whole-config rewrites on
+    every change); per-namespace endpoints in
+    ``/api/clusters``, ``/api/team/*``, ``/api/paths/*``,
+    ``/api/process_filters/*``, ``/api/settings/<key>`` replace it.
+    """
+    return jsonify({
+        "status": "error",
+        "error": "POST /api/settings was removed in clausius v4. Use the per-namespace "
+                 "endpoints: /api/clusters, /api/team/members, /api/team/ppps, "
+                 "/api/paths/<kind>, /api/process_filters/<mode>, /api/settings/<key>.",
+    }), 410
 
-    try:
-        reload_config(merged)
-    except Exception as exc:
-        _log.exception("settings reload failed")
-        return jsonify({"status": "error", "error": str(exc)}), 500
 
-    # If any WDS input changed, kick off a fresh snapshot in the background
-    # so the next read of wds_history reflects the new value without waiting
-    # for the next periodic tick (default 15 min).
-    if any(k in patch for k in ("team_gpu_allocations", "ppps", "team")):
-        import threading
-        from .wds import compute_wds_snapshot
+# ─── v4 per-namespace config endpoints ──────────────────────────────────────
 
-        def _refresh_wds():
-            try:
-                compute_wds_snapshot()
-            except Exception:
-                _log.exception("WDS snapshot after settings change failed")
+@api.route("/api/settings/<key>", methods=["GET"])
+def api_setting_get(key):
+    """Read a single ``app_settings`` key.
 
-        threading.Thread(target=_refresh_wds, daemon=True,
-                         name="wds-after-settings").start()
+    Returns ``{"key", "value", "default", "description", "source"}``.
+    ``source`` is ``"db"`` for an explicit override or ``"default"`` for
+    the registered fallback.
+    """
+    from .settings import list_settings
+    entry = list_settings().get(key)
+    if entry is None:
+        return jsonify({"status": "error", "error": f"unknown setting key {key!r}"}), 404
+    return jsonify({"status": "ok", "key": key, **entry})
 
-    return jsonify({"status": "ok", "settings": settings_response()})
+
+@api.route("/api/settings/<key>", methods=["PUT"])
+def api_setting_put(key):
+    """Update one ``app_settings`` key. JSON body must be ``{"value": ...}``."""
+    from .settings import set_setting
+    body = request.get_json(silent=True) or {}
+    if "value" not in body:
+        return jsonify({"status": "error", "error": "JSON body must include a 'value' field"}), 400
+    result = set_setting(key, body["value"])
+    return jsonify(result), (200 if result.get("status") == "ok" else 400)
+
+
+@api.route("/api/settings/<key>", methods=["DELETE"])
+def api_setting_delete(key):
+    """Drop a stored override so the registered default takes over again."""
+    from .settings import delete_setting
+    return jsonify(delete_setting(key))
+
+
+# Clusters --------------------------------------------------------------------
+
+@api.route("/api/clusters", methods=["GET"])
+def api_clusters_list():
+    """List every registered cluster (excludes the synthetic ``local``)."""
+    from .clusters import list_clusters
+    enabled_only = request.args.get("enabled_only", "0") in ("1", "true", "True")
+    return jsonify(list_clusters(include_local=False, only_enabled=enabled_only))
+
+
+@api.route("/api/clusters", methods=["POST"])
+def api_clusters_create():
+    """Register a new cluster.
+
+    Body must include ``name`` and ``host``; every other field is
+    optional. Returns ``{"status": "ok"|"error", ...}`` with a 400 on
+    validation failure.
+    """
+    from .clusters import add_cluster
+    body = request.get_json(silent=True) or {}
+    name = body.pop("name", "")
+    if not name:
+        return jsonify({"status": "error", "error": "name is required"}), 400
+    if "host" not in body:
+        return jsonify({"status": "error", "error": "host is required"}), 400
+    result = add_cluster(name, **body)
+    code = 200 if result.get("status") == "ok" else 400
+    return jsonify(result), code
+
+
+@api.route("/api/clusters/<name>", methods=["GET"])
+def api_clusters_get(name):
+    from .clusters import get_cluster
+    cluster = get_cluster(name)
+    if cluster is None:
+        return jsonify({"status": "error", "error": f"cluster {name!r} not found"}), 404
+    return jsonify({"status": "ok", "cluster": cluster})
+
+
+@api.route("/api/clusters/<name>", methods=["PUT"])
+def api_clusters_update(name):
+    from .clusters import update_cluster
+    body = request.get_json(silent=True) or {}
+    result = update_cluster(name, **body)
+    code = 200 if result.get("status") == "ok" else (
+        404 if "not found" in result.get("error", "") else 400
+    )
+    return jsonify(result), code
+
+
+@api.route("/api/clusters/<name>", methods=["DELETE"])
+def api_clusters_delete(name):
+    from .clusters import remove_cluster
+    result = remove_cluster(name)
+    code = 200 if result.get("status") == "ok" else (
+        404 if "not found" in result.get("error", "") else 400
+    )
+    return jsonify(result), code
+
+
+# Team members ----------------------------------------------------------------
+
+@api.route("/api/team/members", methods=["GET"])
+def api_team_members_list():
+    from .team import list_team_members
+    return jsonify(list_team_members())
+
+
+@api.route("/api/team/members", methods=["POST"])
+def api_team_members_create():
+    from .team import add_team_member
+    body = request.get_json(silent=True) or {}
+    username = body.pop("username", "")
+    if not username:
+        return jsonify({"status": "error", "error": "username is required"}), 400
+    result = add_team_member(username, **body)
+    code = 200 if result.get("status") == "ok" else 400
+    return jsonify(result), code
+
+
+@api.route("/api/team/members/<username>", methods=["DELETE"])
+def api_team_members_delete(username):
+    from .team import remove_team_member
+    result = remove_team_member(username)
+    code = 200 if result.get("status") == "ok" else 404
+    return jsonify(result), code
+
+
+# PPP accounts ---------------------------------------------------------------
+
+@api.route("/api/team/ppps", methods=["GET"])
+def api_team_ppps_list():
+    from .team import list_ppp_accounts
+    return jsonify(list_ppp_accounts())
+
+
+@api.route("/api/team/ppps", methods=["POST"])
+def api_team_ppps_create():
+    from .team import add_ppp_account
+    body = request.get_json(silent=True) or {}
+    name = body.pop("name", "")
+    if not name:
+        return jsonify({"status": "error", "error": "name is required"}), 400
+    result = add_ppp_account(name, **body)
+    code = 200 if result.get("status") == "ok" else 400
+    return jsonify(result), code
+
+
+@api.route("/api/team/ppps/<name>", methods=["PUT"])
+def api_team_ppps_update(name):
+    from .team import update_ppp_account
+    body = request.get_json(silent=True) or {}
+    result = update_ppp_account(name, **body)
+    code = 200 if result.get("status") == "ok" else (
+        404 if "not found" in result.get("error", "") else 400
+    )
+    return jsonify(result), code
+
+
+@api.route("/api/team/ppps/<name>", methods=["DELETE"])
+def api_team_ppps_delete(name):
+    from .team import remove_ppp_account
+    result = remove_ppp_account(name)
+    code = 200 if result.get("status") == "ok" else 404
+    return jsonify(result), code
+
+
+# Path lists -----------------------------------------------------------------
+
+@api.route("/api/paths/<kind>", methods=["GET"])
+def api_paths_list(kind):
+    from .paths import PATH_KINDS, list_path_bases
+    if kind not in PATH_KINDS:
+        return jsonify({"status": "error", "error": f"unknown kind {kind!r}"}), 404
+    return jsonify(list_path_bases(kind=kind))
+
+
+@api.route("/api/paths/<kind>", methods=["POST"])
+def api_paths_add(kind):
+    from .paths import add_path_base
+    body = request.get_json(silent=True) or {}
+    path = body.get("path", "")
+    result = add_path_base(kind, path)
+    code = 200 if result.get("status") == "ok" else 400
+    return jsonify(result), code
+
+
+@api.route("/api/paths/<kind>", methods=["DELETE"])
+def api_paths_remove(kind):
+    """Remove a path entry. JSON body must include ``path`` (or ``id``)."""
+    from .paths import remove_path_base, remove_path_base_by_id
+    body = request.get_json(silent=True) or {}
+    if "id" in body:
+        result = remove_path_base_by_id(int(body["id"]))
+    else:
+        path = body.get("path", "")
+        result = remove_path_base(kind, path)
+    code = 200 if result.get("status") == "ok" else 404
+    return jsonify(result), code
+
+
+# Process filters ------------------------------------------------------------
+
+@api.route("/api/process_filters/<mode>", methods=["GET"])
+def api_filters_list(mode):
+    from .paths import FILTER_MODES, list_process_filters
+    if mode not in FILTER_MODES:
+        return jsonify({"status": "error", "error": f"unknown mode {mode!r}"}), 404
+    return jsonify(list_process_filters(mode=mode))
+
+
+@api.route("/api/process_filters/<mode>", methods=["POST"])
+def api_filters_add(mode):
+    from .paths import add_process_filter
+    body = request.get_json(silent=True) or {}
+    pattern = body.get("pattern", "")
+    result = add_process_filter(mode, pattern)
+    code = 200 if result.get("status") == "ok" else 400
+    return jsonify(result), code
+
+
+@api.route("/api/process_filters/<mode>", methods=["DELETE"])
+def api_filters_remove(mode):
+    from .paths import remove_process_filter, remove_process_filter_by_id
+    body = request.get_json(silent=True) or {}
+    if "id" in body:
+        result = remove_process_filter_by_id(int(body["id"]))
+    else:
+        pattern = body.get("pattern", "")
+        result = remove_process_filter(mode, pattern)
+    code = 200 if result.get("status") == "ok" else 404
+    return jsonify(result), code
 
 
 # ─── Logbook routes ──────────────────────────────────────────────────────────
 
 from .cluster_dashboard import get_cluster_utilization
-from .config import DASHBOARD_URL as _DASHBOARD_URL
+from .settings import get_dashboard_url as _DASHBOARD_URL
 from .storage_quota import fetch_storage_quota  # noqa: used only as SSH fallback if needed
 
 
@@ -1628,7 +1809,7 @@ def api_user_avatar():
     """Proxy the user's avatar image from the Science dashboard."""
     import urllib.request as _ur
     user = request.args.get("user", DEFAULT_USER)
-    url = f"{_DASHBOARD_URL}/images/{user}.png"
+    url = f"{_DASHBOARD_URL()}/images/{user}.png"
     try:
         with _ur.urlopen(url, timeout=5) as resp:
             data = resp.read()
@@ -1638,7 +1819,7 @@ def api_user_avatar():
             r.headers["Cache-Control"] = "public, max-age=86400"
             return r
     except Exception:
-        url_jpg = f"{_DASHBOARD_URL}/images/{user}.jpeg"
+        url_jpg = f"{_DASHBOARD_URL()}/images/{user}.jpeg"
         try:
             with _ur.urlopen(url_jpg, timeout=5) as resp:
                 data = resp.read()
@@ -2433,7 +2614,8 @@ def _adopt_matching_slurm_jobs(cluster, expname, sdk_run_id):
 @api.route("/api/sdk/events", methods=["POST"])
 def api_sdk_ingest():
     """Accept batched SDK events and persist runs/jobs/metrics immediately."""
-    from .config import SDK_INGEST_TOKEN, extract_project
+    from .config import extract_project
+    from .settings import get_sdk_ingest_token
     from .db import (
         upsert_run_from_sdk,
         store_sdk_event,
@@ -2443,9 +2625,10 @@ def api_sdk_ingest():
     )
     from .poller import bump_version
 
-    if SDK_INGEST_TOKEN:
+    sdk_token = get_sdk_ingest_token()
+    if sdk_token:
         auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {SDK_INGEST_TOKEN}":
+        if auth != f"Bearer {sdk_token}":
             return jsonify({"status": "error", "error": "unauthorized"}), 401
 
     events = request.get_json(force=True, silent=True)

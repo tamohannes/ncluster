@@ -1,6 +1,11 @@
-"""Integration tests for new settings fields added during the redesign."""
+"""Integration tests for the stats-interval setting and GPU probing.
 
-import json
+The v3 ``POST /api/settings`` write tests were removed when v4 split
+settings into per-namespace endpoints. The new "set/get one app_setting"
+tests live in ``test_api_settings_routes.py`` (added in the
+``rest_api`` step).
+"""
+
 import pytest
 
 
@@ -11,30 +16,6 @@ class TestStatsIntervalSetting:
         data = resp.get_json()
         assert "stats_interval_sec" in data
         assert isinstance(data["stats_interval_sec"], (int, float))
-
-    def test_post_updates_stats_interval(self, client, mock_ssh, tmp_path, monkeypatch):
-        monkeypatch.setattr("server.config.CONFIG_PATH", str(tmp_path / "config.json"))
-        initial = client.get("/api/settings").get_json()
-        (tmp_path / "config.json").write_text(json.dumps(initial))
-
-        resp = client.post("/api/settings",
-                           data=json.dumps({"stats_interval_sec": 600}),
-                           content_type="application/json")
-        data = resp.get_json()
-        assert data["status"] == "ok"
-        assert data["settings"]["stats_interval_sec"] == 600
-
-    def test_stats_interval_persists_after_reload(self, client, mock_ssh, tmp_path, monkeypatch):
-        monkeypatch.setattr("server.config.CONFIG_PATH", str(tmp_path / "config.json"))
-        initial = client.get("/api/settings").get_json()
-        (tmp_path / "config.json").write_text(json.dumps(initial))
-
-        client.post("/api/settings",
-                    data=json.dumps({"stats_interval_sec": 900}),
-                    content_type="application/json")
-
-        saved = json.loads((tmp_path / "config.json").read_text())
-        assert saved.get("stats_interval_sec") == 900
 
 
 @pytest.mark.integration
