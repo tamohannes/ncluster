@@ -927,23 +927,32 @@ function _readGpuAllocations() {
 }
 
 async function saveGpuAllocations() {
+  // v4: each cluster owns its team_gpu_alloc field on the cluster row.
+  // Iterate the inputs, PUT each cluster individually with its new value.
   const team_gpu_allocations = _readGpuAllocations();
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team_gpu_allocations }),
-    });
-    const d = await res.json();
-    if (d.status === 'ok') {
-      toast('GPU allocations saved');
-      _teamGpuAlloc = team_gpu_allocations;
-      if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
-        refreshPppAllocations(true);
-      }
+  let failed = 0;
+  for (const [cluster, alloc] of Object.entries(team_gpu_allocations)) {
+    try {
+      const res = await fetch(`/api/clusters/${encodeURIComponent(cluster)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team_gpu_alloc: String(alloc) }),
+      });
+      const d = await res.json();
+      if (d.status !== 'ok') failed++;
+    } catch { failed++; }
+  }
+  // Clusters that no longer have a row in the inputs need their alloc cleared.
+  // The inputs always cover every active cluster so this branch is rare.
+  if (failed === 0) {
+    toast('GPU allocations saved');
+    _teamGpuAlloc = team_gpu_allocations;
+    if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+      refreshPppAllocations(true);
     }
-    else toast(d.error || 'Save failed', 'error');
-  } catch { toast('Save failed', 'error'); }
+  } else {
+    toast(`Save failed for ${failed} cluster(s)`, 'error');
+  }
 }
 
 function addPppRow() {
@@ -965,28 +974,50 @@ function addPppRow() {
 }
 
 async function saveProfile() {
+  // v4: team_name is an app_setting; PPP accounts have their own table.
   const team = document.getElementById('set-team').value.trim();
   const cards = document.querySelectorAll('#ppp-editor .cluster-edit-card');
-  const ppps = {};
+  const wantedPpps = new Map();  // name -> ppp_id (string)
   for (const card of cards) {
     const name = (card.querySelector('[data-f="ppp-name"]').value || '').trim();
-    const pid = parseInt(card.querySelector('[data-f="ppp-id"]').value) || 0;
-    if (name && pid > 0) ppps[name] = pid;
+    const pid = (card.querySelector('[data-f="ppp-id"]').value || '').trim();
+    if (name) wantedPpps.set(name, pid);
   }
   try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
+    // 1) Update team name.
+    await fetch('/api/settings/team_name', {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ team, ppps }),
+      body: JSON.stringify({ value: team }),
     });
-    const d = await res.json();
-    if (d.status === 'ok') {
-      toast('Profile saved');
-      if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
-        refreshPppAllocations(true);
+
+    // 2) Reconcile PPP accounts. Fetch current, drop missing, upsert wanted.
+    const existing = await fetch('/api/team/ppps').then(r => r.json());
+    const existingNames = new Set((existing || []).map(a => a.name));
+    for (const oldName of existingNames) {
+      if (!wantedPpps.has(oldName)) {
+        await fetch(`/api/team/ppps/${encodeURIComponent(oldName)}`, { method: 'DELETE' });
       }
-    } else {
-      toast(d.error || 'Save failed', 'error');
+    }
+    for (const [name, pid] of wantedPpps) {
+      if (existingNames.has(name)) {
+        await fetch(`/api/team/ppps/${encodeURIComponent(name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ppp_id: pid }),
+        });
+      } else {
+        await fetch('/api/team/ppps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, ppp_id: pid }),
+        });
+      }
+    }
+
+    toast('Profile saved');
+    if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+      refreshPppAllocations(true);
     }
   } catch (e) {
     toast('Save failed', 'error');
@@ -1034,32 +1065,57 @@ function addClusterRow() {
 }
 
 async function saveClusters() {
+  // v4: each cluster is a row in the clusters table. Reconcile by
+  // diffing the form against the existing rows and POST/PUT/DELETE as
+  // needed so partial failures only affect their own cluster.
   const cards = document.querySelectorAll('#cluster-editor .cluster-edit-card');
-  const clusters = {};
+  const wanted = new Map();  // name -> {host, port, gpu_type, mount_paths}
   for (const card of cards) {
     const name = (card.querySelector('[data-f="name"]').value || '').trim();
     if (!name) continue;
     const mpRaw = (card.querySelector('[data-f="mount_paths"]').value || '').trim();
     const mountPaths = mpRaw ? mpRaw.split('\n').map(s => s.trim()).filter(Boolean) : [];
-    clusters[name] = {
+    wanted.set(name, {
       host: card.querySelector('[data-f="host"]').value.trim(),
       port: parseInt(card.querySelector('[data-f="port"]').value) || 22,
       gpu_type: card.querySelector('[data-f="gpu_type"]').value.trim(),
       mount_paths: mountPaths,
-    };
-  }
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clusters }),
     });
-    const d = await res.json();
-    if (d.status === 'ok') {
+  }
+
+  let failed = 0;
+  try {
+    const existing = await fetch('/api/clusters').then(r => r.json());
+    const existingNames = new Set((existing || []).map(c => c.name));
+
+    for (const oldName of existingNames) {
+      if (!wanted.has(oldName)) {
+        const res = await fetch(`/api/clusters/${encodeURIComponent(oldName)}`, { method: 'DELETE' });
+        if (!res.ok) failed++;
+      }
+    }
+    for (const [name, body] of wanted) {
+      if (existingNames.has(name)) {
+        const res = await fetch(`/api/clusters/${encodeURIComponent(name)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) failed++;
+      } else {
+        const res = await fetch('/api/clusters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, ...body }),
+        });
+        if (!res.ok) failed++;
+      }
+    }
+    if (failed === 0) {
       toast('Clusters saved');
       fetchAll();
     } else {
-      toast(d.error || 'Save failed', 'error');
+      toast(`Save failed for ${failed} cluster(s)`, 'error');
     }
   } catch (e) {
     toast('Save failed', 'error');
@@ -1256,43 +1312,63 @@ async function _saveProjectCard(card) {
 }
 
 async function saveAdvancedSettings() {
-  const sshTimeout = parseInt(document.getElementById('set-ssh-timeout').value) || 8;
-  const cacheFresh = parseInt(document.getElementById('set-cache-fresh').value) || 30;
-  const statsInterval = parseInt(document.getElementById('set-stats-interval').value) || 1800;
-  const backupInterval = parseInt(document.getElementById('set-backup-interval').value) || 24;
-  const backupMax = parseInt(document.getElementById('set-backup-max').value) || 7;
-  try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ssh_timeout: sshTimeout,
-        cache_fresh_sec: cacheFresh,
-        stats_interval_sec: statsInterval,
-        backup_interval_hours: backupInterval,
-        backup_max_keep: backupMax,
-      }),
-    });
-    const d = await res.json();
-    if (d.status === 'ok') toast('Advanced settings saved');
-    else toast(d.error || 'Save failed', 'error');
-  } catch (e) {
-    toast('Save failed', 'error');
+  // v4: each app_setting key has its own /api/settings/<key> endpoint.
+  const updates = {
+    ssh_timeout: parseInt(document.getElementById('set-ssh-timeout').value) || 8,
+    cache_fresh_sec: parseInt(document.getElementById('set-cache-fresh').value) || 30,
+    stats_interval_sec: parseInt(document.getElementById('set-stats-interval').value) || 1800,
+    backup_interval_hours: parseInt(document.getElementById('set-backup-interval').value) || 24,
+    backup_max_keep: parseInt(document.getElementById('set-backup-max').value) || 7,
+  };
+  let failed = 0;
+  for (const [key, value] of Object.entries(updates)) {
+    try {
+      const res = await fetch(`/api/settings/${key}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value }),
+      });
+      if (!res.ok) failed++;
+    } catch { failed++; }
   }
+  if (failed === 0) toast('Advanced settings saved');
+  else toast(`Save failed for ${failed} setting(s)`, 'error');
 }
 
 async function saveProcessFilters() {
+  // v4: process filters live in their own table with one row per pattern.
+  // Reconcile by diffing the form against the stored patterns.
   const inc = document.getElementById('set-proc-include').value.split(',').map(s => s.trim()).filter(Boolean);
   const exc = document.getElementById('set-proc-exclude').value.split(',').map(s => s.trim()).filter(Boolean);
+
+  async function reconcile(mode, wanted) {
+    const existing = await fetch(`/api/process_filters/${mode}`).then(r => r.json());
+    const existingPatterns = new Set((existing || []).map(f => f.pattern));
+    const wantedSet = new Set(wanted);
+    for (const p of existingPatterns) {
+      if (!wantedSet.has(p)) {
+        await fetch(`/api/process_filters/${mode}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pattern: p }),
+        });
+      }
+    }
+    for (const p of wanted) {
+      if (!existingPatterns.has(p)) {
+        await fetch(`/api/process_filters/${mode}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pattern: p }),
+        });
+      }
+    }
+  }
+
   try {
-    const res = await fetch('/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ local_process_filters: { include: inc, exclude: exc } }),
-    });
-    const d = await res.json();
-    if (d.status === 'ok') toast('Process filters saved');
-    else toast(d.error || 'Save failed', 'error');
+    await reconcile('include', inc);
+    await reconcile('exclude', exc);
+    toast('Process filters saved');
   } catch (e) {
     toast('Save failed', 'error');
   }
