@@ -74,7 +74,30 @@ from mcp.server.fastmcp import FastMCP
 # need ``poller_running`` for ``health_check`` and ``mcp_self_check``.
 from server.poller import poller_running, start_poller, stop_poller
 
-mcp = FastMCP("clausius")
+# MCP transport settings.
+#
+# Historically Clausius ran only as a stdio MCP server, which made the
+# process lifetime and transport lifetime owned by Cursor. We now support
+# a standalone local HTTP service as the preferred deployment:
+#
+#   CLAUSIUS_MCP_TRANSPORT=streamable-http
+#   CLAUSIUS_MCP_HOST=127.0.0.1
+#   CLAUSIUS_MCP_PORT=7273
+#   CLAUSIUS_MCP_HTTP_PATH=/mcp
+#
+# Cursor then connects to http://127.0.0.1:7273/mcp and the MCP server
+# outlives any particular IDE session.
+_MCP_TRANSPORT = os.environ.get("CLAUSIUS_MCP_TRANSPORT", "stdio")
+_MCP_HOST = os.environ.get("CLAUSIUS_MCP_HOST", "127.0.0.1")
+_MCP_PORT = int(os.environ.get("CLAUSIUS_MCP_PORT", "7273"))
+_MCP_HTTP_PATH = os.environ.get("CLAUSIUS_MCP_HTTP_PATH", "/mcp")
+
+mcp = FastMCP(
+    "clausius",
+    host=_MCP_HOST,
+    port=_MCP_PORT,
+    streamable_http_path=_MCP_HTTP_PATH,
+)
 
 _init_lock = threading.Lock()
 _initialized = False
@@ -223,6 +246,13 @@ def _install_stdout_safety() -> None:
 def _restore_stdout() -> None:
     """Undo :func:`_install_stdout_safety` — used in tests."""
     builtins.print = _original_print
+
+
+def _listen_url() -> Optional[str]:
+    """Public URL for standalone HTTP mode, else ``None`` for stdio."""
+    if _MCP_TRANSPORT == "streamable-http":
+        return f"http://{_MCP_HOST}:{_MCP_PORT}{_MCP_HTTP_PATH}"
+    return None
 
 
 # ── Timeout / off-thread policy ──────────────────────────────────────────────
@@ -543,6 +573,8 @@ async def mcp_self_check() -> dict:
 
     return {
         "pid": os.getpid(),
+        "transport": _MCP_TRANSPORT,
+        "listen_url": _listen_url(),
         "uptime_sec": round(time.monotonic() - _PROCESS_START_TS, 1),
         "last_activity_sec_ago": round(idle_sec, 1),
         "follower_active": poller_running(),
@@ -1407,11 +1439,14 @@ def _acquire_singleton_lock(
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    _install_stdout_safety()
-    _singleton_lock_fd = _acquire_singleton_lock()
-    if _singleton_lock_fd is None:
-        log.error("singleton: could not acquire MCP lock; exiting cleanly")
-        os._exit(1)
+    if _MCP_TRANSPORT == "stdio":
+        _install_stdout_safety()
+        _singleton_lock_fd = _acquire_singleton_lock()
+        if _singleton_lock_fd is None:
+            log.error("singleton: could not acquire MCP lock; exiting cleanly")
+            os._exit(1)
     _start_follower()
-    _start_idle_watchdog()
-    mcp.run()
+    if _MCP_TRANSPORT == "stdio":
+        _start_idle_watchdog()
+    log.info("starting transport=%s listen_url=%s", _MCP_TRANSPORT, _listen_url())
+    mcp.run(transport=_MCP_TRANSPORT)

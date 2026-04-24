@@ -1,0 +1,19 @@
+[Unit]
+Description=clausius MCP — standalone local streamable HTTP service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/clausius
+Environment=CLAUSIUS_MCP_TRANSPORT=streamable-http
+Environment=CLAUSIUS_MCP_HOST=127.0.0.1
+Environment=CLAUSIUS_MCP_PORT=7273
+Environment=CLAUSIUS_MCP_HTTP_PATH=/mcp
+ExecStart=%h/miniconda3/bin/python3 %h/clausius/mcp_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
