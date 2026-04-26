@@ -66,6 +66,7 @@ def _demand_age():
 
 class Poller:
     HEALTHY_INTERVAL = 15
+    LOCAL_INTERVAL = 30
     MAX_BACKOFF = 120
     PRIORITY_COOLDOWN = 5
     DEMAND_IDLE_SEC = 120
@@ -90,6 +91,8 @@ class Poller:
         remote = [n for n in CLUSTERS if n != "local"]
         for i, name in enumerate(remote):
             self._schedules[name] = now + i * 0.5
+        if "local" in CLUSTERS:
+            self._schedules["local"] = now + 1.0
 
         while not self._stop.is_set():
             # Priority requests always go through regardless of demand
@@ -111,6 +114,8 @@ class Poller:
                 remote = [n for n in CLUSTERS if n != "local"]
                 for i, name in enumerate(remote):
                     self._schedules[name] = now + i * 0.5
+                if "local" in CLUSTERS:
+                    self._schedules["local"] = now + 1.0
 
             cluster = self._next_due()
             if cluster:
@@ -139,7 +144,7 @@ class Poller:
         now = time.monotonic()
         best, best_at = None, float("inf")
         for name, at in self._schedules.items():
-            if name not in CLUSTERS or name == "local":
+            if name not in CLUSTERS:
                 continue
             if at <= now and at < best_at:
                 best, best_at = name, at
@@ -162,7 +167,8 @@ class Poller:
         self._last_success[name] = time.monotonic()
         self._last_duration_ms[name] = duration_ms
         self._last_completed_at[name] = datetime.now().isoformat(timespec="seconds")
-        self._reschedule(name, self.HEALTHY_INTERVAL)
+        interval = self.LOCAL_INTERVAL if name == "local" else self.HEALTHY_INTERVAL
+        self._reschedule(name, interval)
 
     def _record_poll_failure(self, name, duration_ms, error):
         count = self._failures.get(name, 0) + 1
@@ -177,10 +183,6 @@ class Poller:
 
     def _run_poll(self, name):
         from .jobs import poll_cluster
-
-        if name == "local":
-            self._reschedule(name, 60)
-            return {"status": "ok", "cluster": name, "duration_ms": 0, "changed": False}
 
         if not self._claim_inflight(name):
             return {"status": "busy", "cluster": name, "changed": False}
