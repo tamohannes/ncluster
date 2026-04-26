@@ -1404,6 +1404,8 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   border-left: 3px solid var(--accent); padding-left: 12px;
   margin: 8px 0; color: var(--muted);
 }
+.lb-detail-body a { color: var(--accent); }
+.lb-detail-body a:hover { text-decoration: underline; }
 
 /* ── Editor ── */
 .lb-editor { max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
