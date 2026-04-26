@@ -1248,6 +1248,7 @@ let _pppAllocData = null;
 const _clusterSizeCache = {};
 
 function _shortAcct(acct) {
+  if (!acct) return '';
   const parts = acct.split('_');
   return parts.length >= 3 ? parts.slice(2).join('-') : acct;
 }
