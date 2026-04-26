@@ -90,6 +90,18 @@ def fetch_jobs_remote(cluster_name):
     return parse_squeue_output(out)
 
 
+_NEMO_SUBMISSION_MARKERS = ("--cluster", "pipeline.eval", "pipeline.generate", "pipeline.run_cmd")
+
+def _is_nemo_submission_process(cmd_lower: str) -> bool:
+    """Return True if cmd looks like a NeMo-Skills submission wrapper.
+
+    These processes run locally only to submit Slurm jobs on a remote
+    cluster and exit shortly after.  They match the include tokens
+    (``nemo_skills``, ``ns``, etc.) but are not actual local compute.
+    """
+    return any(m in cmd_lower for m in _NEMO_SUBMISSION_MARKERS)
+
+
 def fetch_jobs_local():
     try:
         result = subprocess.run(
@@ -112,6 +124,8 @@ def fetch_jobs_local():
         include_tokens = LOCAL_PROC_INCLUDE
         exclude_tokens = [APP_ROOT.lower()] + LOCAL_PROC_EXCLUDE
         if any(t in cmd_l for t in include_tokens) and not any(t in cmd_l for t in exclude_tokens):
+            if _is_nemo_submission_process(cmd_l):
+                continue
             pid = parts[1]
             if not os.path.isdir(f"/proc/{pid}"):
                 continue
