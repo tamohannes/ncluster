@@ -190,11 +190,19 @@ function _renderSidebarList(entries) {
   }
 }
 
+function _renderSnippet(snippet) {
+  if (!snippet) return '';
+  let s = snippet.replace(/</g, '&lt;').replace(/\n/g, ' ');
+  s = s.replace(/\x02/g, '<mark class="lb-search-hl">').replace(/\x03/g, '</mark>');
+  return s;
+}
+
 function _renderSidebarItems(items, showPinIcon) {
   return items.map(e => {
     const date = _formatDate(e.created_at);
     const title = (e.title || '').replace(/</g, '&lt;');
-    const preview = (e.body_preview || '').replace(/</g, '&lt;').replace(/\n/g, ' ');
+    const rawPreview = e.snippet || e.body_preview || '';
+    const preview = e.snippet ? _renderSnippet(rawPreview) : rawPreview.replace(/</g, '&lt;').replace(/\n/g, ' ');
     const isPlan = e.entry_type === 'plan';
     const typeCls = isPlan ? ' lb-type-plan' : '';
     const pinned = _isEntryPinned(e.id);
