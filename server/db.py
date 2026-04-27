@@ -294,10 +294,6 @@ def init_db():
     con = get_db()
     for ddl in _schema.SCHEMA:
         con.execute(ddl)
-    for ddl in _schema.INDEXES:
-        con.execute(ddl)
-    for ddl in _schema.TRIGGERS:
-        con.execute(ddl)
     for table, column, definition in _schema.MIGRATIONS:
         try:
             con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -305,6 +301,14 @@ def init_db():
             # Column already exists on this DB — expected on every run
             # except the first against a pre-v4 schema.
             pass
+    # Run ADD COLUMN migrations BEFORE indexes/triggers so older DBs gain any
+    # newly-indexed columns first. Otherwise a pre-v4 DB can fail on restart
+    # when CREATE INDEX references a column that only appears in MIGRATIONS
+    # (e.g. logbook_entries.campaign).
+    for ddl in _schema.INDEXES:
+        con.execute(ddl)
+    for ddl in _schema.TRIGGERS:
+        con.execute(ddl)
 
     # SDK synthetic jobs should never be pinned on the live board.
     con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")

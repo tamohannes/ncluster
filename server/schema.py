@@ -117,7 +117,8 @@ CREATE TABLE IF NOT EXISTS logbook_entries (
     created_at TEXT NOT NULL,
     edited_at  TEXT NOT NULL,
     entry_type TEXT NOT NULL DEFAULT 'note',
-    pinned     INTEGER NOT NULL DEFAULT 0
+    pinned     INTEGER NOT NULL DEFAULT 0,
+    campaign   TEXT NOT NULL DEFAULT ''
 )
 """
 """Per-project structured notes/plans with FTS5 search.
@@ -404,6 +405,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_ppp_accounts_position ON ppp_accounts(position)",
     "CREATE INDEX IF NOT EXISTS idx_path_bases_kind ON path_bases(kind, position)",
     "CREATE INDEX IF NOT EXISTS idx_process_filters_mode ON process_filters(mode, position)",
+    "CREATE INDEX IF NOT EXISTS idx_logbook_entries_project_campaign ON logbook_entries(project, campaign)",
 ]
 
 
@@ -464,6 +466,8 @@ MIGRATIONS = [
     # logbook_entries columns added in v3
     ("logbook_entries", "entry_type", "TEXT NOT NULL DEFAULT 'note'"),
     ("logbook_entries", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+    # logbook_entries columns added in v4
+    ("logbook_entries", "campaign", "TEXT NOT NULL DEFAULT ''"),
     # wds_history column added later in v3
     ("wds_history", "occupancy_factor", "REAL"),
 ]
