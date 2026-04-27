@@ -2,7 +2,16 @@
 
 import json
 import os
+import threading
+import time
 import pytest
+
+from server.db import (
+    get_custom_metrics_config,
+    get_db,
+    set_custom_metrics_config,
+    upsert_job,
+)
 
 
 @pytest.mark.integration
@@ -138,3 +147,69 @@ class TestApiJsonlRecord:
         data = resp.get_json()
         assert data["status"] == "ok"
         assert '"id": 1' in data["content"]
+
+
+@pytest.mark.integration
+class TestCustomMetricsRoutes:
+    def test_copy_metrics_config_does_not_fall_back_to_sibling_source(self, client, mock_cluster):
+        upsert_job(mock_cluster, {"jobid": "100", "name": "src", "state": "RUNNING"})
+        upsert_job(mock_cluster, {"jobid": "101", "name": "src-sibling", "state": "RUNNING"})
+        upsert_job(mock_cluster, {"jobid": "200", "name": "dest", "state": "RUNNING"})
+
+        con = get_db()
+        try:
+            con.execute(
+                "UPDATE job_history SET run_id=? WHERE cluster=? AND job_id IN (?, ?)",
+                (77, mock_cluster, "100", "101"),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        set_custom_metrics_config(mock_cluster, "101", json.dumps({
+            "extractors": [{"name": "loss", "regex": r"loss=(\d+)", "group": 1}],
+        }))
+
+        resp = client.post(
+            f"/api/copy_metrics_config/{mock_cluster}/200",
+            json={"src_cluster": mock_cluster, "src_job_id": "100"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == f"No custom config found on source job {mock_cluster}/100"
+        assert get_custom_metrics_config(mock_cluster, "200") == ""
+
+    def test_custom_metrics_run_parallelizes_extraction(self, client, mock_cluster, monkeypatch):
+        jobs = [
+            {"job_id": "100", "job_name": "job-100", "state": "RUNNING"},
+            {"job_id": "101", "job_name": "job-101", "state": "RUNNING"},
+            {"job_id": "102", "job_name": "job-102", "state": "RUNNING"},
+            {"job_id": "103", "job_name": "job-103", "state": "RUNNING"},
+        ]
+        state = {"active": 0, "max_active": 0}
+        lock = threading.Lock()
+
+        monkeypatch.setattr("server.routes.get_jobs_in_run", lambda cluster, run_id: jobs)
+        monkeypatch.setattr("server.routes.enable_standalone_ssh", lambda: None)
+
+        def fake_get_run(cluster, root_job_id):
+            return {"id": 77}
+
+        def fake_extract(cluster, job_id):
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+            return {"status": "ok", "metrics": [{"name": "loss", "value": "1", "match_count": 1}]}
+
+        monkeypatch.setattr("server.db.get_run", fake_get_run)
+        monkeypatch.setattr("server.routes.extract_custom_metrics", fake_extract)
+
+        resp = client.get(f"/api/custom_metrics_run/{mock_cluster}/100")
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert len(data["jobs"]) == 4
+        assert state["max_active"] > 1

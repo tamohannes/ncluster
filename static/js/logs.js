@@ -13,6 +13,235 @@ const LIVE_MIN_MS = 2000;
 const LIVE_MAX_MS = 5000;
 let _liveLastHash = null;
 
+function _syncCustomLogInput(value) {
+  const inp = document.getElementById('custom-log-input');
+  if (!inp) return;
+  inp.value = value || '';
+  inp.classList.toggle('has-value', !!value);
+}
+
+let _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
+
+function toggleMetricsConfig() {
+  const body = document.getElementById('metrics-config-body');
+  const chev = document.getElementById('metrics-config-chevron');
+  if (!body || !chev) return;
+  body.classList.toggle('hidden');
+  chev.classList.toggle('open');
+}
+
+function _escAttr(s) {
+  return (s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function _renderMetricsConfigRows() {
+  const container = document.getElementById('metrics-config-rows');
+  if (!container) return;
+  container.innerHTML = '';
+  _metricsConfig.extractors.forEach((ext, i) => {
+    const row = document.createElement('div');
+    row.className = 'metrics-row';
+    row.innerHTML = `
+      <input class="mr-name" value="${_escAttr(ext.name)}" placeholder="name" title="metric name">
+      <input class="mr-regex" value="${_escAttr(ext.regex)}" placeholder="regex with (group)" title="regex pattern">
+      <input class="mr-group" type="number" value="${ext.group || 1}" min="1" title="capture group">
+      <select title="mode">
+        <option value="last" ${ext.mode === 'last' ? 'selected' : ''}>last</option>
+        <option value="first" ${ext.mode === 'first' ? 'selected' : ''}>first</option>
+        <option value="max" ${ext.mode === 'max' ? 'selected' : ''}>max</option>
+        <option value="min" ${ext.mode === 'min' ? 'selected' : ''}>min</option>
+        <option value="diff" ${ext.mode === 'diff' ? 'selected' : ''}>diff (last-first)</option>
+        <option value="avg" ${ext.mode === 'avg' ? 'selected' : ''}>avg</option>
+        <option value="count" ${ext.mode === 'count' ? 'selected' : ''}>count</option>
+      </select>
+      <button class="mr-remove" onclick="removeMetricExtractor(${i})" title="remove">×</button>`;
+    container.appendChild(row);
+  });
+  const countEl = document.getElementById('metrics-config-count');
+  if (countEl) countEl.textContent = _metricsConfig.extractors.length ? `(${_metricsConfig.extractors.length})` : '';
+}
+
+function addMetricExtractor() {
+  _metricsConfig.extractors.push({ name: '', regex: '', group: 1, mode: 'last' });
+  _renderMetricsConfigRows();
+}
+
+function removeMetricExtractor(idx) {
+  _metricsConfig.extractors.splice(idx, 1);
+  _renderMetricsConfigRows();
+}
+
+function _collectMetricsFromForm() {
+  const rows = document.querySelectorAll('#metrics-config-rows .metrics-row');
+  const extractors = [];
+  rows.forEach((row) => {
+    const inputs = row.querySelectorAll('input');
+    const select = row.querySelector('select');
+    const name = inputs[0].value.trim();
+    const regex = inputs[1].value.trim();
+    const group = parseInt(inputs[2].value, 10) || 1;
+    const mode = select.value;
+    if (name && regex) extractors.push({ name, regex, group, mode });
+  });
+  const fileGlob = document.getElementById('metrics-file-glob')?.value.trim() || '*{job_id}*';
+  return { file_glob: fileGlob, extractors };
+}
+
+async function saveCustomLogDir() {
+  const inp = document.getElementById('custom-log-input');
+  const path = inp ? inp.value.trim() : '';
+  if (!_exCluster || !_exJobId) return;
+  try {
+    const res = await fetch(`/api/custom_log_dir/${_exCluster}/${_exJobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      if (typeof toast === 'function') toast(d.error || 'Failed to save custom log dir', 'error');
+      return;
+    }
+    if (inp) inp.classList.toggle('has-value', !!path);
+    if (d.applied_to_run && typeof toast === 'function') {
+      toast(`Saved (+ ${d.applied_to_run} jobs in run)`);
+    }
+    openLog(_exCluster, _exJobId, document.getElementById('modal-title').textContent, true);
+  } catch (e) {
+    console.error('Failed to save custom log dir', e);
+  }
+}
+
+async function clearCustomLogDir() {
+  const inp = document.getElementById('custom-log-input');
+  if (inp) inp.value = '';
+  if (!_exCluster || !_exJobId) return;
+  try {
+    const res = await fetch(`/api/custom_log_dir/${_exCluster}/${_exJobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '' }),
+    });
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      if (typeof toast === 'function') toast(d.error || 'Failed to clear custom log dir', 'error');
+      return;
+    }
+    if (inp) inp.classList.remove('has-value');
+    openLog(_exCluster, _exJobId, document.getElementById('modal-title').textContent, true);
+  } catch (e) {
+    console.error('Failed to clear custom log dir', e);
+  }
+}
+
+async function saveMetricsConfig() {
+  if (!_exCluster || !_exJobId) return;
+  const cfg = _collectMetricsFromForm();
+  _metricsConfig = cfg;
+  try {
+    const res = await fetch(`/api/custom_metrics_config/${_exCluster}/${_exJobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config: cfg }),
+    });
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      if (typeof toast === 'function') toast(d.error || 'Failed to save metrics config', 'error');
+      return;
+    }
+    _renderMetricsConfigRows();
+    const extra = d.applied_to_run ? ` (+ ${d.applied_to_run} jobs in run)` : '';
+    if (typeof toast === 'function') toast('Metrics config saved' + extra);
+  } catch (e) {
+    console.error('Failed to save metrics config', e);
+  }
+}
+
+async function applyMetricsToRun() {
+  if (!_exCluster || !_exJobId) return;
+  await saveMetricsConfig();
+  try {
+    const res = await fetch(`/api/custom_metrics_config/${_exCluster}/${_exJobId}/apply_to_run`, { method: 'POST' });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      if (typeof toast === 'function') toast(`Applied to ${d.applied_to} jobs in run`);
+    } else if (typeof toast === 'function') {
+      toast(d.error || 'Failed', 'error');
+    }
+  } catch (e) {
+    console.error('Failed to apply metrics to run', e);
+  }
+}
+
+async function copyMetricsFrom() {
+  if (!_exCluster || !_exJobId) return;
+  const srcCluster = document.getElementById('metrics-copy-cluster')?.value.trim() || _exCluster;
+  const srcJobId = document.getElementById('metrics-copy-jobid')?.value.trim();
+  if (!srcJobId) {
+    if (typeof toast === 'function') toast('Enter a source job ID', 'error');
+    return;
+  }
+  try {
+    const res = await fetch(`/api/copy_metrics_config/${_exCluster}/${_exJobId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src_cluster: srcCluster, src_job_id: srcJobId }),
+    });
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      if (typeof toast === 'function') toast(d.error || 'Failed', 'error');
+      return;
+    }
+    if (d.custom_log_dir) _syncCustomLogInput(d.custom_log_dir);
+    if (d.config) {
+      _metricsConfig = {
+        ...d.config,
+        file_glob: d.config.file_glob || '*{job_id}*',
+        extractors: Array.isArray(d.config.extractors) ? d.config.extractors : [],
+      };
+      const fileGlob = document.getElementById('metrics-file-glob');
+      if (fileGlob) fileGlob.value = _metricsConfig.file_glob;
+      _renderMetricsConfigRows();
+    }
+    const parts = d.copied || [];
+    if (typeof toast === 'function') toast(`Imported ${parts.join(' + ')} from ${srcCluster}/${srcJobId}`);
+  } catch (e) {
+    console.error('Failed to copy metrics', e);
+  }
+}
+
+async function _loadMetricsConfig() {
+  if (!_exCluster || !_exJobId) return;
+  try {
+    const res = await fetch(`/api/custom_metrics_config/${_exCluster}/${_exJobId}`);
+    const d = await res.json();
+    if (d.status === 'ok' && d.config) {
+      _metricsConfig = {
+        ...d.config,
+        file_glob: d.config.file_glob || '*{job_id}*',
+        extractors: Array.isArray(d.config.extractors) ? d.config.extractors : [],
+      };
+    } else {
+      _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
+    }
+  } catch (e) {
+    _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
+  }
+  const fileGlob = document.getElementById('metrics-file-glob');
+  const copyCluster = document.getElementById('metrics-copy-cluster');
+  const copyJobId = document.getElementById('metrics-copy-jobid');
+  if (fileGlob) fileGlob.value = _metricsConfig.file_glob || '*{job_id}*';
+  if (copyCluster) copyCluster.value = _exCluster || '';
+  if (copyJobId) copyJobId.value = '';
+  _renderMetricsConfigRows();
+  document.getElementById('metrics-config-body')?.classList.add('hidden');
+  document.getElementById('metrics-config-chevron')?.classList.remove('open');
+}
+
 // ── Popup scroll-back pagination ──
 let _popupTopPage = 0;
 let _popupTotalPages = 0;
@@ -37,12 +266,16 @@ async function openLog(cluster, jobId, jobName, force) {
   document.getElementById('modal-content').className = 'log-loading';
   document.getElementById('modal-content').textContent = 'Discovering log directories…';
   document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
+  _syncCustomLogInput('');
+  _loadMetricsConfig();
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
   try {
     const qs = force ? '?force=1&include_first=1' : '?include_first=1';
     const res = await fetchWithTimeout(`/api/log_files/${cluster}/${jobId}${qs}`, {}, 15000);
     const data = await res.json();
+
+    _syncCustomLogInput(data.custom_log_dir || '');
 
     if (data.files && data.files[0] && data.files[0].error) {
       document.getElementById('modal-content').textContent = `SSH error: ${data.files[0].error}`;
@@ -70,7 +303,8 @@ async function openLog(cluster, jobId, jobName, force) {
     }
 
     for (const dir of dirs) {
-      tree.appendChild(makeTreeSection('📁 ' + dir.label, [], false, dir.path));
+      const startOpen = dir.label === 'custom logs';
+      tree.appendChild(makeTreeSection('📁 ' + dir.label, [], startOpen, dir.path));
     }
 
     if (files.length) {
@@ -128,6 +362,11 @@ async function openDir(cluster, dirPath, label) {
   document.getElementById('modal-content').className = 'log-loading';
   document.getElementById('modal-content').textContent = 'Loading directory…';
   document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
+  _syncCustomLogInput('');
+  _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
+  _renderMetricsConfigRows();
+  document.getElementById('metrics-config-body')?.classList.add('hidden');
+  document.getElementById('metrics-config-chevron')?.classList.remove('open');
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
   try {
@@ -206,6 +445,10 @@ function makeTreeSection(label, items, startOpen, dirPath, onFileClick) {
       await expandDir(dirPath, itemsEl, 0, onFileClick);
     }
   });
+
+  if (startOpen && dirPath) {
+    expandDir(dirPath, itemsEl, 0, onFileClick);
+  }
 
   return section;
 }
@@ -1184,6 +1427,10 @@ document.addEventListener('keydown', e => {
     closeModalDirect();
     closeStatsDirect();
     closeSettingsModal();
+  }
+  if (e.key === 'Enter' && e.target.id === 'custom-log-input') {
+    e.preventDefault();
+    saveCustomLogDir();
   }
 });
 

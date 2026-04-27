@@ -12,8 +12,9 @@ from server.logs import (
     _extract_arg_value,
     read_jsonl_index,
     read_jsonl_record,
+    extract_custom_metrics,
 )
-from server.db import upsert_job
+from server.db import upsert_job, set_custom_log_dir, set_custom_metrics_config
 
 
 class TestExtractProgress:
@@ -246,3 +247,36 @@ class TestMountedLogDiscovery:
 
         assert any(f["path"] == "/remote/run/eval-logs/main_123_srun.log" for f in result["files"])
         assert any(f["label"] == "main output" for f in result["files"])
+
+
+class TestExtractCustomMetrics:
+    @pytest.mark.unit
+    def test_shell_script_keeps_regex_and_glob_out_of_shell(self, db_path, monkeypatch):
+        upsert_job("mock-cluster", {"jobid": "123", "name": "eval-math", "state": "RUNNING"})
+        set_custom_log_dir("mock-cluster", "123", "/tmp/metrics-logs")
+
+        regex = r"loss=(\d+) \$\(whoami\)"
+        file_glob = "$(touch /tmp/pwned)*{job_id}*"
+        set_custom_metrics_config("mock-cluster", "123", json.dumps({
+            "file_glob": file_glob,
+            "extractors": [{"name": "loss", "regex": regex, "group": 1, "mode": "last"}],
+        }))
+
+        captured = {}
+
+        def fake_ssh(cluster, command, timeout_sec=20):
+            captured["cluster"] = cluster
+            captured["command"] = command
+            return ("===METRIC_0===\nloss=7 $(whoami)\n", "")
+
+        monkeypatch.setattr("server.logs.ssh_run_with_timeout", fake_ssh)
+
+        result = extract_custom_metrics("mock-cluster", "123")
+
+        assert result["status"] == "ok"
+        assert result["metrics"] == [{"name": "loss", "value": "7", "match_count": 1}]
+        assert captured["cluster"] == "mock-cluster"
+        assert regex not in captured["command"]
+        assert file_glob.replace("{job_id}", "123") not in captured["command"]
+        assert 'compgen -G "$job_glob"' in captured["command"]
+        assert 'grep -oP -f "$REGEX_DIR/metric_0.re"' in captured["command"]

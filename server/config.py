@@ -94,6 +94,10 @@ _est_start_cache: dict = {}
 _team_usage_cache: dict = {}
 _prefetch_last: dict = {}
 
+
+def invalidate_log_index(cluster, job_id):
+    _log_index_cache.pop((cluster, str(job_id)), None)
+
 # Aggregator-level cache for slow multi-cluster routes that fan out
 # SSH work (where_to_submit primarily). Multiple Cursor agents tend to
 # call the same tool within seconds of each other; a 30 s TTL lets them

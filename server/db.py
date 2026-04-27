@@ -624,6 +624,84 @@ def dismiss_by_state_prefix(cluster, prefixes):
     invalidate_pinned_cache(cluster)
 
 
+def set_custom_log_dir(cluster, job_id, path):
+    with db_write() as con:
+        con.execute(
+            "UPDATE job_history SET custom_log_dir=? WHERE cluster=? AND job_id=?",
+            ((path or "").strip(), cluster, str(job_id)),
+        )
+
+
+def set_custom_log_dir_bulk(cluster, job_ids, path):
+    if not job_ids:
+        return
+    rows = [(((path or "").strip()), cluster, str(job_id)) for job_id in job_ids]
+    with db_write() as con:
+        con.executemany(
+            "UPDATE job_history SET custom_log_dir=? WHERE cluster=? AND job_id=?",
+            rows,
+        )
+
+
+def get_custom_log_dir(cluster, job_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT custom_log_dir FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return (row["custom_log_dir"] or "") if row else ""
+
+
+def set_custom_metrics_config(cluster, job_id, config_json):
+    with db_write() as con:
+        con.execute(
+            "UPDATE job_history SET custom_metrics_config=? WHERE cluster=? AND job_id=?",
+            ((config_json or ""), cluster, str(job_id)),
+        )
+
+
+def set_custom_metrics_config_bulk(cluster, job_ids, config_json):
+    if not job_ids:
+        return
+    rows = [(((config_json or "")), cluster, str(job_id)) for job_id in job_ids]
+    with db_write() as con:
+        con.executemany(
+            "UPDATE job_history SET custom_metrics_config=? WHERE cluster=? AND job_id=?",
+            rows,
+        )
+
+
+def get_custom_metrics_config(cluster, job_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT custom_metrics_config FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return (row["custom_metrics_config"] or "") if row else ""
+
+
+def get_jobs_in_run(cluster, run_id):
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND run_id=?",
+        (cluster, int(run_id)),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_run_id_for_job(cluster, job_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT run_id FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return row["run_id"] if row and row["run_id"] else None
+
+
 def _csv_values(value):
     if value is None:
         return []

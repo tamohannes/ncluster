@@ -228,48 +228,103 @@ async function openStats(cluster, jobId, jobName) {
   document.getElementById('stats-title').textContent = jobName || `job ${jobId}`;
   document.getElementById('stats-sub').textContent = `${cluster} · ${jobId}`;
   document.getElementById('stats-body').innerHTML = '<div class="log-loading">Loading stats…</div>';
+  _statsChartInstances.forEach(c => c.destroy());
+  _statsChartInstances = [];
+  let slurmHtml = '';
+  let snapshots = [];
+  let liveGpus = [];
+  let shouldRenderCharts = false;
   try {
     const res = await fetch(`/api/stats/${cluster}/${jobId}`);
     const d = await res.json();
     if (d.status !== 'ok') {
-      document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load stats.'}</div>`;
-      return;
+      slurmHtml = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load stats.'}</div>`;
+    } else {
+      snapshots = d.snapshots || [];
+      liveGpus = d.gpus || [];
+      const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
+      const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
+      const hasRssData = snapshots.some(s => s.rss_used != null);
+      const hasCpuData = snapshots.some(s => s.cpu_util && s.cpu_util !== '00:00:00');
+
+      let chartsHtml = '';
+      if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-util"></canvas></div>';
+      if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-mem"></canvas></div>';
+      if (hasCpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-cpu"></canvas></div>';
+      if (hasRssData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-rss"></canvas></div>';
+      if (chartsHtml) chartsHtml = `<div class="stats-charts">${chartsHtml}</div>`;
+
+      const kvs = [
+        ['State', d.state], ['Elapsed', d.elapsed],
+        ['Nodes', d.nodes], ['GPUs', d.gres],
+        ['CPU', d.cpus], ['RSS', `${d.ave_rss || '—'} / ${d.max_rss || '—'}`],
+      ].filter(([, v]) => v && v !== '—' && v !== 'N/A' && v !== '— / —')
+       .map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${k}</div><div class="stats-v">${v}</div></div>`)
+       .join('');
+
+      slurmHtml = `
+        <div class="stats-grid">${kvs}</div>
+        ${chartsHtml}
+      `;
+      shouldRenderCharts = true;
     }
-
-    const snapshots = d.snapshots || [];
-    const liveGpus = d.gpus || [];
-    const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
-    const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
-    const hasRssData = snapshots.some(s => s.rss_used != null);
-    const hasCpuData = snapshots.some(s => s.cpu_util && s.cpu_util !== '00:00:00');
-
-    let chartsHtml = '';
-    if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-util"></canvas></div>';
-    if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-mem"></canvas></div>';
-    if (hasCpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-cpu"></canvas></div>';
-    if (hasRssData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-rss"></canvas></div>';
-    if (chartsHtml) chartsHtml = `<div class="stats-charts">${chartsHtml}</div>`;
-
-    const kvs = [
-      ['State', d.state], ['Elapsed', d.elapsed],
-      ['Nodes', d.nodes], ['GPUs', d.gres],
-      ['CPU', d.cpus], ['RSS', `${d.ave_rss || '—'} / ${d.max_rss || '—'}`],
-    ].filter(([, v]) => v && v !== '—' && v !== 'N/A' && v !== '— / —')
-     .map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${k}</div><div class="stats-v">${v}</div></div>`)
-     .join('');
-
-    document.getElementById('stats-body').innerHTML = `
-      <div class="stats-grid">${kvs}</div>
-      ${chartsHtml}
-    `;
-
-    _renderStatsCharts(snapshots, liveGpus);
   } catch (e) {
-    document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
+    slurmHtml = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
   }
+  document.getElementById('stats-body').innerHTML = slurmHtml + '<div id="custom-metrics-section"></div>';
+  if (shouldRenderCharts) _renderStatsCharts(snapshots, liveGpus);
+  _loadCustomMetricsForStats(cluster, jobId);
 }
 
 let _statsChartInstances = [];
+
+async function _loadCustomMetricsForStats(cluster, jobId) {
+  const el = document.getElementById('custom-metrics-section');
+  if (!el) return;
+
+  const refreshBtn = `<button onclick="_loadCustomMetricsForStats('${cluster}','${jobId}')" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px;vertical-align:middle" title="refresh">↻</button>`;
+  el.innerHTML = `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+    <div style="font-family:var(--mono);font-size:11px;font-weight:600;margin-bottom:6px">Custom Metrics ${refreshBtn}
+      <span id="custom-metrics-loading" style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">loading…</span>
+    </div>
+    <div id="custom-metrics-grid"></div></div>`;
+
+  try {
+    const res = await fetch(`/api/custom_metrics/${cluster}/${jobId}`);
+    const d = await res.json();
+    document.getElementById('custom-metrics-loading')?.remove();
+    const grid = document.getElementById('custom-metrics-grid');
+    if (!grid) return;
+
+    if (d.unconfigured) {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--muted);font-style:italic">
+          Not configured. Set regex extractors in the log viewer modal.</div></div>`;
+      return;
+    }
+    if (d.status !== 'ok') {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--red)">${d.error || 'Error'}</div></div>`;
+      return;
+    }
+    if (!d.metrics || !d.metrics.length) {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--muted)">No extractors defined.</div></div>`;
+      return;
+    }
+    grid.className = 'stats-grid';
+    grid.innerHTML = d.metrics.map((metric) => `
+      <div class="stats-kv">
+        <div class="stats-k">${_statsEsc(metric.name)}</div>
+        <div class="stats-v">${metric.value !== null && metric.value !== undefined ? _statsEsc(String(metric.value)) : '—'}
+          <span style="color:var(--muted);font-size:9px;margin-left:6px">(${metric.match_count} matches)</span>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    const loadingEl = document.getElementById('custom-metrics-loading');
+    if (loadingEl) loadingEl.textContent = 'failed';
+  }
+}
 
 function _parseGpuUtil(g) {
   if (!g || !g.util) return null;
@@ -442,6 +497,10 @@ function _renderStatsCharts(snapshots, liveGpus) {
       options: chartOpts('RSS Memory', 'MB'),
     }));
   }
+}
+
+function _statsEsc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function closeStats(e) {
