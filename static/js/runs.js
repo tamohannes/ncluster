@@ -1,6 +1,7 @@
 let _runOverlayOpen = false;
+let _runOverlayCancelJobIds = null;
 
-async function openRunInfo(cluster, rootJobId, runName) {
+async function openRunInfo(cluster, rootJobId, runName, cancelKey = '') {
   const overlay = document.getElementById('run-overlay');
   const title = document.getElementById('run-title');
   const subtitle = document.getElementById('run-subtitle');
@@ -13,6 +14,9 @@ async function openRunInfo(cluster, rootJobId, runName) {
   body.innerHTML = '<div class="log-loading">Loading run info…</div>';
   overlay.classList.add('open');
   _runOverlayOpen = true;
+  _runOverlayCancelJobIds = (window._runGroupJobIds && cancelKey)
+    ? (window._runGroupJobIds[cancelKey] || null)
+    : null;
 
   try {
     const res = await fetch(`/api/run_info/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
@@ -39,6 +43,7 @@ function closeRunInfoDirect() {
   if (markSlot) markSlot.innerHTML = '';
   document.getElementById('run-overlay').classList.remove('open');
   _runOverlayOpen = false;
+  _runOverlayCancelJobIds = null;
 }
 
 let _runNoteTimer = null;
@@ -120,9 +125,16 @@ function _renderRunBody(run, cluster) {
     </div>` : ''}
   </div>`;
 
-  const _cancelableRunIds = jobs
-    .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
-    .map(j => String(j.job_id || j.jobid));
+  // Prefer the board-computed merged group IDs when available. The board
+  // groups jobs by dependency + run_id + output_dir, which can span multiple
+  // run_id slices that ``/api/run_info/<root_job_id>`` does not return in one
+  // payload. Falling back to the backend subset made "cancel run" silently
+  // miss sibling jobs that were visually grouped under the same run badge.
+  const _cancelableRunIds = (_runOverlayCancelJobIds && _runOverlayCancelJobIds.length)
+    ? _runOverlayCancelJobIds.map(String)
+    : jobs
+      .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
+      .map(j => String(j.job_id || j.jobid));
   const _runLabel = run.run_name || run.name || '';
   const _cancelRunBtn = _cancelableRunIds.length > 0
     ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`

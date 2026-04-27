@@ -447,6 +447,7 @@ function _isActivelyCancelableState(state) {
 
 // ── Cluster card rendering ──
 function renderCard(name, data) {
+  if (!window._runGroupJobIds) window._runGroupJobIds = {};
   const info = CLUSTERS[name];
   const jobs = data.jobs || [];
   const isErr = data.status === 'error';
@@ -528,6 +529,12 @@ function renderCard(name, data) {
       const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
+      const cancelKey = `${name}:${rootJobId}`;
+      const cancelableGroupJobIds = groupJobs
+        .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
+        .map(j => String(j.job_id || j.jobid || ''))
+        .filter(Boolean);
+      window._runGroupJobIds[cancelKey] = cancelableGroupJobIds;
       const _campaign = groupJobs[0]?.campaign || '';
       const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
       const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
@@ -539,7 +546,7 @@ function renderCard(name, data) {
         : '';
       const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
         : highlightedGk;
       const noProjectBtn = (!_proj && name !== 'local' && /^[a-zA-Z][a-zA-Z0-9-]*_/.test(gk))
         ? `<button class="no-project-btn" type="button" onclick="event.stopPropagation();openNewProjectPopover('${escAttr(gk)}', this)" title="No project matches this run — click to create one">+ project</button>`
