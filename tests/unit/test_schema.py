@@ -75,6 +75,54 @@ class TestSchemaInstallation:
         names = {r["name"] for r in rows}
         assert {"logbook_ai", "logbook_ad", "logbook_au"} <= names
 
+    def test_init_db_upgrades_old_logbook_table_before_campaign_index(self, _isolate_db):
+        """Regression test for restarting against a pre-v4 DB.
+
+        Before the fix, init_db() created indexes BEFORE applying MIGRATIONS.
+        A DB whose ``logbook_entries`` table predated the ``campaign`` column
+        would therefore fail on startup when SQLite reached:
+
+            CREATE INDEX idx_logbook_entries_project_campaign
+            ON logbook_entries(project, campaign)
+
+        because ``campaign`` didn't exist yet. The migration now runs first,
+        so init_db() should succeed and the column + index should both exist.
+        """
+        con = get_db()
+        con.execute("DROP TRIGGER IF EXISTS logbook_ai")
+        con.execute("DROP TRIGGER IF EXISTS logbook_ad")
+        con.execute("DROP TRIGGER IF EXISTS logbook_au")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_entries_project_campaign")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_project")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_title")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_created")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_edited")
+        con.execute("DROP INDEX IF EXISTS idx_logbook_type")
+        con.execute("DROP TABLE IF EXISTS logbook_fts")
+        con.execute("DROP TABLE IF EXISTS logbook_links")
+        con.execute("DROP TABLE IF EXISTS logbook_entries")
+        con.execute("""
+            CREATE TABLE logbook_entries (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                project    TEXT NOT NULL,
+                title      TEXT NOT NULL,
+                body       TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                edited_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        con.commit()
+
+        init_db()
+
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(logbook_entries)").fetchall()}
+        assert "campaign" in cols
+
+        idx = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_logbook_entries_project_campaign'"
+        ).fetchone()
+        assert idx is not None
+
 
 @pytest.mark.unit
 class TestAppSettingsRegistry:
