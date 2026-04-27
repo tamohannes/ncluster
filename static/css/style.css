@@ -1287,6 +1287,10 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow: hidden;
 }
+.lb-search-hl {
+  background: var(--accent-bg); color: var(--accent);
+  border-radius: 2px; padding: 0 1px;
+}
 .lb-pin-btn {
   font-size: 10px; cursor: pointer; opacity: 0;
   margin-right: 3px; transition: opacity 0.1s;
