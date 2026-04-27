@@ -332,6 +332,45 @@
         <button class="modal-close" onclick="closeModalDirect()">×</button>
       </div>
     </div>
+    <div class="custom-log-bar" id="custom-log-bar">
+      <label class="custom-log-label" for="custom-log-input">custom log dir</label>
+      <input type="text" id="custom-log-input" class="custom-log-input"
+             placeholder="/path/to/experiment/logs on cluster"
+             spellcheck="false" autocomplete="off">
+      <button class="custom-log-save" id="custom-log-save" onclick="saveCustomLogDir()">save</button>
+      <button class="custom-log-clear" id="custom-log-clear" onclick="clearCustomLogDir()" title="remove custom path">×</button>
+    </div>
+    <div class="metrics-config-bar" id="metrics-config-bar">
+      <div class="metrics-config-toggle" onclick="toggleMetricsConfig()">
+        <span class="metrics-config-chevron" id="metrics-config-chevron">▶</span>
+        <span class="metrics-config-label">custom metrics</span>
+        <span class="metrics-config-count" id="metrics-config-count"></span>
+      </div>
+      <div class="metrics-config-body hidden" id="metrics-config-body">
+        <div class="metrics-config-rows" id="metrics-config-rows"></div>
+        <div class="metrics-config-add-row">
+          <button class="metrics-config-add" onclick="addMetricExtractor()">+ add metric</button>
+          <div class="metrics-config-actions">
+            <button class="metrics-config-save" onclick="saveMetricsConfig()">save</button>
+            <button class="metrics-config-apply" onclick="applyMetricsToRun()" title="copy config to all jobs in this run">apply to run</button>
+          </div>
+        </div>
+        <div class="metrics-config-hint">
+          file glob: <input type="text" id="metrics-file-glob" class="metrics-glob-input"
+                            value="*{job_id}*" spellcheck="false" placeholder="*{job_id}*.log">
+          <span class="metrics-hint-text">regex is applied to files in custom log dir</span>
+        </div>
+        <div class="metrics-copy-row">
+          <span class="metrics-copy-label">copy from:</span>
+          <input type="text" id="metrics-copy-cluster" class="metrics-copy-cluster"
+                 placeholder="cluster" spellcheck="false">
+          <span class="metrics-copy-sep">/</span>
+          <input type="text" id="metrics-copy-jobid" class="metrics-copy-jobid"
+                 placeholder="job id" spellcheck="false">
+          <button class="metrics-config-apply" onclick="copyMetricsFrom()" title="import log dir + metrics config from another job">import</button>
+        </div>
+      </div>
+    </div>
     <div class="explorer">
       <div class="tree-pane" id="tree-pane"></div>
       <div class="tree-splitter" id="tree-splitter" title="Drag to resize"></div>

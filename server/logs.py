@@ -1,5 +1,6 @@
 """Log discovery, tail reading, and JSONL file operations."""
 
+import base64
 import json
 import os
 import re
@@ -27,6 +28,7 @@ _PROGRESS_RE = re.compile(r'(?<![\d\.])(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
 _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
 _LOG_DISCOVERY_ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
 _LOG_ALLOWED_SUFFIXES = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
+_DEFAULT_METRICS_FILE_GLOB = "*{job_id}*"
 
 
 def extract_progress(content):
@@ -632,6 +634,14 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
     return {"files": files, "dirs": dirs}
 
 
+def _db_custom_log_dir(cluster_name, job_id):
+    try:
+        from .db import get_custom_log_dir
+        return get_custom_log_dir(cluster_name, job_id)
+    except Exception:
+        return ""
+
+
 def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
@@ -639,9 +649,15 @@ def get_job_log_files(cluster_name, job_id):
     log_ctx = _db_log_context(cluster_name, job_id)
     db_path = log_ctx["log_path"]
     output_dir = log_ctx["output_dir"]
+    custom_dir = _db_custom_log_dir(cluster_name, job_id)
 
     local = _try_local_discovery(cluster_name, job_id, db_path, output_dir=output_dir)
     if local:
+        if custom_dir:
+            already = {d["path"].rstrip("/") for d in local.get("dirs", [])}
+            if custom_dir.rstrip("/") not in already:
+                local["dirs"] = [{"label": "custom logs", "path": custom_dir}] + local.get("dirs", [])
+        local["custom_log_dir"] = custom_dir
         return local
 
     if str(job_id).startswith("sdk-"):
@@ -800,13 +816,18 @@ fi
     files.sort(key=lambda f: _LOG_DISCOVERY_ORDER.get(f["label"], 10))
     dirs = _derive_result_dirs(jobid_files, cluster_name) + extra_dirs
 
+    if custom_dir:
+        already = {d["path"].rstrip("/") for d in dirs}
+        if custom_dir.rstrip("/") not in already:
+            dirs.insert(0, {"label": "custom logs", "path": custom_dir})
+
     if not files and not dirs:
         fallback = _search_log_bases(cluster_name, job_id)
         if fallback:
             files = fallback.get("files", [])
             dirs = fallback.get("dirs", [])
 
-    return {"files": files, "dirs": dirs}
+    return {"files": files, "dirs": dirs, "custom_log_dir": custom_dir}
 
 
 def _search_log_bases(cluster_name, job_id):
@@ -876,6 +897,230 @@ def get_job_log_files_cached(cluster_name, job_id, force=False):
     if not value.get("error"):
         _cache_set(_log_index_cache, key, value)
     return value
+
+
+def normalize_metrics_config(cfg):
+    """Validate and normalize a custom metrics config payload."""
+    if cfg is None:
+        return {}, [], None
+    if not isinstance(cfg, dict):
+        return None, None, "Metrics config must be an object"
+
+    normalized = dict(cfg)
+
+    if "file_glob" in normalized:
+        file_glob = normalized["file_glob"]
+        if file_glob is None:
+            normalized["file_glob"] = ""
+        elif not isinstance(file_glob, str):
+            return None, None, "Metrics config file_glob must be a string"
+
+    extractors = normalized.get("extractors", [])
+    if extractors is None:
+        extractors = []
+    if not isinstance(extractors, list):
+        return None, None, "Metrics config extractors must be a list"
+
+    normalized_extractors = []
+    validated_extractors = []
+    for idx, ext in enumerate(extractors):
+        display_idx = idx + 1
+        if not isinstance(ext, dict):
+            return None, None, f"Extractor {display_idx} must be an object"
+
+        name = ext.get("name", "")
+        regex = ext.get("regex", "")
+        mode = ext.get("mode", "last")
+        group = ext.get("group", 1)
+
+        if name is None:
+            name = ""
+        if regex is None:
+            regex = ""
+        if not isinstance(name, str):
+            return None, None, f"Extractor {display_idx} name must be a string"
+        if not isinstance(regex, str):
+            return None, None, f"Extractor {display_idx} regex must be a string"
+        try:
+            group = int(group)
+        except (TypeError, ValueError):
+            return None, None, f"Extractor {display_idx} group must be an integer"
+        if group < 1:
+            return None, None, f"Extractor {display_idx} group must be >= 1"
+
+        compiled = None
+        if regex:
+            try:
+                compiled = re.compile(regex)
+            except re.error as e:
+                return None, None, f"Invalid regex for extractor {display_idx}: {e}"
+
+        normalized_ext = {
+            "name": name,
+            "regex": regex,
+            "group": group,
+            "mode": mode or "last",
+        }
+        normalized_extractors.append(normalized_ext)
+        validated_extractors.append({
+            **normalized_ext,
+            "index": idx,
+            "name": name or f"metric_{idx}",
+            "compiled": compiled,
+        })
+
+    if "extractors" in normalized or normalized_extractors:
+        normalized["extractors"] = normalized_extractors
+    return normalized, validated_extractors, None
+
+
+def _b64_encode_text(text):
+    return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _build_custom_metrics_script(log_dir, file_glob, validated_extractors):
+    log_dir = log_dir.rstrip("/") or "/"
+    script_parts = [
+        "#!/usr/bin/env bash",
+        f"LOGDIR={shlex.quote(log_dir)}",
+        "WORKDIR=\"${TMPDIR:-/tmp}/clausius-metrics-$$\"",
+        "FILES_LIST=\"$WORKDIR/files.txt\"",
+        "GLOB_FILE=\"$WORKDIR/job_glob.txt\"",
+        "REGEX_DIR=\"$WORKDIR/regex\"",
+        "cleanup() { rm -rf \"$WORKDIR\"; }",
+        "trap cleanup EXIT",
+        "mkdir -p \"$REGEX_DIR\" || exit 0",
+        f"printf '%s' {shlex.quote(_b64_encode_text(file_glob))} | base64 -d > \"$GLOB_FILE\"",
+        "collect_metric_files() {",
+        "  local found=0",
+        "  local job_glob=''",
+        "  if [ -s \"$GLOB_FILE\" ]; then",
+        "    job_glob=$(cat \"$GLOB_FILE\")",
+        "  fi",
+        "  if [ -n \"$job_glob\" ]; then",
+        "    while IFS= read -r f; do",
+        "      [ -f \"$f\" ] || continue",
+        "      printf '%s\\n' \"$f\"",
+        "      found=1",
+        "    done < <(compgen -G \"$job_glob\" || true)",
+        "  fi",
+        "  if [ \"$found\" -eq 1 ]; then",
+        "    return 0",
+        "  fi",
+        "  for pat in *.log *.out *.err *.txt *.json *.jsonl *.jsonl-async *.md *; do",
+        "    for f in $pat; do",
+        "      [ -f \"$f\" ] || continue",
+        "      printf '%s\\n' \"$f\"",
+        "    done",
+        "  done",
+        "}",
+        "cd \"$LOGDIR\" 2>/dev/null || exit 0",
+        "collect_metric_files | awk '!seen[$0]++' > \"$FILES_LIST\"",
+    ]
+    for ext in validated_extractors:
+        if not ext["regex"]:
+            continue
+        regex_file = f"$REGEX_DIR/metric_{ext['index']}.re"
+        script_parts.append(
+            f"printf '%s' {shlex.quote(_b64_encode_text(ext['regex']))} | base64 -d > \"{regex_file}\""
+        )
+        script_parts.append(f"echo '===METRIC_{ext['index']}==='")
+        script_parts.append(
+            f"while IFS= read -r f; do grep -oP -f \"{regex_file}\" -- \"$f\" 2>/dev/null || true; done < \"$FILES_LIST\""
+        )
+    return "\n".join(script_parts)
+
+
+def extract_custom_metrics(cluster_name, job_id):
+    """Run configured regex extractors against files in custom_log_dir."""
+    from .db import get_custom_metrics_config, get_custom_log_dir
+
+    raw_cfg = get_custom_metrics_config(cluster_name, str(job_id))
+    if not raw_cfg:
+        return {"status": "ok", "metrics": [], "unconfigured": True}
+    try:
+        cfg = json.loads(raw_cfg)
+    except json.JSONDecodeError:
+        return {"status": "error", "error": "Invalid metrics config JSON"}
+    cfg, validated_extractors, error = normalize_metrics_config(cfg)
+    if error:
+        return {"status": "error", "error": error}
+
+    log_dir = get_custom_log_dir(cluster_name, str(job_id))
+    if not log_dir:
+        return {"status": "error", "error": "No custom_log_dir set for this job"}
+
+    if not validated_extractors:
+        return {"status": "ok", "metrics": []}
+
+    file_glob = cfg["file_glob"] if "file_glob" in cfg else _DEFAULT_METRICS_FILE_GLOB
+    file_glob = file_glob.replace("{job_id}", str(job_id))
+    script = _build_custom_metrics_script(log_dir, file_glob, validated_extractors)
+
+    try:
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=20)
+    except Exception as e:
+        return {"status": "error", "error": f"SSH error: {e}"}
+
+    metrics = []
+    sections = re.split(r"===METRIC_(\d+)===\n?", out)
+    section_map = {}
+    for idx in range(1, len(sections) - 1, 2):
+        section_map[int(sections[idx])] = sections[idx + 1]
+
+    for ext in validated_extractors:
+        name = ext["name"]
+        group = ext["group"]
+        mode = ext["mode"]
+        compiled = ext["compiled"]
+        raw_text = section_map.get(ext["index"], "")
+
+        values = []
+        for line in raw_text.strip().splitlines():
+            if not line.strip():
+                continue
+            m = compiled.search(line) if compiled else None
+            if m:
+                try:
+                    values.append(m.group(group))
+                except IndexError:
+                    pass
+
+        value = _apply_mode(values, mode)
+        metrics.append({"name": name, "value": value, "match_count": len(values)})
+
+    return {"status": "ok", "metrics": metrics}
+
+
+def _apply_mode(values, mode):
+    if not values:
+        return None
+    if mode == "first":
+        return values[0]
+    if mode == "last":
+        return values[-1]
+    if mode == "count":
+        return str(len(values))
+    nums = []
+    for value in values:
+        try:
+            nums.append(float(value))
+        except (ValueError, TypeError):
+            pass
+    if not nums:
+        return values[-1]
+    if mode == "max":
+        return str(max(nums))
+    if mode == "min":
+        return str(min(nums))
+    if mode == "diff":
+        if len(nums) >= 2:
+            result = nums[-1] - nums[0]
+            return str(int(result) if result == int(result) else round(result, 4))
+        return str(int(nums[0]) if nums[0] == int(nums[0]) else nums[0])
+    if mode == "avg":
+        return str(round(sum(nums) / len(nums), 4))
+    return values[-1]
 
 
 # ─── JSONL readers ───────────────────────────────────────────────────────────

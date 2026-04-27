@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS job_history (
     run_id        INTEGER DEFAULT NULL,
     node_list     TEXT DEFAULT '',
     account       TEXT DEFAULT '',
+    custom_log_dir TEXT DEFAULT '',
+    custom_metrics_config TEXT DEFAULT '',
     UNIQUE(cluster, job_id)
 )
 """
@@ -445,6 +447,8 @@ MIGRATIONS = [
     ("job_history", "run_id", "INTEGER DEFAULT NULL"),
     ("job_history", "node_list", "TEXT DEFAULT ''"),
     ("job_history", "account", "TEXT DEFAULT ''"),
+    ("job_history", "custom_log_dir", "TEXT DEFAULT ''"),
+    ("job_history", "custom_metrics_config", "TEXT DEFAULT ''"),
     # runs columns added across v1..v3
     ("runs", "starred", "INTEGER DEFAULT 0"),
     ("runs", "notes", "TEXT DEFAULT ''"),
