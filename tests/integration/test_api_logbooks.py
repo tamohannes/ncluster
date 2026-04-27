@@ -203,3 +203,66 @@ class TestLogbookApi:
     def test_search_empty_query(self, client):
         resp = client.get("/api/logbook/search?q=")
         assert resp.get_json() == []
+
+    # ── Campaign tests ───────────────────────────────────────────────────
+
+    def test_create_with_explicit_campaign(self, client):
+        resp = client.post("/api/logbook/testproj/entries",
+                           data=json.dumps({"title": "EXP-1", "body": "", "campaign": "mpsf"}),
+                           content_type="application/json")
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["campaign"] == "mpsf"
+        entry = client.get(f"/api/logbook/testproj/entries/{data['id']}").get_json()
+        assert entry["campaign"] == "mpsf"
+
+    def test_create_auto_extract_campaign_from_prefix(self, client):
+        resp = client.post("/api/logbook/testproj/entries",
+                           data=json.dumps({"title": "[eval] Diamond results"}),
+                           content_type="application/json")
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["campaign"] == "eval"
+        entry = client.get(f"/api/logbook/testproj/entries/{data['id']}").get_json()
+        assert entry["title"] == "Diamond results"
+        assert entry["campaign"] == "eval"
+
+    def test_update_campaign(self, client):
+        r = client.post("/api/logbook/testproj/entries",
+                        data=json.dumps({"title": "X"}),
+                        content_type="application/json")
+        eid = r.get_json()["id"]
+        client.put(f"/api/logbook/testproj/entries/{eid}",
+                   data=json.dumps({"campaign": "Train"}),
+                   content_type="application/json")
+        entry = client.get(f"/api/logbook/testproj/entries/{eid}").get_json()
+        assert entry["campaign"] == "train"
+
+    def test_list_filter_by_campaign(self, client):
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "A", "campaign": "alpha"}),
+                    content_type="application/json")
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "B", "campaign": "beta"}),
+                    content_type="application/json")
+        resp = client.get("/api/logbook/testproj/entries?campaign=alpha")
+        entries = resp.get_json()
+        assert all(e["campaign"] == "alpha" for e in entries)
+
+    def test_campaigns_endpoint(self, client):
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "C1", "campaign": "mpsf"}),
+                    content_type="application/json")
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "C2", "campaign": "mpsf"}),
+                    content_type="application/json")
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "C3", "campaign": "text"}),
+                    content_type="application/json")
+        resp = client.get("/api/logbook/testproj/campaigns")
+        campaigns = resp.get_json()
+        names = {c["name"] for c in campaigns}
+        assert "mpsf" in names
+        assert "text" in names
+        mpsf = next(c for c in campaigns if c["name"] == "mpsf")
+        assert mpsf["count"] == 2

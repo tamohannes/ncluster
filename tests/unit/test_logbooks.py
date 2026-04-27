@@ -5,7 +5,8 @@ import pytest
 
 from server.logbooks import (
     list_entries, get_entry, create_entry, update_entry,
-    delete_entry, search_entries,
+    delete_entry, search_entries, list_campaigns,
+    _extract_campaign_from_title,
 )
 from server.db import init_db
 
@@ -183,3 +184,88 @@ class TestSearchEntries:
         assert len(search_entries("Deletable")) == 1
         delete_entry("alpha", r["id"])
         assert len(search_entries("Deletable")) == 0
+
+
+class TestCampaignExtraction:
+    @pytest.mark.unit
+    def test_bracket_prefix(self):
+        camp, title = _extract_campaign_from_title("[mpsf] EXP-5 results")
+        assert camp == "mpsf"
+        assert title == "EXP-5 results"
+
+    @pytest.mark.unit
+    def test_bracket_no_space(self):
+        camp, title = _extract_campaign_from_title("[eval]Diamond results")
+        assert camp == "eval"
+        assert title == "Diamond results"
+
+    @pytest.mark.unit
+    def test_no_prefix(self):
+        camp, title = _extract_campaign_from_title("EXP-5: no prefix")
+        assert camp == ""
+        assert title == "EXP-5: no prefix"
+
+    @pytest.mark.unit
+    def test_empty_string(self):
+        camp, title = _extract_campaign_from_title("")
+        assert camp == ""
+        assert title == ""
+
+    @pytest.mark.unit
+    def test_none_input(self):
+        camp, title = _extract_campaign_from_title(None)
+        assert camp == ""
+        assert title == ""
+
+
+class TestCampaignCrud:
+    @pytest.mark.unit
+    def test_create_with_explicit_campaign(self):
+        r = create_entry("alpha", "Note", campaign="mpsf")
+        assert r["campaign"] == "mpsf"
+        entry = get_entry("alpha", r["id"])
+        assert entry["campaign"] == "mpsf"
+
+    @pytest.mark.unit
+    def test_create_auto_extract_campaign(self):
+        r = create_entry("alpha", "[eval] Diamond results")
+        assert r["campaign"] == "eval"
+        entry = get_entry("alpha", r["id"])
+        assert entry["title"] == "Diamond results"
+        assert entry["campaign"] == "eval"
+
+    @pytest.mark.unit
+    def test_create_no_campaign(self):
+        r = create_entry("alpha", "Plain title")
+        entry = get_entry("alpha", r["id"])
+        assert entry["campaign"] == ""
+
+    @pytest.mark.unit
+    def test_update_campaign(self):
+        r = create_entry("alpha", "Note")
+        update_entry("alpha", r["id"], campaign="Train")
+        entry = get_entry("alpha", r["id"])
+        assert entry["campaign"] == "train"
+
+    @pytest.mark.unit
+    def test_list_filter_by_campaign(self):
+        create_entry("alpha", "A", campaign="mpsf")
+        create_entry("alpha", "B", campaign="text")
+        create_entry("alpha", "C", campaign="mpsf")
+        results = list_entries("alpha", campaign="mpsf")
+        assert len(results) == 2
+        assert all(e["campaign"] == "mpsf" for e in results)
+
+    @pytest.mark.unit
+    def test_list_campaigns(self):
+        create_entry("alpha", "A", campaign="mpsf")
+        create_entry("alpha", "B", campaign="mpsf")
+        create_entry("alpha", "C", campaign="text")
+        create_entry("alpha", "D")
+        campaigns = list_campaigns("alpha")
+        names = {c["name"] for c in campaigns}
+        assert "mpsf" in names
+        assert "text" in names
+        assert "" not in names
+        mpsf = next(c for c in campaigns if c["name"] == "mpsf")
+        assert mpsf["count"] == 2
