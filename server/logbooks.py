@@ -43,7 +43,73 @@ def _row_to_dict(row, preview=False):
         body = d["body"]
         d["body_preview"] = body[:BODY_PREVIEW_LEN] + ("…" if len(body) > BODY_PREVIEW_LEN else "")
         del d["body"]
+    if "_snippet" in d:
+        d["snippet"] = d.pop("_snippet")
     return d
+
+
+_SNIPPET_MARKER_L = "\x02"
+_SNIPPET_MARKER_R = "\x03"
+
+
+def _fts_safe_query(raw):
+    """Wrap each token in double-quotes so FTS5 treats them as literals.
+
+    This prevents user input like ``OR``, ``NOT``, bare ``*``, or unmatched
+    quotes from raising an fts5 syntax error.  Quoted tokens still benefit
+    from the porter stemmer configured on the table.
+    """
+    tokens = raw.strip().split()
+    if not tokens:
+        return raw.strip()
+    return " ".join(f'"{t}"' for t in tokens)
+
+
+def _fts_search(con, project, query, entry_type, limit, offset):
+    """FTS5 search with snippet extraction, falling back to LIKE."""
+    fts_q = _fts_safe_query(query)
+    conditions = ["f.logbook_fts MATCH ?", "e.project = ?"]
+    params = [fts_q, project]
+    if entry_type:
+        conditions.append("e.entry_type = ?")
+        params.append(entry_type)
+    where = " AND ".join(conditions)
+    params.extend([limit, offset])
+    try:
+        return con.execute(
+            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at,
+                       e.entry_type, e.pinned,
+                       snippet(logbook_fts, 1, '{_SNIPPET_MARKER_L}', '{_SNIPPET_MARKER_R}', '…', 48) AS _snippet
+                FROM logbook_entries e
+                JOIN logbook_fts f ON e.id = f.rowid
+                WHERE {where}
+                ORDER BY rank
+                LIMIT ? OFFSET ?""",
+            params,
+        ).fetchall()
+    except Exception:
+        log.debug("FTS MATCH failed for %r, falling back to LIKE", query)
+        return _like_search(con, project, query, entry_type, limit, offset)
+
+
+def _like_search(con, project, query, entry_type, limit, offset):
+    """Substring fallback when FTS5 MATCH fails."""
+    conditions = ["project = ?", "(title LIKE ? OR body LIKE ?)"]
+    like = f"%{query}%"
+    params = [project, like, like]
+    if entry_type:
+        conditions.append("entry_type = ?")
+        params.append(entry_type)
+    where = " AND ".join(conditions)
+    params.extend([limit, offset])
+    return con.execute(
+        f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned
+            FROM logbook_entries
+            WHERE {where}
+            ORDER BY edited_at DESC
+            LIMIT ? OFFSET ?""",
+        params,
+    ).fetchall()
 
 
 def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entry_type=None):
@@ -53,22 +119,7 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
     sort_dir = "ASC" if sort_col == "title" else "DESC"
 
     if query and query.strip():
-        conditions = ["f.logbook_fts MATCH ?", "e.project = ?"]
-        params = [query.strip(), project]
-        if entry_type:
-            conditions.append("e.entry_type = ?")
-            params.append(entry_type)
-        where = " AND ".join(conditions)
-        params.extend([limit, offset])
-        rows = con.execute(
-            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type, e.pinned
-                FROM logbook_entries e
-                JOIN logbook_fts f ON e.id = f.rowid
-                WHERE {where}
-                ORDER BY rank
-                LIMIT ? OFFSET ?""",
-            params,
-        ).fetchall()
+        rows = _fts_search(con, project, query.strip(), entry_type, limit, offset)
     else:
         conditions = ["project = ?"]
         params = [project]
@@ -230,8 +281,9 @@ def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
         return []
 
     con = get_db()
+    fts_q = _fts_safe_query(query.strip())
     conditions = ["f.logbook_fts MATCH ?"]
-    params = [query.strip()]
+    params = [fts_q]
 
     if project:
         conditions.append("e.project = ?")
@@ -246,15 +298,20 @@ def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
     where = " AND ".join(conditions)
     params.extend([limit])
 
-    rows = con.execute(
-        f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type
-            FROM logbook_entries e
-            JOIN logbook_fts f ON e.id = f.rowid
-            WHERE {where}
-            ORDER BY rank
-            LIMIT ?""",
-        params,
-    ).fetchall()
+    try:
+        rows = con.execute(
+            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type, e.pinned,
+                       snippet(logbook_fts, 1, '{_SNIPPET_MARKER_L}', '{_SNIPPET_MARKER_R}', '…', 48) AS _snippet
+                FROM logbook_entries e
+                JOIN logbook_fts f ON e.id = f.rowid
+                WHERE {where}
+                ORDER BY rank
+                LIMIT ?""",
+            params,
+        ).fetchall()
+    except Exception:
+        log.debug("FTS MATCH failed for %r in search_entries, returning empty", query)
+        rows = []
     con.close()
     return [_row_to_dict(r, preview=True) for r in rows]
 
