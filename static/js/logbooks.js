@@ -4,6 +4,7 @@ let _lbProject = '';
 let _lbEditingId = null;
 let _lbSearchTimer = null;
 let _lbTypeFilter = '';
+let _lbCampaignFilter = '';
 let _lbHistory = [];
 let _lbRunNames = [];
 let _lbSuggestTarget = null;
@@ -76,6 +77,7 @@ function _isEntryPinned(entryId) {
 function initLogbookPage() {
   const sel = document.getElementById('lb-project-select');
   if (!sel) return;
+  _fetchProjectColors();
 
   Promise.allSettled([
     fetchWithTimeout('/api/projects').then(r => r.json()),
@@ -113,6 +115,7 @@ function initLogbookPage() {
       }
       _loadEntries(_lbProject);
       _loadRunNames(_lbProject);
+      _loadCampaignChips();
     }
   }).catch(() => {
     sel.innerHTML = '<option value="">failed to load</option>';
@@ -128,6 +131,7 @@ function onLogbookProjectChange() {
   const sel = document.getElementById('lb-project-select');
   _lbProject = sel.value;
   _lbEditingId = null;
+  _lbCampaignFilter = '';
   _mapActive = false;
   _mapFocusEntryId = null;
   _mapNeighborHops = 1;
@@ -139,6 +143,7 @@ function onLogbookProjectChange() {
   _showMainEmpty();
   _loadEntries(_lbProject);
   _loadRunNames(_lbProject);
+  _loadCampaignChips();
   if (typeof _updateActiveTabExtra === 'function') {
     _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: null });
   }
@@ -153,6 +158,7 @@ async function _loadEntries(project, query) {
   const params = new URLSearchParams({ limit: '200' });
   if (query) params.set('q', query);
   if (_lbTypeFilter) params.set('type', _lbTypeFilter);
+  if (_lbCampaignFilter) params.set('campaign', _lbCampaignFilter);
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(project)}/entries?${params}`);
     const entries = await res.json();
@@ -198,6 +204,7 @@ function _renderSnippet(snippet) {
 }
 
 function _renderSidebarItems(items, showPinIcon) {
+  const projColor = _getProjectColor(_lbProject) || '';
   return items.map(e => {
     const date = _formatDate(e.created_at);
     const title = (e.title || '').replace(/</g, '&lt;');
@@ -208,9 +215,13 @@ function _renderSidebarItems(items, showPinIcon) {
     const pinned = _isEntryPinned(e.id);
     const pinCls = pinned ? ' lb-pinned' : '';
     const pinBtn = `<span class="lb-pin-btn${pinned ? ' active' : ''}" onclick="event.stopPropagation();togglePinEntry(${e.id})" title="${pinned ? 'Unpin' : 'Pin'}">📌</span>`;
-    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" onclick="openLogbookEntry(${e.id})">
-      <div class="lb-sidebar-item-title">${pinBtn}${title} <span class="lb-sidebar-item-id">#${e.id}</span></div>
-      <div class="lb-sidebar-item-date">${date}</div>
+    const camp = e.campaign || '';
+    const tint = camp && projColor ? campaignShade(projColor, camp) : (projColor || '');
+    const tintStyle = tint ? `style="--lb-tint:${tint}"` : '';
+    const campChip = camp ? `<span class="lb-sidebar-item-campaign">${camp}</span>` : '';
+    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" data-campaign="${camp}" ${tintStyle} onclick="openLogbookEntry(${e.id})">
+      <div class="lb-sidebar-item-title">${pinBtn}${title} <span class="lb-sidebar-item-id">#${e.id}</span> <span class="lb-sidebar-item-date">${date}</span></div>
+      ${campChip}
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
   }).join('');
@@ -279,6 +290,31 @@ function filterLogbookType(btn) {
   document.querySelectorAll('.lb-type-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   _lbTypeFilter = btn.dataset.type || '';
+  const q = (document.getElementById('lb-search') || {}).value || '';
+  if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
+}
+
+async function _loadCampaignChips() {
+  const el = document.getElementById('lb-campaign-filters');
+  if (!el || !_lbProject) { if (el) el.innerHTML = ''; return; }
+  try {
+    const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/campaigns`);
+    const data = await res.json();
+    if (!Array.isArray(data) || !data.length) { el.innerHTML = ''; return; }
+    const projColor = _getProjectColor(_lbProject) || '';
+    el.innerHTML = data.map(c => {
+      const active = _lbCampaignFilter === c.name ? ' active' : '';
+      const tint = projColor ? campaignShade(projColor, c.name) : '';
+      const style = tint ? `style="--chip-tint:${tint}"` : '';
+      return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name} <span class="lb-campaign-chip-count">${c.count}</span></button>`;
+    }).join('');
+  } catch { el.innerHTML = ''; }
+}
+
+function toggleCampaignFilter(btn) {
+  const camp = btn.dataset.campaign || '';
+  _lbCampaignFilter = _lbCampaignFilter === camp ? '' : camp;
+  document.querySelectorAll('.lb-campaign-chip').forEach(b => b.classList.toggle('active', b.dataset.campaign === _lbCampaignFilter));
   const q = (document.getElementById('lb-search') || {}).value || '';
   if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
 }
@@ -713,7 +749,7 @@ function exportEntryDocx() {
 
 // ── Editor ──────────────────────────────────────────────────────────────────
 
-function showLogbookEditor(entryId, title, body, entryType) {
+function showLogbookEditor(entryId, title, body, entryType, campaign) {
   if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _lbEditingId = entryId || null;
   const el = document.getElementById('lb-main');
@@ -721,6 +757,7 @@ function showLogbookEditor(entryId, title, body, entryType) {
   const titleVal = (title || '').replace(/"/g, '&quot;');
   const bodyVal = (body || '').replace(/</g, '&lt;');
   const typeVal = entryType || 'note';
+  const campVal = (campaign || '').replace(/"/g, '&quot;');
   el.innerHTML = `
     <div class="lb-editor">
       <div class="lb-editor-type-row">
@@ -728,6 +765,8 @@ function showLogbookEditor(entryId, title, body, entryType) {
           <option value="note" ${typeVal === 'note' ? 'selected' : ''}>Note</option>
           <option value="plan" ${typeVal === 'plan' ? 'selected' : ''}>Plan</option>
         </select>
+        <input type="text" class="lb-editor-campaign" id="lb-edit-campaign" list="lb-campaign-suggest" placeholder="campaign" value="${campVal}">
+        <datalist id="lb-campaign-suggest"></datalist>
       </div>
       <input type="text" class="lb-editor-title" id="lb-edit-title" placeholder="Entry title" value="${titleVal}">
       <textarea class="lb-editor-body" id="lb-edit-body" placeholder="Write your entry in markdown…&#10;&#10;Use @run-name to reference jobs.&#10;Drag/drop or paste images to attach.&#10;Tables, code blocks, and headers are all supported." rows="20">${bodyVal}</textarea>
@@ -738,6 +777,19 @@ function showLogbookEditor(entryId, title, body, entryType) {
       </div>
     </div>`;
   _setupImageHandlers();
+  _loadCampaignSuggestions();
+}
+
+async function _loadCampaignSuggestions() {
+  if (!_lbProject) return;
+  try {
+    const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/campaigns`);
+    const data = await res.json();
+    const dl = document.getElementById('lb-campaign-suggest');
+    if (dl && Array.isArray(data)) {
+      dl.innerHTML = data.map(c => `<option value="${c.name}">`).join('');
+    }
+  } catch {}
 }
 
 function _setupImageHandlers() {
@@ -819,7 +871,7 @@ async function editLogbookEntry(entryId) {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`);
     const entry = await res.json();
     if (entry.status === 'error') { toast(entry.error, 'error'); return; }
-    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type);
+    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type, entry.campaign);
   } catch (e) {
     toast('Failed to load entry for editing', 'error');
   }
@@ -829,10 +881,12 @@ async function saveLogbookEntry() {
   const titleInput = document.getElementById('lb-edit-title');
   const bodyInput = document.getElementById('lb-edit-body');
   const typeSelect = document.getElementById('lb-edit-type');
+  const campInput = document.getElementById('lb-edit-campaign');
   if (!titleInput || !bodyInput || !_lbProject) return;
   const title = titleInput.value.trim();
   const body = bodyInput.value.trim();
   const entry_type = typeSelect ? typeSelect.value : 'note';
+  const campaign = campInput ? campInput.value.trim().toLowerCase() : '';
   if (!title) { toast('Title is required', 'error'); return; }
 
   const t = toastLoading(_lbEditingId ? 'Saving entry…' : 'Creating entry…');
@@ -842,13 +896,13 @@ async function saveLogbookEntry() {
       res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${_lbEditingId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, entry_type }),
+        body: JSON.stringify({ title, body, entry_type, campaign }),
       });
     } else {
       res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, entry_type }),
+        body: JSON.stringify({ title, body, entry_type, campaign }),
       });
     }
     const d = await res.json();
