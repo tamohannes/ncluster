@@ -18,6 +18,7 @@ from .db import get_db, db_write
 log = logging.getLogger(__name__)
 
 BODY_PREVIEW_LEN = 200
+_CAMPAIGN_PREFIX_RE = re.compile(r'^\[([^\]]+)\]\s*')
 _LEGACY_DIR = os.path.join(PROJECT_ROOT, "data", "logbooks")
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "logbook_images")
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".html", ".htm"}
@@ -35,6 +36,29 @@ def list_logbook_projects():
 
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _extract_campaign_from_title(title):
+    """Parse ``[campaign] Rest of title`` and return ``(campaign, stripped)``.
+
+    Returns ``("", title)`` when no bracket prefix is found.
+    """
+    m = _CAMPAIGN_PREFIX_RE.match(title or "")
+    if m:
+        return m.group(1).strip().lower(), title[m.end():]
+    return "", title or ""
+
+
+def list_campaigns(project):
+    """Return distinct non-empty campaigns for a project with entry counts."""
+    con = get_db()
+    rows = con.execute(
+        "SELECT campaign, COUNT(*) AS cnt FROM logbook_entries "
+        "WHERE project = ? AND campaign != '' GROUP BY campaign ORDER BY campaign",
+        (project,),
+    ).fetchall()
+    con.close()
+    return [{"name": r["campaign"], "count": r["cnt"]} for r in rows]
 
 
 def _row_to_dict(row, preview=False):
@@ -65,7 +89,7 @@ def _fts_safe_query(raw):
     return " ".join(f'"{t}"' for t in tokens)
 
 
-def _fts_search(con, project, query, entry_type, limit, offset):
+def _fts_search(con, project, query, entry_type, limit, offset, campaign=None):
     """FTS5 search with snippet extraction, falling back to LIKE."""
     fts_q = _fts_safe_query(query)
     conditions = ["f.logbook_fts MATCH ?", "e.project = ?"]
@@ -73,12 +97,15 @@ def _fts_search(con, project, query, entry_type, limit, offset):
     if entry_type:
         conditions.append("e.entry_type = ?")
         params.append(entry_type)
+    if campaign:
+        conditions.append("e.campaign = ?")
+        params.append(campaign)
     where = " AND ".join(conditions)
     params.extend([limit, offset])
     try:
         return con.execute(
             f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at,
-                       e.entry_type, e.pinned,
+                       e.entry_type, e.pinned, e.campaign,
                        snippet(logbook_fts, 1, '{_SNIPPET_MARKER_L}', '{_SNIPPET_MARKER_R}', '…', 48) AS _snippet
                 FROM logbook_entries e
                 JOIN logbook_fts f ON e.id = f.rowid
@@ -89,10 +116,10 @@ def _fts_search(con, project, query, entry_type, limit, offset):
         ).fetchall()
     except Exception:
         log.debug("FTS MATCH failed for %r, falling back to LIKE", query)
-        return _like_search(con, project, query, entry_type, limit, offset)
+        return _like_search(con, project, query, entry_type, limit, offset, campaign=campaign)
 
 
-def _like_search(con, project, query, entry_type, limit, offset):
+def _like_search(con, project, query, entry_type, limit, offset, campaign=None):
     """Substring fallback when FTS5 MATCH fails."""
     conditions = ["project = ?", "(title LIKE ? OR body LIKE ?)"]
     like = f"%{query}%"
@@ -100,10 +127,13 @@ def _like_search(con, project, query, entry_type, limit, offset):
     if entry_type:
         conditions.append("entry_type = ?")
         params.append(entry_type)
+    if campaign:
+        conditions.append("campaign = ?")
+        params.append(campaign)
     where = " AND ".join(conditions)
     params.extend([limit, offset])
     return con.execute(
-        f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned
+        f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned, campaign
             FROM logbook_entries
             WHERE {where}
             ORDER BY edited_at DESC
@@ -112,24 +142,27 @@ def _like_search(con, project, query, entry_type, limit, offset):
     ).fetchall()
 
 
-def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entry_type=None):
+def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entry_type=None, campaign=None):
     con = get_db()
     allowed_sorts = {"edited_at", "created_at", "title"}
     sort_col = sort if sort in allowed_sorts else "edited_at"
     sort_dir = "ASC" if sort_col == "title" else "DESC"
 
     if query and query.strip():
-        rows = _fts_search(con, project, query.strip(), entry_type, limit, offset)
+        rows = _fts_search(con, project, query.strip(), entry_type, limit, offset, campaign=campaign)
     else:
         conditions = ["project = ?"]
         params = [project]
         if entry_type:
             conditions.append("entry_type = ?")
             params.append(entry_type)
+        if campaign:
+            conditions.append("campaign = ?")
+            params.append(campaign)
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         rows = con.execute(
-            f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned
+            f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned, campaign
                 FROM logbook_entries
                 WHERE {where}
                 ORDER BY pinned DESC, {sort_col} {sort_dir}
@@ -143,7 +176,7 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
 def get_entry(project, entry_id):
     con = get_db()
     row = con.execute(
-        "SELECT id, project, title, body, created_at, edited_at, entry_type, pinned FROM logbook_entries WHERE id = ? AND project = ?",
+        "SELECT id, project, title, body, created_at, edited_at, entry_type, pinned, campaign FROM logbook_entries WHERE id = ? AND project = ?",
         (entry_id, project),
     ).fetchone()
     con.close()
@@ -190,18 +223,22 @@ def _update_links(con, entry_id, body):
 
 
 
-def create_entry(project, title, body="", entry_type="note"):
+def create_entry(project, title, body="", entry_type="note", campaign=None):
     if entry_type not in ("note", "plan"):
         entry_type = "note"
+    if campaign is None:
+        campaign, title = _extract_campaign_from_title(title)
+    else:
+        campaign = campaign.strip().lower()
     now = _now_iso()
     with db_write() as con:
         cur = con.execute(
-            "INSERT INTO logbook_entries (project, title, body, created_at, edited_at, entry_type) VALUES (?, ?, ?, ?, ?, ?)",
-            (project, title, body, now, now, entry_type),
+            "INSERT INTO logbook_entries (project, title, body, created_at, edited_at, entry_type, campaign) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (project, title, body, now, now, entry_type, campaign),
         )
         entry_id = cur.lastrowid
         _update_links(con, entry_id, body)
-    return {"status": "ok", "id": entry_id, "created_at": now}
+    return {"status": "ok", "id": entry_id, "created_at": now, "campaign": campaign}
 
 
 def update_entry(
@@ -212,6 +249,7 @@ def update_entry(
     entry_type=None,
     pinned=None,
     new_project=None,
+    campaign=None,
 ):
     """Mutate a logbook entry. Any subset of fields may be updated.
 
@@ -248,6 +286,9 @@ def update_entry(
         if pinned is not None:
             sets.append("pinned = ?")
             params.append(1 if pinned else 0)
+        if campaign is not None:
+            sets.append("campaign = ?")
+            params.append(campaign.strip().lower())
         if moved_to is not None:
             sets.append("project = ?")
             params.append(moved_to)
@@ -300,7 +341,7 @@ def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
 
     try:
         rows = con.execute(
-            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type, e.pinned,
+            f"""SELECT e.id, e.project, e.title, e.body, e.created_at, e.edited_at, e.entry_type, e.pinned, e.campaign,
                        snippet(logbook_fts, 1, '{_SNIPPET_MARKER_L}', '{_SNIPPET_MARKER_R}', '…', 48) AS _snippet
                 FROM logbook_entries e
                 JOIN logbook_fts f ON e.id = f.rowid
