@@ -2517,6 +2517,7 @@ from .logbooks import (
     update_entry as _lb_update,
     delete_entry as _lb_delete,
     search_entries as _lb_search,
+    list_campaigns as _lb_campaigns,
     save_image as _lb_save_image,
     get_image_path as _lb_get_image_path,
     resolve_entry_refs as _lb_resolve_refs,
@@ -2530,7 +2531,13 @@ def api_logbook_list(project):
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
     entry_type = request.args.get("type", "")
-    return jsonify(_lb_list(project, query=q or None, sort=sort, limit=limit, offset=offset, entry_type=entry_type or None))
+    campaign = request.args.get("campaign", "")
+    return jsonify(_lb_list(project, query=q or None, sort=sort, limit=limit, offset=offset, entry_type=entry_type or None, campaign=campaign or None))
+
+
+@api.route("/api/logbook/<project>/campaigns")
+def api_logbook_campaigns(project):
+    return jsonify(_lb_campaigns(project))
 
 
 @api.route("/api/logbook/<project>/entries", methods=["POST"])
@@ -2541,7 +2548,8 @@ def api_logbook_create(project):
         return jsonify({"status": "error", "error": "Title is required"}), 400
     body = (payload.get("body") or "").strip()
     entry_type = (payload.get("entry_type") or "note").strip()
-    return jsonify(_lb_create(project, title, body, entry_type=entry_type))
+    campaign = payload.get("campaign")
+    return jsonify(_lb_create(project, title, body, entry_type=entry_type, campaign=campaign))
 
 
 @api.route("/api/logbook/<project>/entries/<int:entry_id>")
@@ -2577,10 +2585,11 @@ def api_logbook_update(project, entry_id):
     entry_type = payload.get("entry_type")
     pinned = payload.get("pinned")
     new_project = payload.get("new_project")
+    campaign = payload.get("campaign")
     result = _lb_update(
         project, entry_id,
         title=title, body=body, entry_type=entry_type,
-        pinned=pinned, new_project=new_project,
+        pinned=pinned, new_project=new_project, campaign=campaign,
     )
     status = result.get("status")
     if status == "error":

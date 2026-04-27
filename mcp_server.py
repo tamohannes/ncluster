@@ -1150,10 +1150,11 @@ async def list_logbook_entries(
     sort: str = "edited_at",
     limit: int = 50,
     entry_type: Optional[str] = None,
+    campaign: Optional[str] = None,
 ) -> list[dict]:
     """List logbook entries for a project, optionally filtered by BM25 search.
 
-    Returns: id, project, title, body_preview, entry_type, created_at, edited_at.
+    Returns: id, project, title, body_preview, entry_type, campaign, created_at, edited_at.
     Sort: "edited_at" (default), "created_at", "title".
     """
     params = {"sort": sort, "limit": str(limit)}
@@ -1161,12 +1162,24 @@ async def list_logbook_entries(
         params["q"] = query
     if entry_type:
         params["type"] = entry_type
+    if campaign:
+        params["campaign"] = campaign
     data = await _api_async("GET", f"/api/logbook/{project}/entries", query_string=params)
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and data.get("status") == "error":
         return [data]
     return []
+
+
+@mcp.tool()
+async def list_logbook_campaigns(project: str) -> list[dict]:
+    """List distinct campaigns for a project with entry counts.
+
+    Returns: [{"name": str, "count": int}, ...]
+    """
+    data = await _api_async("GET", f"/api/logbook/{project}/campaigns")
+    return data if isinstance(data, list) else []
 
 
 @mcp.tool()
@@ -1222,17 +1235,18 @@ async def find_logbook_entries(
 
 
 @mcp.tool()
-async def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note") -> dict:
+async def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note", campaign: Optional[str] = None) -> dict:
     """Create a new logbook entry. Supports markdown, #N cross-refs, @run-name refs, images.
 
     See the project-logbook workspace rule for full formatting guidelines.
     entry_type: "note" (results/findings) or "plan" (plans/designs).
+    campaign: Optional campaign name. Auto-detected from a [campaign] title
+        prefix when omitted (the prefix is stripped from the stored title).
     """
-    return await _api_async("POST", f"/api/logbook/{project}/entries", json={
-        "title": title,
-        "body": body,
-        "entry_type": entry_type,
-    })
+    payload = {"title": title, "body": body, "entry_type": entry_type}
+    if campaign is not None:
+        payload["campaign"] = campaign
+    return await _api_async("POST", f"/api/logbook/{project}/entries", json=payload)
 
 
 @mcp.tool()
@@ -1244,6 +1258,7 @@ async def update_logbook_entry(
     entry_type: Optional[str] = None,
     pinned: Optional[bool] = None,
     new_project: Optional[str] = None,
+    campaign: Optional[str] = None,
 ) -> dict:
     """Update any subset of a logbook entry's mutable attributes. Bumps edited_at.
 
@@ -1258,6 +1273,7 @@ async def update_logbook_entry(
         new_project: Move the entry to a different project. Entry IDs are
             globally unique so cross-project #N references keep working.
             Pass the bare project name (e.g. "hle"), not a URL.
+        campaign: Campaign name (lowercase). Pass "" to clear.
 
     All fields except project/entry_id are optional; pass only the ones you
     want to change. Returns {"status": "ok", "id", "edited_at", "project"?}.
@@ -1273,6 +1289,8 @@ async def update_logbook_entry(
         payload["pinned"] = pinned
     if new_project is not None:
         payload["new_project"] = new_project
+    if campaign is not None:
+        payload["campaign"] = campaign
     return await _api_async("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
 
 
