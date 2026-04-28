@@ -256,7 +256,22 @@ CREATE TABLE IF NOT EXISTS run_metrics (
     UNIQUE(run_uuid, event_seq)
 )
 """
-"""Generic Aim-style metric points emitted by the SDK."""
+"""Stepped Aim-style metric series emitted by the SDK."""
+
+RUN_SCALARS = """
+CREATE TABLE IF NOT EXISTS run_scalars (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_uuid     TEXT NOT NULL,
+    event_seq    INTEGER NOT NULL DEFAULT 0,
+    key          TEXT NOT NULL,
+    ts           REAL,
+    value_num    REAL,
+    value_json   TEXT DEFAULT 'null',
+    context_json TEXT DEFAULT '{}',
+    UNIQUE(run_uuid, event_seq)
+)
+"""
+"""Scalar SDK statistics emitted without a step."""
 
 PROJECTS = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -418,6 +433,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)",
     "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_key_step ON run_metrics(run_uuid, key, step)",
     "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_ts ON run_metrics(run_uuid, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_run_scalars_uuid_key ON run_scalars(run_uuid, key)",
+    "CREATE INDEX IF NOT EXISTS idx_run_scalars_uuid_ts ON run_scalars(run_uuid, ts)",
     "CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)",
     "CREATE INDEX IF NOT EXISTS idx_clusters_position ON clusters(position)",
     "CREATE INDEX IF NOT EXISTS idx_team_members_position ON team_members(position)",
@@ -508,6 +525,7 @@ SCHEMA = [
     CACHE_STORE,
     SDK_EVENTS,
     RUN_METRICS,
+    RUN_SCALARS,
     PROJECTS,
     CLUSTERS,
     TEAM_MEMBERS,

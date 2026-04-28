@@ -73,11 +73,18 @@ def test_manual_run_track_and_metadata_emit_sdk_events(tmp_path, monkeypatch):
         metadata={"model": "demo", "batch_size": 8},
     )
     run.track("loss", 0.42, step=2, context={"split": "train"})
+    run.scalar("final_accuracy", 0.84, split="eval")
     run.close()
 
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     event_types = [event["event_type"] for event in events]
-    assert event_types == ["run_started", "metadata_logged", "metric_logged", "run_finished"]
+    assert event_types == [
+        "run_started",
+        "metadata_logged",
+        "metric_logged",
+        "scalar_logged",
+        "run_finished",
+    ]
 
     metric = next(event for event in events if event["event_type"] == "metric_logged")
     assert metric["payload"] == {
@@ -89,6 +96,13 @@ def test_manual_run_track_and_metadata_emit_sdk_events(tmp_path, monkeypatch):
 
     metadata = next(event for event in events if event["event_type"] == "metadata_logged")
     assert metadata["payload"]["metadata"] == {"model": "demo", "batch_size": 8}
+
+    scalar = next(event for event in events if event["event_type"] == "scalar_logged")
+    assert scalar["payload"] == {
+        "key": "final_accuracy",
+        "value": 0.84,
+        "context": {"split": "eval"},
+    }
 
 
 def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
@@ -114,13 +128,20 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
             "event_type": "metric_logged",
             "event_seq": 4,
             "ts": 3.0,
-            "payload": {"key": "phase", "value": "warmup", "step": 1},
+            "payload": {"key": "phase", "value": "warmup"},
+        },
+        {
+            "run_uuid": run_uuid,
+            "event_type": "scalar_logged",
+            "event_seq": 5,
+            "ts": 4.0,
+            "payload": {"key": "final_accuracy", "value": 0.75, "context": {"split": "eval"}},
         },
         {
             "run_uuid": run_uuid,
             "event_type": "metric_logged",
-            "event_seq": 5,
-            "ts": 4.0,
+            "event_seq": 6,
+            "ts": 5.0,
             "payload": {"key": "progress", "value": 10},
         },
     ]
@@ -134,16 +155,21 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
     assert metrics.status_code == 200, metrics.data
     payload = metrics.get_json()
     assert payload["metadata"] == {"model": "demo", "lr": 1e-5}
-    assert set(payload["series"]) == {"loss", "phase"}
+    assert set(payload["series"]) == {"loss"}
     assert payload["series"]["loss"][0]["value"] == 0.5
     assert payload["series"]["loss"][0]["value_num"] == 0.5
     assert payload["series"]["loss"][0]["context"] == {"split": "train"}
-    assert payload["latest"]["phase"]["value"] == "warmup"
+    assert set(payload["scalars"]) == {"phase", "final_accuracy"}
+    assert payload["scalars"]["phase"][0]["value"] == "warmup"
+    assert payload["scalar_latest"]["final_accuracy"]["value"] == 0.75
+    assert payload["scalar_latest"]["final_accuracy"]["value_num"] == 0.75
 
     from server.db import get_db
     con = get_db()
     sdk_events = con.execute("SELECT COUNT(*) AS n FROM sdk_events WHERE run_uuid=?", (run_uuid,)).fetchone()["n"]
     run_metrics = con.execute("SELECT COUNT(*) AS n FROM run_metrics WHERE run_uuid=?", (run_uuid,)).fetchone()["n"]
+    run_scalars = con.execute("SELECT COUNT(*) AS n FROM run_scalars WHERE run_uuid=?", (run_uuid,)).fetchone()["n"]
     con.close()
     assert sdk_events == len(events)
-    assert run_metrics == 2
+    assert run_metrics == 1
+    assert run_scalars == 2

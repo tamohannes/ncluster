@@ -661,8 +661,11 @@ async def get_run_info(cluster: str, run_hash: str) -> dict:
 async def get_run_metrics(cluster: str, run_hash: str) -> dict:
     """Get SDK-tracked run metrics and metadata by run_hash.
 
-    Returns Aim-style metric series, latest values, and static metadata logged
-    through `nemo_skills.clausius_sdk.Run.track()` / `set_metadata()`.
+    Returns Aim-style series metrics (`series`, `latest`) from
+    `Run.track(..., step=...)`, scalar stats (`scalars`, `scalar_latest`) from
+    `Run.scalar(...)` or no-step `Run.track(...)`, and static `metadata`.
+    The UI Metrics tab can build line plots from series and bar charts from
+    scalars.
     """
     return await _api_async("GET", f"/api/run_metrics_by_hash/{cluster}/{run_hash}")
 

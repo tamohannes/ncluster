@@ -1417,7 +1417,7 @@ def store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json):
 
 
 def store_run_metric(run_uuid, event_seq, ts, payload):
-    """Persist a generic SDK metric point for UI/API queries."""
+    """Persist a stepped SDK metric point for UI/API queries."""
     if not isinstance(payload, dict):
         return
     key = str(payload.get("key") or "").strip()
@@ -1457,6 +1457,41 @@ def store_run_metric(run_uuid, event_seq, ts, payload):
         ))
 
 
+def store_run_scalar(run_uuid, event_seq, ts, payload):
+    """Persist a scalar SDK statistic for UI/API queries."""
+    if not isinstance(payload, dict):
+        return
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return
+    value = payload.get("value")
+    value_num = None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            num = float(value)
+            if math.isfinite(num):
+                value_num = num
+        except Exception:
+            value_num = None
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        context = {}
+    with db_write() as con:
+        con.execute("""
+            INSERT OR IGNORE INTO run_scalars
+                (run_uuid, event_seq, key, ts, value_num, value_json, context_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_uuid,
+            int(event_seq or 0),
+            key,
+            ts,
+            value_num,
+            _json.dumps(value, default=str),
+            _json.dumps(context, default=str),
+        ))
+
+
 def merge_run_metadata(run_uuid, metadata):
     """Shallow-merge user-provided static metadata into the SDK run row."""
     if not isinstance(metadata, dict):
@@ -1482,13 +1517,20 @@ def merge_run_metadata(run_uuid, metadata):
 
 
 def get_run_metrics(run_uuid):
-    """Return stored generic metric points for a run, ordered for charting."""
+    """Return stored series metrics and scalar stats for a run."""
     con = get_db()
     metric_rows = con.execute("""
         SELECT key, step, ts, value_num, value_json, context_json
         FROM run_metrics
         WHERE run_uuid=?
+          AND step IS NOT NULL
         ORDER BY key, COALESCE(step, event_seq), event_seq
+    """, (run_uuid,)).fetchall()
+    scalar_rows = con.execute("""
+        SELECT key, ts, value_num, value_json, context_json
+        FROM run_scalars
+        WHERE run_uuid=?
+        ORDER BY key, event_seq
     """, (run_uuid,)).fetchall()
     run_row = con.execute(
         "SELECT metadata_json FROM runs WHERE run_uuid=?",
@@ -1526,7 +1568,34 @@ def get_run_metrics(run_uuid):
         }
         series.setdefault(key, []).append(point)
         latest[key] = point
-    return {"metadata": metadata, "series": series, "latest": latest}
+
+    scalars = {}
+    scalar_latest = {}
+    for row in scalar_rows:
+        key = row["key"]
+        try:
+            value = _json.loads(row["value_json"])
+        except Exception:
+            value = row["value_json"]
+        try:
+            context = _json.loads(row["context_json"] or "{}")
+        except Exception:
+            context = {}
+        point = {
+            "ts": row["ts"],
+            "value": value,
+            "value_num": row["value_num"],
+            "context": context if isinstance(context, dict) else {},
+        }
+        scalars.setdefault(key, []).append(point)
+        scalar_latest[key] = point
+    return {
+        "metadata": metadata,
+        "series": series,
+        "latest": latest,
+        "scalars": scalars,
+        "scalar_latest": scalar_latest,
+    }
 
 
 def cancel_sdk_job(synthetic_job_id):

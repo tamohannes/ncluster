@@ -123,7 +123,26 @@ class Run:
                 raise TypeError("context must be a dict when provided")
             merged_context.update(context)
         merged_context.update(context_kwargs)
-        self._session.log_metric(key, value, step=step, **merged_context)
+        if step is None:
+            self._session.log_scalar(key, value, **merged_context)
+        else:
+            self._session.log_metric(key, value, step=step, **merged_context)
+        return self
+
+    def scalar(
+        self,
+        key: str,
+        value: Any,
+        context: dict[str, Any] | None = None,
+        **context_kwargs: Any,
+    ) -> "Run":
+        merged_context: dict[str, Any] = {}
+        if context is not None:
+            if not isinstance(context, dict):
+                raise TypeError("context must be a dict when provided")
+            merged_context.update(context)
+        merged_context.update(context_kwargs)
+        self._session.log_scalar(key, value, **merged_context)
         return self
 
     def set_metadata(self, metadata: dict[str, Any]) -> "Run":

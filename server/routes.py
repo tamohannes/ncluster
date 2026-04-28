@@ -3021,6 +3021,7 @@ def api_sdk_ingest():
         upsert_run_from_sdk,
         store_sdk_event,
         store_run_metric,
+        store_run_scalar,
         merge_run_metadata,
         finalize_sdk_run,
         get_run_by_uuid,
@@ -3120,8 +3121,13 @@ def api_sdk_ingest():
             elif payload.get("key") == "progress":
                 _ingest_progress(run_uuid, payload)
                 bump_version()
+            elif payload.get("step") is None:
+                store_run_scalar(run_uuid, event_seq, ts, payload)
             else:
                 store_run_metric(run_uuid, event_seq, ts, payload)
+
+        elif event_type == "scalar_logged":
+            store_run_scalar(run_uuid, event_seq, ts, payload)
 
         elif event_type == "metadata_logged":
             merge_run_metadata(run_uuid, payload.get("metadata", {}))

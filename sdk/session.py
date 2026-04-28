@@ -269,9 +269,15 @@ class ClausiusSession:
             payload["context"] = context
         self._emit(EventType.METRIC_LOGGED, payload)
 
+    def log_scalar(self, key: str, value: Any, **context):
+        payload: dict[str, Any] = {"key": key, "value": value}
+        if context:
+            payload["context"] = context
+        self._emit(EventType.SCALAR_LOGGED, payload)
+
     def log_params(self, params: dict[str, Any]):
         for k, v in params.items():
-            self.log_metric(f"param.{k}", v)
+            self.log_scalar(f"param.{k}", v)
 
     def log_metadata(self, metadata: dict[str, Any]):
         self._emit(EventType.METADATA_LOGGED, {"metadata": _sanitize_params(metadata)})

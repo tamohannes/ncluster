@@ -34,7 +34,18 @@ def log_metric(key: str, value: Any, step: int | None = None, **context) -> None
 
     s = ClausiusSession.get()
     if s:
-        s.log_metric(key, value, step=step, **context)
+        if step is None:
+            s.log_scalar(key, value, **context)
+        else:
+            s.log_metric(key, value, step=step, **context)
+
+
+def log_scalar(key: str, value: Any, **context) -> None:
+    from nemo_skills.clausius_sdk.session import ClausiusSession
+
+    s = ClausiusSession.get()
+    if s:
+        s.log_scalar(key, value, **context)
 
 
 def log_params(params: dict[str, Any]) -> None:
