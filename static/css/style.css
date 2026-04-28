@@ -91,7 +91,20 @@
   --pill-cache-bd:    #93c5fd;
   --pill-cache-bg:    #eff6ff;
 
-  --overlay-bg:       rgba(0,0,0,0.25);
+  --overlay-bg:       rgba(24,30,42,0.16);
+  --glass-surface:    rgba(255,255,255,0.68);
+  --glass-surface-strong: rgba(255,255,255,0.88);
+  --glass-surface-soft: rgba(255,255,255,0.52);
+  --glass-border:     color-mix(in srgb, var(--accent) 12%, rgba(255,255,255,0.72));
+  --glass-highlight:  rgba(255,255,255,0.92);
+  --glass-shadow:     0 8px 20px color-mix(in srgb, var(--accent) 7%, rgba(31,45,71,0.07)), 0 1px 4px rgba(31,45,71,0.04), inset 0 1px 0 rgba(255,255,255,0.74);
+  --glass-shadow-soft: 0 4px 12px color-mix(in srgb, var(--accent) 5%, rgba(31,45,71,0.045)), inset 0 1px 0 rgba(255,255,255,0.68);
+  --glass-blur:       blur(22px) saturate(1.55);
+  --liquid-grad:      linear-gradient(135deg, rgba(255,255,255,0.94), color-mix(in srgb, var(--accent) 7%, rgba(255,255,255,0.62)) 46%, rgba(255,255,255,0.36));
+  --matte-glass-bg:   #e8e8e899;
+  --matte-glass-filter: blur(22px) saturate(1.08);
+  --matte-noise:      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.62' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0.085'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='512' height='512' filter='url(%23n)'/%3E%3C/svg%3E");
+  --accent-grad:      linear-gradient(135deg, color-mix(in srgb, var(--accent) 82%, white), var(--accent));
 }
 
 [data-theme="dark"] {
@@ -182,6 +195,19 @@
   --pill-cache-bg:    #1a2240;
 
   --overlay-bg:       rgba(0,0,0,0.50);
+  --glass-surface:    rgba(31,35,51,0.58);
+  --glass-surface-strong: rgba(35,40,58,0.78);
+  --glass-surface-soft: rgba(23,27,41,0.44);
+  --glass-border:     rgba(255,255,255,0.13);
+  --glass-highlight:  rgba(255,255,255,0.17);
+  --glass-shadow:     0 10px 24px rgba(0,0,0,0.24), 0 1px 5px rgba(0,0,0,0.16), inset 0 1px 0 rgba(255,255,255,0.10);
+  --glass-shadow-soft: 0 5px 14px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.08);
+  --glass-blur:       blur(24px) saturate(1.45);
+  --liquid-grad:      linear-gradient(135deg, rgba(255,255,255,0.16), rgba(255,255,255,0.07) 48%, rgba(255,255,255,0.02));
+  --matte-glass-bg:   rgba(232,232,232,0.13);
+  --matte-glass-filter: blur(22px) saturate(1.08);
+  --matte-noise:      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='512' height='512' viewBox='0 0 512 512'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.62' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncA type='table' tableValues='0 0.075'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='512' height='512' filter='url(%23n)'/%3E%3C/svg%3E");
+  --accent-grad:      linear-gradient(135deg, color-mix(in srgb, var(--accent) 84%, white), var(--accent));
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -369,10 +395,10 @@ body {
 .stat-lbl { color: var(--muted); font-size: 10px; }
 .stat-divider { height: 1px; background: var(--border); margin: 4px 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-.dot-green  { background: var(--green); }
-.dot-amber  { background: var(--amber); }
-.dot-red    { background: var(--red); }
-.dot-muted  { background: var(--muted); }
+.dot-green  { background: var(--green); color: var(--green); }
+.dot-amber  { background: var(--amber); color: var(--amber); }
+.dot-red    { background: var(--red); color: var(--red); }
+.dot-muted  { background: var(--muted); color: var(--muted); }
 
 /* ── Main grid ── */
 main { padding: 14px 16px 40px; }
@@ -479,10 +505,10 @@ main { padding: 14px 16px 40px; }
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--muted);
 }
-.status-indicator.ok      { background: var(--green); }
-.status-indicator.stale   { background: var(--amber); }
-.status-indicator.error   { background: var(--red); }
-.status-indicator.loading { background: var(--accent); animation: blink 1s infinite; }
+.status-indicator.ok      { background: var(--green); color: var(--green); }
+.status-indicator.stale   { background: var(--amber); color: var(--amber); }
+.status-indicator.error   { background: var(--red); color: var(--red); }
+.status-indicator.loading { background: var(--accent); color: var(--accent); animation: blink 1s infinite; }
 
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
@@ -4472,4 +4498,1183 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .new-project-popover .npp-error {
   margin-top: 6px; color: var(--red); font-size: 10px; min-height: 12px;
+}
+
+/* ── Liquid glass visual layer ── */
+html {
+  background: var(--bg);
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  background-attachment: fixed;
+  isolation: isolate;
+}
+
+[data-theme="dark"] body {
+  background: var(--bg);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(115deg, transparent 0 20%, color-mix(in srgb, var(--accent) 6%, rgba(255,255,255,0.22)) 21%, transparent 30% 64%, color-mix(in srgb, var(--accent) 5%, rgba(255,255,255,0.13)) 65%, transparent 76%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, rgba(255,255,255,0.34)), transparent 42%);
+  opacity: 0.32;
+}
+
+[data-theme="dark"] body::before {
+  opacity: 0.20;
+}
+
+.topbar,
+.side-nav,
+.lb-sidebar,
+.explorer-topbar,
+.explorer-toolbar,
+.content-bar,
+.modal-head,
+.stats-head,
+.settings-modal-head,
+.card-head,
+.custom-log-bar,
+.metrics-config-bar {
+  background: var(--glass-surface);
+  border-color: var(--glass-border);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.topbar {
+  box-shadow: 0 1px 0 var(--glass-highlight), 0 3px 10px color-mix(in srgb, var(--accent) 5%, rgba(31,45,71,0.045));
+}
+
+.side-nav {
+  border-right: 1px solid var(--glass-border);
+  box-shadow: 4px 0 14px color-mix(in srgb, var(--accent) 5%, rgba(31,45,71,0.04));
+}
+
+.content-shell,
+.live-view,
+.history-view,
+.project-view,
+.clusters-view,
+.logbook-view,
+.explorer-page {
+  background: transparent;
+}
+
+.card,
+.history-table-wrap,
+.proj-live-card,
+.proj-hist-card,
+.lb-map-graph,
+.lb-suggest-box,
+.modal,
+.stats-modal,
+.settings-modal,
+.avail-modal,
+.advisor-modal,
+.ub-modal,
+.run-modal,
+.spotlight-modal,
+.new-project-popover,
+.cluster-tooltip,
+.jsonl-rec,
+.stats-kv,
+.stats-chart-wrap,
+.mount-item,
+.team-gpu-card,
+.run-section,
+.run-params,
+.run-timing,
+.run-resource-bar,
+.run-plot-card,
+.gpu-table,
+.md-table-wrap,
+.ppp-card,
+.wds-popup,
+.ppp-popup,
+.wds-info-popover,
+.wds-info-card,
+.cluster-edit-card {
+  background: var(--glass-surface);
+  background-image: var(--liquid-grad);
+  border-color: var(--glass-border);
+  box-shadow: var(--glass-shadow-soft);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.modal,
+.stats-modal,
+.settings-modal,
+.avail-modal,
+.advisor-modal,
+.ub-modal,
+.run-modal,
+.spotlight-modal {
+  box-shadow: var(--glass-shadow);
+}
+
+.card {
+  border-radius: 18px;
+}
+
+.card:hover {
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 8%, rgba(31,45,71,0.075)), 0 1px 4px rgba(31,45,71,0.045), inset 0 1px 0 var(--glass-highlight);
+  transform: translateY(-1px);
+}
+
+.card.has-running {
+  box-shadow: 0 5px 14px rgba(22,163,74,0.08), inset 0 1px 0 var(--glass-highlight);
+}
+
+.card,
+.btn,
+.icon-btn,
+.action-btn,
+.clear-btn,
+.nav-tab,
+.nav-project-btn,
+.topbar-tab,
+.hist-state-btn,
+.run-name-badge,
+.state-chip,
+.badge,
+.source-pill,
+.mount-badge,
+.partition-chip,
+.quota-pill,
+.freshness-badge,
+.run-tab-btn,
+.theme-option,
+.settings-nav-item,
+.spotlight-item,
+.jsonl-btn,
+.hist-pagination button {
+  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.18s ease, transform 0.18s ease, filter 0.16s ease;
+}
+
+.btn,
+.icon-btn,
+.action-btn,
+.hist-pagination button,
+.modal-head-actions .head-btn,
+.explorer-toolbar-right button,
+.explorer-nav-btn,
+.explorer-close-btn,
+.theme-options,
+.lb-map-toggle,
+.lb-map-scope-controls,
+.run-tab-btn,
+.jsonl-btn,
+.shortcut-edit-btn,
+.shortcut-reset-btn,
+.new-project-popover .npp-actions button {
+  background: var(--glass-surface-soft);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 1px 4px rgba(31,45,71,0.035);
+  -webkit-backdrop-filter: blur(14px) saturate(1.35);
+  backdrop-filter: blur(14px) saturate(1.35);
+}
+
+.btn:hover,
+.icon-btn:hover,
+.action-btn.log-btn:hover,
+.hist-pagination button:hover:not(:disabled),
+.modal-head-actions .head-btn:hover,
+.explorer-toolbar-right button:hover:not(:disabled),
+.explorer-nav-btn:hover,
+.theme-option.active,
+.run-tab-btn:hover,
+.run-tab-btn.active,
+.jsonl-btn:hover,
+.shortcut-edit-btn:hover,
+.new-project-popover .npp-actions button:hover {
+  background: color-mix(in srgb, var(--accent-bg) 72%, var(--glass-surface-strong));
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--accent) 8%, transparent), inset 0 1px 0 var(--glass-highlight);
+  transform: translateY(-1px);
+}
+
+.exp-view-tab.active,
+.advisor-go-btn {
+  background: var(--accent-grad) !important;
+  color: #fff !important;
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent) !important;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 24%, transparent), inset 0 1px 0 rgba(255,255,255,0.36);
+}
+
+.nav-tab.active,
+.nav-project-btn.active {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 24%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 12%, var(--glass-surface-soft))) !important;
+  color: var(--accent) !important;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--glass-border)) !important;
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--accent) 12%, transparent), inset 0 1px 0 var(--glass-highlight);
+  -webkit-backdrop-filter: blur(18px) saturate(1.45);
+  backdrop-filter: blur(18px) saturate(1.45);
+}
+
+.topbar-tab.active,
+.nav-tab:hover,
+.nav-project-btn:hover,
+.lb-sidebar-item:hover,
+.lb-sidebar-item.active,
+.settings-nav-item:hover,
+.settings-nav-item.active,
+.spotlight-item:hover,
+.spotlight-item.active,
+.tree-item:hover,
+.tree-item.active {
+  background: color-mix(in srgb, var(--glass-surface-strong) 72%, var(--accent-bg));
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+.nav-project-btn.active {
+  border-left-color: color-mix(in srgb, var(--proj-color, var(--accent)) 76%, var(--accent));
+}
+
+input[type="text"],
+input[type="number"],
+input[type="search"],
+select,
+textarea,
+.history-search-row input,
+.history-filter select,
+.history-filter input,
+.lb-sidebar-head select,
+.lb-sidebar-search input,
+.lb-editor-title,
+.lb-editor-body,
+.lb-editor-type-select,
+.lb-editor-campaign,
+.custom-log-input,
+.metrics-row input,
+.metrics-row select,
+.metrics-glob-input,
+.metrics-copy-cluster,
+.metrics-copy-jobid,
+.settings-section input[type="number"],
+.settings-section input[type="text"],
+.settings-section select,
+.cluster-edit-card .ce-field input,
+.gpu-alloc-input,
+.adv-field input[type="number"],
+.adv-field input[type="text"],
+.adv-field select,
+.wds-size-field input,
+.new-project-popover .npp-row input[type="text"] {
+  background: color-mix(in srgb, var(--glass-surface-strong) 70%, transparent);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 1px 2px rgba(31,45,71,0.04);
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  backdrop-filter: blur(14px) saturate(1.25);
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+.history-search-row input:focus,
+.history-filter select:focus,
+.history-filter input:focus,
+.custom-log-input:focus,
+.metrics-row input:focus,
+.metrics-glob-input:focus,
+.settings-section input[type="number"]:focus,
+.settings-section input[type="text"]:focus,
+.settings-section select:focus,
+.cluster-edit-card .ce-field input:focus,
+.gpu-alloc-input:focus,
+.adv-field input:focus,
+.adv-field select:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--glass-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), inset 0 1px 0 var(--glass-highlight);
+}
+
+thead th,
+.proj-compact-table th,
+.gpu-table th,
+.avail-table th,
+.adv-table th,
+.run-jobs-table th {
+  background: color-mix(in srgb, var(--glass-surface-soft) 72%, transparent);
+  border-color: var(--glass-border);
+}
+
+tbody tr:hover,
+.hist-compact:hover td,
+.proj-compact-table tr:hover td,
+.gpu-alloc-table tr:hover td,
+.avail-table tr:hover td,
+.adv-table tr:hover td {
+  background: color-mix(in srgb, var(--glass-surface-strong) 50%, transparent);
+}
+
+.group-head-row td {
+  background: color-mix(in srgb, var(--row-tint, var(--group-bg)) 72%, var(--glass-surface-soft));
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 65%, transparent);
+}
+
+tr.group-bg-0 td,
+tr.group-bg-1 td,
+tr.group-bg-2 td,
+tr.group-bg-3 td {
+  background-color: color-mix(in srgb, var(--glass-surface-soft) 72%, transparent);
+}
+
+.state-chip,
+.badge,
+.source-pill,
+.mount-badge,
+.partition-chip,
+.quota-pill,
+.freshness-badge,
+.dep-badge,
+.backup-badge,
+.run-name-badge,
+.entry-ref,
+.anchor-ref,
+.run-ref,
+.proj-cluster-tag,
+.hist-state-btn,
+.lb-campaign-chip,
+.theme-option,
+.topbar-tab,
+.spotlight-kbd {
+  border-radius: 999px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 58%, transparent);
+}
+
+.run-name-badge:hover,
+.partition-chip:hover,
+.quota-pill:hover {
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--accent) 8%, transparent), inset 0 1px 0 var(--glass-highlight);
+}
+
+.status-indicator,
+.dot,
+.project-color-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent), 0 0 18px color-mix(in srgb, currentColor 26%, transparent);
+}
+
+.modal-overlay,
+.stats-overlay,
+.settings-overlay,
+.run-overlay,
+.avail-overlay,
+.advisor-overlay,
+.ub-overlay,
+.spotlight-overlay {
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(10px) saturate(1.2);
+}
+
+.content-body,
+.explorer-content,
+.ide-raw,
+.jsonl-body,
+.logbook-view.lb-present-mode,
+.logbook-view.lb-present-mode .lb-main {
+  background: color-mix(in srgb, var(--glass-surface-soft) 54%, transparent);
+}
+
+.topbar-logo {
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 4px 14px rgba(31,45,71,0.12);
+}
+
+.run-name-badge {
+  border-radius: 7px;
+}
+
+.run-modal {
+  background: color-mix(in srgb, var(--glass-surface-strong) 72%, transparent);
+  background-image: var(--liquid-grad);
+}
+
+.run-head,
+.run-tabs,
+.run-body,
+.run-section-head,
+.run-section-body,
+.run-empty-state,
+.run-notes-block,
+.run-notes-wrap,
+.run-params-grid,
+.run-jobs-table,
+.settings-layout,
+.modal-head-actions,
+.spotlight-input-wrap {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+.run-tabs {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+.run-tab-btn,
+.run-mark-btn,
+.run-params-chip,
+.run-hash-chip,
+.run-params-copy,
+.run-notes-textarea,
+.run-section,
+.run-timing,
+.run-resource-bar,
+.run-params,
+.run-plot-card,
+.run-section-body pre,
+.run-section-body .env-table,
+.run-notes-saved,
+.run-empty-state {
+  background: var(--glass-surface-soft);
+  background-image: var(--liquid-grad);
+  border-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  -webkit-backdrop-filter: blur(16px) saturate(1.35);
+  backdrop-filter: blur(16px) saturate(1.35);
+}
+
+.run-tab-btn.active,
+.run-mark-btn.active {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 24%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 12%, var(--glass-surface-soft))) !important;
+  color: var(--accent) !important;
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--glass-border)) !important;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 16%, transparent), inset 0 1px 0 var(--glass-highlight);
+}
+
+.run-notes-textarea {
+  min-height: 44px;
+}
+
+main,
+.clusters-page,
+.clusters-section,
+.history-controls,
+.project-detail-head,
+.proj-main,
+.lb-main,
+.settings-content,
+.advisor-results,
+.avail-body,
+.ub-body {
+  background: transparent !important;
+  background-image: none !important;
+  border-color: transparent;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.run-tabs {
+  align-items: flex-end;
+  gap: 0;
+  padding: 12px 0 0;
+  border-bottom: 1px solid var(--glass-border);
+  background: transparent !important;
+}
+
+.run-tab-btn {
+  position: relative;
+  margin: 0 2px -1px 0;
+  padding: 9px 16px 10px;
+  border: 1px solid transparent;
+  border-bottom-color: transparent;
+  border-radius: 11px 11px 0 0;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.run-tab-btn:hover {
+  background: color-mix(in srgb, var(--glass-surface-soft) 70%, var(--accent-bg));
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--glass-border));
+  border-bottom-color: var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  transform: none;
+}
+
+.run-tab-btn.active {
+  background: color-mix(in srgb, var(--accent) 10%, var(--glass-surface-strong)) !important;
+  background-image: var(--liquid-grad) !important;
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--glass-border)) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent) 10%, var(--glass-surface-strong)) !important;
+  color: var(--accent) !important;
+  box-shadow: 0 -1px 0 var(--glass-highlight), 0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
+  transform: none;
+}
+
+/* Classic appearance is the default; this neutralizes the optional glass layer. */
+:root:not([data-appearance="glass"]) body::before {
+  content: none;
+}
+
+:root:not([data-appearance="glass"]) .topbar {
+  background: var(--bg);
+  border-bottom-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .side-nav {
+  background: var(--bg);
+  border-right: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .lb-sidebar {
+  background: var(--bg);
+  border-right-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .explorer-topbar,
+:root:not([data-appearance="glass"]) .settings-modal-head {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .explorer-toolbar,
+:root:not([data-appearance="glass"]) .modal-head,
+:root:not([data-appearance="glass"]) .stats-head,
+:root:not([data-appearance="glass"]) .card-head,
+:root:not([data-appearance="glass"]) .custom-log-bar,
+:root:not([data-appearance="glass"]) .metrics-config-bar {
+  background: var(--surface2);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .content-bar {
+  background: var(--bg);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .card,
+:root:not([data-appearance="glass"]) .history-table-wrap,
+:root:not([data-appearance="glass"]) .proj-live-card,
+:root:not([data-appearance="glass"]) .proj-hist-card,
+:root:not([data-appearance="glass"]) .lb-map-graph,
+:root:not([data-appearance="glass"]) .lb-suggest-box,
+:root:not([data-appearance="glass"]) .new-project-popover,
+:root:not([data-appearance="glass"]) .cluster-tooltip,
+:root:not([data-appearance="glass"]) .jsonl-rec,
+:root:not([data-appearance="glass"]) .gpu-table,
+:root:not([data-appearance="glass"]) .md-table-wrap,
+:root:not([data-appearance="glass"]) .ppp-card,
+:root:not([data-appearance="glass"]) .wds-popup,
+:root:not([data-appearance="glass"]) .ppp-popup,
+:root:not([data-appearance="glass"]) .wds-info-popover,
+:root:not([data-appearance="glass"]) .wds-info-card,
+:root:not([data-appearance="glass"]) .cluster-edit-card {
+  background: var(--surface);
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .modal,
+:root:not([data-appearance="glass"]) .stats-modal,
+:root:not([data-appearance="glass"]) .settings-modal,
+:root:not([data-appearance="glass"]) .avail-modal,
+:root:not([data-appearance="glass"]) .advisor-modal,
+:root:not([data-appearance="glass"]) .ub-modal,
+:root:not([data-appearance="glass"]) .run-modal,
+:root:not([data-appearance="glass"]) .spotlight-modal {
+  background: var(--surface);
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .card {
+  border-radius: var(--radius);
+}
+
+:root:not([data-appearance="glass"]) .card:hover {
+  box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  transform: none;
+}
+
+:root:not([data-appearance="glass"]) .card.has-running {
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .stats-kv,
+:root:not([data-appearance="glass"]) .stats-chart-wrap,
+:root:not([data-appearance="glass"]) .mount-item,
+:root:not([data-appearance="glass"]) .team-gpu-card,
+:root:not([data-appearance="glass"]) .run-section,
+:root:not([data-appearance="glass"]) .run-params,
+:root:not([data-appearance="glass"]) .run-timing,
+:root:not([data-appearance="glass"]) .run-resource-bar,
+:root:not([data-appearance="glass"]) .run-plot-card {
+  background: var(--surface2);
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .btn,
+:root:not([data-appearance="glass"]) .icon-btn,
+:root:not([data-appearance="glass"]) .hist-pagination button,
+:root:not([data-appearance="glass"]) .explorer-toolbar-right button,
+:root:not([data-appearance="glass"]) .explorer-nav-btn,
+:root:not([data-appearance="glass"]) .explorer-close-btn,
+:root:not([data-appearance="glass"]) .jsonl-btn,
+:root:not([data-appearance="glass"]) .shortcut-edit-btn,
+:root:not([data-appearance="glass"]) .shortcut-reset-btn,
+:root:not([data-appearance="glass"]) .new-project-popover .npp-actions button {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .action-btn,
+:root:not([data-appearance="glass"]) .modal-head-actions .head-btn {
+  background: transparent;
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .theme-options,
+:root:not([data-appearance="glass"]) .lb-map-toggle,
+:root:not([data-appearance="glass"]) .lb-map-scope-controls {
+  background: var(--surface2);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .nav-tab.active {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border: none !important;
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .nav-project-btn.active {
+  background: var(--proj-color, var(--accent)) !important;
+  color: var(--text) !important;
+  border: none !important;
+  border-left: 3px solid var(--accent) !important;
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .run-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 10px;
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .run-tab-btn {
+  margin: 0;
+  padding: 7px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--muted);
+  transform: none;
+}
+
+:root:not([data-appearance="glass"]) .run-tab-btn:hover {
+  color: var(--text);
+  background: var(--surface2);
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+
+:root:not([data-appearance="glass"]) .run-tab-btn.active {
+  color: var(--text) !important;
+  background: var(--surface2) !important;
+  background-image: none !important;
+  border-color: var(--accent) !important;
+  box-shadow: none;
+  transform: none;
+}
+
+:root:not([data-appearance="glass"]) .run-head,
+:root:not([data-appearance="glass"]) .run-body,
+:root:not([data-appearance="glass"]) .settings-layout,
+:root:not([data-appearance="glass"]) .modal-head-actions,
+:root:not([data-appearance="glass"]) .spotlight-input-wrap {
+  background: transparent !important;
+  background-image: none !important;
+}
+
+:root:not([data-appearance="glass"]) .run-section-head {
+  background: var(--section-bg) !important;
+}
+
+:root:not([data-appearance="glass"]) .run-section-body,
+:root:not([data-appearance="glass"]) .run-section-body pre,
+:root:not([data-appearance="glass"]) .run-section-body .env-table,
+:root:not([data-appearance="glass"]) .run-notes-textarea,
+:root:not([data-appearance="glass"]) .run-mark-btn,
+:root:not([data-appearance="glass"]) .run-params-chip,
+:root:not([data-appearance="glass"]) .run-hash-chip,
+:root:not([data-appearance="glass"]) .run-params-copy,
+:root:not([data-appearance="glass"]) .run-empty-state {
+  background: var(--surface2);
+  background-image: none;
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) .state-chip,
+:root:not([data-appearance="glass"]) .badge,
+:root:not([data-appearance="glass"]) .source-pill,
+:root:not([data-appearance="glass"]) .mount-badge,
+:root:not([data-appearance="glass"]) .partition-chip,
+:root:not([data-appearance="glass"]) .quota-pill,
+:root:not([data-appearance="glass"]) .freshness-badge,
+:root:not([data-appearance="glass"]) .dep-badge,
+:root:not([data-appearance="glass"]) .backup-badge,
+:root:not([data-appearance="glass"]) .entry-ref,
+:root:not([data-appearance="glass"]) .anchor-ref,
+:root:not([data-appearance="glass"]) .run-ref,
+:root:not([data-appearance="glass"]) .proj-cluster-tag,
+:root:not([data-appearance="glass"]) .hist-state-btn,
+:root:not([data-appearance="glass"]) .lb-campaign-chip,
+:root:not([data-appearance="glass"]) .theme-option,
+:root:not([data-appearance="glass"]) .topbar-tab,
+:root:not([data-appearance="glass"]) .spotlight-kbd {
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .topbar-tab {
+  border-radius: 5px;
+}
+
+:root:not([data-appearance="glass"]) input[type="text"],
+:root:not([data-appearance="glass"]) input[type="number"],
+:root:not([data-appearance="glass"]) input[type="search"],
+:root:not([data-appearance="glass"]) select,
+:root:not([data-appearance="glass"]) textarea,
+:root:not([data-appearance="glass"]) .history-search-row input,
+:root:not([data-appearance="glass"]) .history-filter select,
+:root:not([data-appearance="glass"]) .history-filter input,
+:root:not([data-appearance="glass"]) .lb-sidebar-head select,
+:root:not([data-appearance="glass"]) .lb-sidebar-search input,
+:root:not([data-appearance="glass"]) .lb-editor-title,
+:root:not([data-appearance="glass"]) .lb-editor-body,
+:root:not([data-appearance="glass"]) .lb-editor-type-select,
+:root:not([data-appearance="glass"]) .lb-editor-campaign,
+:root:not([data-appearance="glass"]) .custom-log-input,
+:root:not([data-appearance="glass"]) .metrics-row input,
+:root:not([data-appearance="glass"]) .metrics-row select,
+:root:not([data-appearance="glass"]) .metrics-glob-input,
+:root:not([data-appearance="glass"]) .metrics-copy-cluster,
+:root:not([data-appearance="glass"]) .metrics-copy-jobid,
+:root:not([data-appearance="glass"]) .settings-section input[type="number"],
+:root:not([data-appearance="glass"]) .settings-section input[type="text"],
+:root:not([data-appearance="glass"]) .settings-section select,
+:root:not([data-appearance="glass"]) .cluster-edit-card .ce-field input,
+:root:not([data-appearance="glass"]) .gpu-alloc-input,
+:root:not([data-appearance="glass"]) .adv-field input[type="number"],
+:root:not([data-appearance="glass"]) .adv-field input[type="text"],
+:root:not([data-appearance="glass"]) .adv-field select,
+:root:not([data-appearance="glass"]) .wds-size-field input,
+:root:not([data-appearance="glass"]) .new-project-popover .npp-row input[type="text"] {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root:not([data-appearance="glass"]) thead th,
+:root:not([data-appearance="glass"]) .proj-compact-table th,
+:root:not([data-appearance="glass"]) .gpu-table th,
+:root:not([data-appearance="glass"]) .avail-table th,
+:root:not([data-appearance="glass"]) .adv-table th,
+:root:not([data-appearance="glass"]) .run-jobs-table th {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+:root:not([data-appearance="glass"]) .group-head-row td {
+  background: var(--row-tint, var(--group-bg));
+  border-color: var(--group-bd);
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) tr.group-bg-0 td { background-color: var(--group-bg-0); }
+:root:not([data-appearance="glass"]) tr.group-bg-1 td { background-color: var(--group-bg-1); }
+:root:not([data-appearance="glass"]) tr.group-bg-2 td { background-color: var(--group-bg-2); }
+:root:not([data-appearance="glass"]) tr.group-bg-3 td { background-color: var(--group-bg-3); }
+
+:root:not([data-appearance="glass"]) .content-body,
+:root:not([data-appearance="glass"]) .explorer-content,
+:root:not([data-appearance="glass"]) .ide-raw,
+:root:not([data-appearance="glass"]) .jsonl-body {
+  background: var(--code-bg);
+}
+
+:root:not([data-appearance="glass"]) .topbar-logo,
+:root:not([data-appearance="glass"]) .status-indicator,
+:root:not([data-appearance="glass"]) .dot,
+:root:not([data-appearance="glass"]) .project-color-dot {
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .run-name-badge {
+  border-radius: 7px;
+  box-shadow: none;
+}
+
+:root:not([data-appearance="glass"]) .modal-overlay,
+:root:not([data-appearance="glass"]) .stats-overlay,
+:root:not([data-appearance="glass"]) .settings-overlay,
+:root:not([data-appearance="glass"]) .run-overlay,
+:root:not([data-appearance="glass"]) .avail-overlay,
+:root:not([data-appearance="glass"]) .advisor-overlay,
+:root:not([data-appearance="glass"]) .ub-overlay,
+:root:not([data-appearance="glass"]) .spotlight-overlay {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Matte glass refinement for the optional Liquid Glass appearance. */
+:root[data-appearance="glass"] body {
+  background:
+    radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--accent) 8%, transparent) 0, transparent 34vw),
+    radial-gradient(circle at 82% 12%, rgba(255,255,255,0.34) 0, transparent 28vw),
+    linear-gradient(135deg, var(--bg), color-mix(in srgb, var(--accent) 4%, var(--bg)) 54%, var(--bg));
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body {
+  background:
+    radial-gradient(circle at 18% 8%, color-mix(in srgb, var(--accent) 14%, transparent) 0, transparent 34vw),
+    radial-gradient(circle at 82% 12%, rgba(255,255,255,0.05) 0, transparent 28vw),
+    linear-gradient(135deg, var(--bg), color-mix(in srgb, var(--accent) 5%, var(--bg)) 54%, var(--bg));
+}
+
+:root[data-appearance="glass"] body::before {
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.045) 0, rgba(255,255,255,0.045) 1px, transparent 1px, transparent 4px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, rgba(255,255,255,0.28)), transparent 46%);
+  opacity: 0.42;
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body::before {
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0, rgba(255,255,255,0.022) 1px, transparent 1px, transparent 4px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, rgba(255,255,255,0.06)), transparent 46%);
+  opacity: 0.48;
+}
+
+:root[data-appearance="glass"] .topbar,
+:root[data-appearance="glass"] .side-nav,
+:root[data-appearance="glass"] .lb-sidebar,
+:root[data-appearance="glass"] .settings-nav,
+:root[data-appearance="glass"] .tree-pane {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 3%, var(--glass-surface-soft)));
+  border-color: color-mix(in srgb, var(--accent) 10%, var(--glass-border));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.50), 0 3px 10px color-mix(in srgb, var(--accent) 4%, rgba(31,45,71,0.04));
+  -webkit-backdrop-filter: blur(30px) saturate(1.12);
+  backdrop-filter: blur(30px) saturate(1.12);
+}
+
+:root[data-appearance="glass"][data-theme="dark"] .topbar,
+:root[data-appearance="glass"][data-theme="dark"] .side-nav,
+:root[data-appearance="glass"][data-theme="dark"] .lb-sidebar,
+:root[data-appearance="glass"][data-theme="dark"] .settings-nav,
+:root[data-appearance="glass"][data-theme="dark"] .tree-pane {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 5%, var(--glass-surface-soft)));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 12px rgba(0,0,0,0.14);
+}
+
+:root[data-appearance="glass"] body::before {
+  background-image:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--accent) 14%, rgba(255,255,255,0.44)) 0 0.8px, transparent 1.25px),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.10) 0 1px, transparent 1px 10px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, rgba(255,255,255,0.32)), transparent 48%);
+  background-size: 14px 14px, 18px 18px, auto;
+  opacity: 0.72;
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body::before {
+  background-image:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,0.12)) 0 0.8px, transparent 1.25px),
+    repeating-linear-gradient(135deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 10px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, rgba(255,255,255,0.06)), transparent 48%);
+  background-size: 14px 14px, 18px 18px, auto;
+  opacity: 0.78;
+}
+
+:root[data-appearance="glass"] .topbar,
+:root[data-appearance="glass"] .side-nav,
+:root[data-appearance="glass"] .lb-sidebar,
+:root[data-appearance="glass"] .settings-nav,
+:root[data-appearance="glass"] .tree-pane {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,0.38) 0 0.7px, transparent 1.15px),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, rgba(255,255,255,0.10)) 0 1px, transparent 1px 12px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 3%, var(--glass-surface-soft)));
+  background-size: 13px 13px, 18px 18px, auto;
+}
+
+:root[data-appearance="glass"][data-theme="dark"] .topbar,
+:root[data-appearance="glass"][data-theme="dark"] .side-nav,
+:root[data-appearance="glass"][data-theme="dark"] .lb-sidebar,
+:root[data-appearance="glass"][data-theme="dark"] .settings-nav,
+:root[data-appearance="glass"][data-theme="dark"] .tree-pane {
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(255,255,255,0.10) 0 0.7px, transparent 1.15px),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.028)) 0 1px, transparent 1px 12px),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 5%, var(--glass-surface-soft)));
+  background-size: 13px 13px, 18px 18px, auto;
+}
+
+/* Smooth matte glass: no visible texture, just diffuse translucent depth. */
+:root[data-appearance="glass"] body {
+  background:
+    radial-gradient(ellipse at 14% 0%, color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.34)) 0, transparent 34vw),
+    radial-gradient(ellipse at 82% 12%, rgba(255,255,255,0.46) 0, transparent 32vw),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 3%, var(--bg)), var(--bg) 44%, color-mix(in srgb, var(--accent) 4%, var(--bg)));
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body {
+  background:
+    radial-gradient(ellipse at 14% 0%, color-mix(in srgb, var(--accent) 14%, transparent) 0, transparent 36vw),
+    radial-gradient(ellipse at 82% 12%, rgba(255,255,255,0.06) 0, transparent 32vw),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, var(--bg)), var(--bg) 44%, color-mix(in srgb, var(--accent) 5%, var(--bg)));
+}
+
+:root[data-appearance="glass"] body::before {
+  background:
+    radial-gradient(ellipse at 42% -10%, rgba(255,255,255,0.46), transparent 42vw),
+    linear-gradient(115deg, transparent 0 16%, color-mix(in srgb, var(--accent) 5%, rgba(255,255,255,0.22)) 32%, transparent 58%),
+    linear-gradient(180deg, rgba(255,255,255,0.30), transparent 54%);
+  background-size: auto;
+  opacity: 0.56;
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body::before {
+  background:
+    radial-gradient(ellipse at 42% -10%, rgba(255,255,255,0.08), transparent 42vw),
+    linear-gradient(115deg, transparent 0 16%, color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.05)) 32%, transparent 58%),
+    linear-gradient(180deg, rgba(255,255,255,0.05), transparent 54%);
+  background-size: auto;
+  opacity: 0.52;
+}
+
+:root[data-appearance="glass"] .topbar,
+:root[data-appearance="glass"] .side-nav,
+:root[data-appearance="glass"] .lb-sidebar,
+:root[data-appearance="glass"] .settings-nav,
+:root[data-appearance="glass"] .tree-pane {
+  background-image:
+    radial-gradient(ellipse at 22% 0%, rgba(255,255,255,0.54), transparent 68%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 3%, var(--glass-surface-soft)));
+  background-size: auto;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.56), 0 8px 24px color-mix(in srgb, var(--accent) 6%, rgba(31,45,71,0.05));
+}
+
+:root[data-appearance="glass"][data-theme="dark"] .topbar,
+:root[data-appearance="glass"][data-theme="dark"] .side-nav,
+:root[data-appearance="glass"][data-theme="dark"] .lb-sidebar,
+:root[data-appearance="glass"][data-theme="dark"] .settings-nav,
+:root[data-appearance="glass"][data-theme="dark"] .tree-pane {
+  background-image:
+    radial-gradient(ellipse at 22% 0%, rgba(255,255,255,0.08), transparent 68%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, var(--glass-surface-strong)), color-mix(in srgb, var(--accent) 5%, var(--glass-surface-soft)));
+  background-size: auto;
+}
+
+/* Reference-style matte glass: animated color blob + translucent noisy wash. */
+:root[data-appearance="glass"] body {
+  background: var(--bg);
+}
+
+:root[data-appearance="glass"] body::after {
+  content: '';
+  position: fixed;
+  left: max(-180px, -12vw);
+  top: max(-160px, -10vh);
+  width: min(1000px, 86vw);
+  height: min(1000px, 86vw);
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 36% 36%, color-mix(in srgb, var(--accent) 30%, transparent) 0 22%, transparent 54%),
+    radial-gradient(circle at 64% 62%, color-mix(in srgb, var(--surface) 54%, transparent) 0 18%, transparent 52%);
+  filter: blur(42px) saturate(1.04);
+  opacity: 0.16;
+  transform: rotate(-19deg);
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body::after {
+  opacity: 0.10;
+}
+
+:root[data-appearance="glass"] body::before {
+  background-color: var(--matte-glass-bg);
+  background-image: var(--matte-noise);
+  background-size: 300px 300px;
+  background-repeat: repeat;
+  opacity: 1;
+  -webkit-backdrop-filter: var(--matte-glass-filter);
+  backdrop-filter: var(--matte-glass-filter);
+}
+
+:root[data-appearance="glass"] .topbar,
+:root[data-appearance="glass"] .side-nav,
+:root[data-appearance="glass"] .lb-sidebar,
+:root[data-appearance="glass"] .settings-nav,
+:root[data-appearance="glass"] .tree-pane {
+  background-color: var(--matte-glass-bg);
+  background-image: var(--matte-noise);
+  background-size: 300px 300px;
+  background-repeat: repeat;
+  border-color: color-mix(in srgb, var(--accent) 8%, rgba(255,255,255,0.46));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), 0 3px 10px rgba(31,45,71,0.035);
+  -webkit-backdrop-filter: var(--matte-glass-filter);
+  backdrop-filter: var(--matte-glass-filter);
+}
+
+:root[data-appearance="glass"][data-theme="dark"] .topbar,
+:root[data-appearance="glass"][data-theme="dark"] .side-nav,
+:root[data-appearance="glass"][data-theme="dark"] .lb-sidebar,
+:root[data-appearance="glass"][data-theme="dark"] .settings-nav,
+:root[data-appearance="glass"][data-theme="dark"] .tree-pane {
+  border-color: rgba(255,255,255,0.10);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 4px 12px rgba(0,0,0,0.14);
+}
+
+/* Final matte-glass pass: procedural fine grain + blurred color field. */
+:root[data-appearance="glass"] body {
+  background:
+    radial-gradient(ellipse at 12% -8%, color-mix(in srgb, var(--accent) 7%, var(--bg)) 0, transparent 36vw),
+    radial-gradient(ellipse at 94% 6%, color-mix(in srgb, var(--surface) 45%, transparent) 0, transparent 32vw),
+    var(--bg);
+}
+
+:root[data-appearance="glass"] body::after {
+  left: -18vw;
+  top: -24vh;
+  width: 920px;
+  height: 920px;
+  background:
+    radial-gradient(ellipse at 38% 38%, color-mix(in srgb, var(--accent) 28%, transparent) 0 16%, transparent 52%),
+    radial-gradient(ellipse at 62% 58%, color-mix(in srgb, var(--surface) 52%, transparent) 0 15%, transparent 50%);
+  filter: blur(86px) saturate(1.04);
+  opacity: 0.14;
+}
+
+:root[data-appearance="glass"][data-theme="dark"] body::after {
+  opacity: 0.08;
+}
+
+:root[data-appearance="glass"] body::before {
+  background-color: var(--matte-glass-bg);
+  background-image: var(--matte-noise);
+  background-size: 512px 512px;
+  background-repeat: repeat;
+  opacity: 1;
+  mix-blend-mode: normal;
+  -webkit-backdrop-filter: var(--matte-glass-filter);
+  backdrop-filter: var(--matte-glass-filter);
+}
+
+:root[data-appearance="glass"] .topbar,
+:root[data-appearance="glass"] .side-nav,
+:root[data-appearance="glass"] .lb-sidebar,
+:root[data-appearance="glass"] .settings-nav,
+:root[data-appearance="glass"] .tree-pane {
+  background-color: var(--matte-glass-bg);
+  background-image:
+    var(--matte-noise),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 4%, rgba(255,255,255,0.30)), rgba(255,255,255,0.06));
+  background-size: 512px 512px, auto;
+  background-repeat: repeat, no-repeat;
+  border-color: color-mix(in srgb, var(--accent) 7%, rgba(255,255,255,0.42));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.32), 0 8px 22px rgba(31,45,71,0.045);
+  -webkit-backdrop-filter: var(--matte-glass-filter);
+  backdrop-filter: var(--matte-glass-filter);
+}
+
+/* Light Liquid Glass must stay light: no full-page fog/noise/dark wash. */
+:root[data-appearance="glass"]:not([data-theme="dark"]) body {
+  background: var(--bg);
+}
+
+:root[data-appearance="glass"]:not([data-theme="dark"]) body::before {
+  background: transparent;
+  background-image: none;
+  opacity: 0;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root[data-appearance="glass"]:not([data-theme="dark"]) body::after {
+  background: radial-gradient(ellipse at 24% 0%, color-mix(in srgb, var(--accent) 12%, transparent) 0, transparent 42vw);
+  filter: blur(80px) saturate(1);
+  opacity: 0.08;
+}
+
+:root[data-appearance="glass"]:not([data-theme="dark"]) .topbar,
+:root[data-appearance="glass"]:not([data-theme="dark"]) .side-nav,
+:root[data-appearance="glass"]:not([data-theme="dark"]) .lb-sidebar,
+:root[data-appearance="glass"]:not([data-theme="dark"]) .settings-nav,
+:root[data-appearance="glass"]:not([data-theme="dark"]) .tree-pane {
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.58), rgba(255,255,255,0.18));
+  border-color: rgba(255,255,255,0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.58), 0 2px 8px rgba(31,45,71,0.028);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.card.has-running {
+  border-radius: 9px;
 }

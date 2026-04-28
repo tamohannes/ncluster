@@ -5,6 +5,10 @@ function getThemePreference() {
   return localStorage.getItem('clausius.theme') || 'system';
 }
 
+function getAppearancePreference() {
+  return localStorage.getItem('clausius.appearance') || 'classic';
+}
+
 function resolveTheme(pref) {
   if (pref === 'dark') return 'dark';
   if (pref === 'light') return 'light';
@@ -29,14 +33,32 @@ function _updateFavicon(resolved) {
 }
 
 function updateThemeUI(pref) {
-  document.querySelectorAll('.theme-option').forEach(btn => {
+  document.querySelectorAll('.theme-option[data-theme]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.theme === pref);
+  });
+}
+
+function applyAppearance(pref) {
+  const mode = pref || getAppearancePreference();
+  document.documentElement.setAttribute('data-appearance', mode === 'glass' ? 'glass' : 'classic');
+  updateAppearanceUI(mode);
+}
+
+function updateAppearanceUI(pref) {
+  document.querySelectorAll('.appearance-option').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.appearance === pref);
   });
 }
 
 function setTheme(mode) {
   localStorage.setItem('clausius.theme', mode);
   applyTheme(mode);
+}
+
+function setAppearance(mode) {
+  const pref = mode === 'glass' ? 'glass' : 'classic';
+  localStorage.setItem('clausius.appearance', pref);
+  applyAppearance(pref);
 }
 
 function cycleTheme() {
@@ -51,6 +73,7 @@ _themeMediaQuery.addEventListener('change', () => {
 });
 
 applyTheme();
+applyAppearance();
 
 // ── Keyboard shortcuts config ──
 const SHORTCUT_DEFAULTS = {

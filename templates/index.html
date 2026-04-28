@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
 <script>
-(function(){var t=localStorage.getItem('clausius.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
+(function(){var t=localStorage.getItem('clausius.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d);document.documentElement.setAttribute('data-appearance',localStorage.getItem('clausius.appearance')||'classic')})();
 </script>
 </head>
 <body>
@@ -461,12 +461,23 @@
           </details>
 
           <details class="set-group">
-            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Theme</span></summary>
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Appearance</span></summary>
             <div class="set-group-body">
-              <div class="theme-options" id="theme-options">
-                <button class="theme-option" data-theme="system" onclick="setTheme('system')"><span class="theme-option-icon">&#9684;</span>System</button>
-                <button class="theme-option" data-theme="light" onclick="setTheme('light')"><span class="theme-option-icon">&#9728;</span>Light</button>
-                <button class="theme-option" data-theme="dark" onclick="setTheme('dark')"><span class="theme-option-icon">&#9790;</span>Dark</button>
+              <div class="set-field">
+                <label>Theme</label>
+                <div class="theme-options" id="theme-options">
+                  <button class="theme-option" data-theme="system" onclick="setTheme('system')"><span class="theme-option-icon">&#9684;</span>System</button>
+                  <button class="theme-option" data-theme="light" onclick="setTheme('light')"><span class="theme-option-icon">&#9728;</span>Light</button>
+                  <button class="theme-option" data-theme="dark" onclick="setTheme('dark')"><span class="theme-option-icon">&#9790;</span>Dark</button>
+                </div>
+              </div>
+              <div class="set-field">
+                <label>Style</label>
+              <div class="theme-options" id="appearance-options">
+                <button class="theme-option appearance-option" data-appearance="classic" onclick="setAppearance('classic')"><span class="theme-option-icon">&#9633;</span>Classic</button>
+                <button class="theme-option appearance-option" data-appearance="glass" onclick="setAppearance('glass')"><span class="theme-option-icon">&#10022;</span>Liquid Glass</button>
+              </div>
+                <div class="set-help">Classic is the original Clausius UI. Liquid Glass adds the frosted macOS-style surfaces.</div>
               </div>
             </div>
           </details>
