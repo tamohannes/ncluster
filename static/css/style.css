@@ -1054,6 +1054,74 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   max-height: 300px; overflow-y: auto;
 }
 .run-section-body.hidden { display: none; }
+.run-plot-builder {
+  max-height: none;
+}
+.run-plot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.run-plot-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface2);
+}
+.run-plot-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.run-plot-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  max-height: 94px;
+  overflow-y: auto;
+}
+.run-plot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+}
+.run-plot-chip input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.run-plot-muted {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.run-plot-muted code {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.run-plot-canvas {
+  height: 260px;
+}
+@media (max-width: 900px) {
+  .run-plot-grid { grid-template-columns: 1fr; }
+}
 .run-section-body pre {
   margin: 0; font-family: var(--mono); font-size: 11px;
   white-space: pre-wrap; word-break: break-all; line-height: 1.5;
