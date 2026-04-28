@@ -287,9 +287,9 @@ function onLogbookSearch() {
 }
 
 function filterLogbookType(btn) {
-  document.querySelectorAll('.lb-type-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  _lbTypeFilter = btn.dataset.type || '';
+  _lbTypeFilter = (btn && btn.dataset && btn.dataset.type) || '';
+  _lbCampaignFilter = '';
+  _loadCampaignChips();
   const q = (document.getElementById('lb-search') || {}).value || '';
   if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
 }
@@ -300,21 +300,46 @@ async function _loadCampaignChips() {
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/campaigns`);
     const data = await res.json();
-    if (!Array.isArray(data) || !data.length) { el.innerHTML = ''; return; }
     const projColor = _getProjectColor(_lbProject) || '';
-    el.innerHTML = data.map(c => {
-      const active = _lbCampaignFilter === c.name ? ' active' : '';
-      const tint = projColor ? campaignShade(projColor, c.name) : '';
-      const style = tint ? `style="--chip-tint:${tint}"` : '';
-      return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name} <span class="lb-campaign-chip-count">${c.count}</span></button>`;
-    }).join('');
+    const allActive = !_lbCampaignFilter && !_lbTypeFilter ? ' active' : '';
+    let html = `<button class="lb-campaign-chip${allActive}" data-campaign="" onclick="toggleCampaignFilter(this)">all</button>`;
+    if (Array.isArray(data) && data.length) {
+      html += data.map(c => {
+        const active = _lbCampaignFilter === c.name ? ' active' : '';
+        const tint = projColor ? campaignShade(projColor, c.name) : '';
+        const style = tint ? `style="--chip-tint:${tint}"` : '';
+        return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name} <span class="lb-campaign-chip-count">${c.count}</span></button>`;
+      }).join('');
+    }
+    el.innerHTML = html;
   } catch { el.innerHTML = ''; }
 }
 
 function toggleCampaignFilter(btn) {
   const camp = btn.dataset.campaign || '';
-  _lbCampaignFilter = _lbCampaignFilter === camp ? '' : camp;
-  document.querySelectorAll('.lb-campaign-chip').forEach(b => b.classList.toggle('active', b.dataset.campaign === _lbCampaignFilter));
+  if (!camp) {
+    _lbCampaignFilter = '';
+    _lbTypeFilter = '';
+  } else {
+    _lbCampaignFilter = _lbCampaignFilter === camp ? '' : camp;
+  }
+  document.querySelectorAll('.lb-campaign-chip:not(.lb-type-chip)').forEach(b => {
+    const isAll = !b.dataset.campaign;
+    b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
+  });
+  const q = (document.getElementById('lb-search') || {}).value || '';
+  if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
+}
+
+function _toggleTypeChip(btn) {
+  const type = btn.dataset.type || '';
+  _lbTypeFilter = _lbTypeFilter === type ? '' : type;
+  if (_lbTypeFilter) _lbCampaignFilter = '';
+  document.querySelectorAll('.lb-campaign-chip:not(.lb-type-chip)').forEach(b => {
+    const isAll = !b.dataset.campaign;
+    b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
+  });
+  document.querySelectorAll('.lb-type-chip').forEach(b => b.classList.toggle('active', b.dataset.type === _lbTypeFilter));
   const q = (document.getElementById('lb-search') || {}).value || '';
   if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
 }
@@ -1171,10 +1196,9 @@ function _syncMapBtnActive(active) {
   const mapBtn = document.querySelector('.lb-map-btn[data-type="map"]');
   if (mapBtn) mapBtn.classList.toggle('active', active);
   if (active) {
-    document.querySelectorAll('.lb-type-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.lb-campaign-chip').forEach(b => b.classList.remove('active'));
   } else {
-    const allBtn = document.querySelector('.lb-type-btn[data-type=""]');
-    if (allBtn && !document.querySelector('.lb-type-btn.active')) allBtn.classList.add('active');
+    _loadCampaignChips();
   }
 }
 
@@ -1308,7 +1332,11 @@ function toggleLogbookMap() {
     const top = _lbHistory[_lbHistory.length - 1];
     if (top && top.type === 'map') _lbHistory.pop();
     _showMainEmpty();
-    filterLogbookType(document.querySelector('.lb-type-btn[data-type=""]'));
+    _lbTypeFilter = '';
+    _lbCampaignFilter = '';
+    _loadCampaignChips();
+    const _q = (document.getElementById('lb-search') || {}).value || '';
+    if (_lbProject) _loadEntries(_lbProject, _q.trim() || undefined);
   }
 }
 
