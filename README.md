@@ -164,9 +164,64 @@ All runtime configuration lives in the SQLite database (`data/history.db`). The 
 - Runs appear on the board in `SUBMITTING` state immediately, before any Slurm job exists
 - Lifecycle: `SUBMITTING` -> `PENDING` (Slurm accepts) -> `RUNNING`/`COMPLETED`/`FAILED`
 - Submit command, git commit, hostname, and working directory captured automatically
+- Aim-style manual tracking: import `Run`, attach to an existing SDK run, store static metadata, and track metric time series
 - Ingest endpoint: `POST /api/sdk/events` with optional bearer-token auth (`sdk_ingest_token` setting)
 - If submission fails, the run is auto-marked `FAILED` with "submission interrupted"
-- Run popup shows full provenance: exact command, git SHA, launcher hostname, working directory
+- Run popup shows provenance, SDK metadata, latest metric values, metric charts, and recent metric points
+
+Manual metric tracking from code:
+
+```python
+from nemo_skills.clausius_sdk import Run
+
+run = Run(
+    run_name="hle_debug_manual",
+    cluster="eos",
+    metadata={
+        "model": "nvidia/Nemotron-Super-49B-v1",
+        "benchmark": "gpqa_diamond",
+        "prompt_config": "generic/math",
+    },
+)
+
+run.track("loss", 0.42, step=1)
+run.track("accuracy", 0.84, step=1, context={"split": "eval"})
+run.set_metadata({"tokens_to_generate": 32768, "num_chunks": 16})
+run.close()
+```
+
+Attach to an existing run created by the NeMo-Skills hooks when you already know its `run_uuid`:
+
+```python
+from nemo_skills.clausius_sdk import Run
+
+run = Run(run_uuid="abc123...", connect=True)
+run.set_metadata({"judge_model": "gpt-oss-120b"})
+run.track("judge_accuracy", 0.71, step=10)
+run.close()
+```
+
+Instruction for agents modifying NeMo-Skills:
+
+```text
+Instrument this NeMo-Skills code with Clausius SDK tracking.
+
+Use `from nemo_skills.clausius_sdk import Run`. If an active Clausius SDK
+run UUID is available, attach with `Run(run_uuid=<uuid>, connect=True)`;
+otherwise create a new `Run(run_name=<expname>, cluster=<cluster>)`.
+
+Store static experiment metadata with `run.set_metadata({...})`: model,
+benchmark/dataset, split, prompt config/template, server type, GPUs/nodes,
+num_samples, num_chunks, tokens_to_generate, judge model, sandbox settings,
+git/config identifiers, and any run flags that should be searchable later.
+
+Track scalar metrics with `run.track(name, value, step=step, context={...})`.
+Use stable metric names such as `accuracy`, `loss`, `pass_at_1`,
+`num_generated_tokens`, `empty_generation_rate`, `judge_accuracy`, and
+`samples_completed`. Put dimensions like benchmark, split, seed, chunk,
+task, or judge in `context`, not in the metric name. Do not log secrets,
+tokens, API keys, raw prompts, or huge payloads. Call `run.close()` when done.
+```
 
 ### Performance
 - On-demand architecture: clusters are only contacted when a user or agent requests data
