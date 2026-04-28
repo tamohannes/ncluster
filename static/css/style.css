@@ -883,9 +883,12 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .run-overlay.open { display: flex; }
 .run-modal {
+  position: fixed; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-  width: min(860px, 94vw); max-height: 85vh;
+  width: min(1180px, calc(100vw - 32px));
+  height: min(900px, calc(100vh - 32px));
   display: flex; flex-direction: column;
   overflow: hidden;
 }
@@ -904,13 +907,52 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   flex: 1; min-width: 0;
 }
 .run-mark-slot { flex-shrink: 0; }
+.run-hash-chip {
+  display: inline-flex; align-items: center;
+  margin-left: 8px; padding: 5px 9px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface2); color: var(--muted);
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.02em;
+}
 .run-subtitle {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   margin-top: 4px;
 }
 .run-body {
-  overflow-y: auto; padding: 16px 24px 24px;
-  flex: 1;
+  overflow-y: auto; padding: 0 24px 24px;
+  flex: 1; min-height: 0;
+}
+.run-tabs {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 6px;
+  padding: 12px 0 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.run-tab-btn {
+  appearance: none; border: 1px solid transparent;
+  background: transparent; color: var(--muted);
+  border-radius: 8px; padding: 7px 12px;
+  font-family: var(--mono); font-size: 11px; font-weight: 700;
+  cursor: pointer; transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+.run-tab-btn:hover {
+  color: var(--text); background: var(--surface2); border-color: var(--border);
+}
+.run-tab-btn.active {
+  color: var(--text); background: var(--surface2); border-color: var(--accent);
+}
+.run-tab-panel { display: none; }
+.run-tab-panel.active { display: block; }
+.run-empty-state {
+  padding: 18px 14px;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
 }
 .run-timing {
   display: flex; gap: 14px; flex-wrap: wrap;

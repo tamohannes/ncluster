@@ -29,6 +29,7 @@ class EventType(str, Enum):
     JOB_SUBMITTED = "job_submitted"
     JOB_STATE = "job_state"
     METRIC_LOGGED = "metric_logged"
+    METADATA_LOGGED = "metadata_logged"
     ARTIFACT_LOGGED = "artifact_logged"
     RUN_FINISHED = "run_finished"
     RUN_FAILED = "run_failed"

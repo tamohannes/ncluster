@@ -43,7 +43,7 @@ _EVAL_PREFIX_RE = re.compile(r'^(eval-[a-z0-9_]+)', re.I)
 _stdout_captured = set()
 _run_meta_fetched = {}          # (cluster, job_id) -> timestamp
 _RUN_META_TTL_SEC = 300
-_RUN_NAME_MERGE_GAP_SEC = 300
+_RUN_NAME_MERGE_GAP_SEC = 600
 _STALE_PINNED_ACTIVE_STATES = {"RUNNING", "COMPLETING", "PENDING"}
 _SACCT_BATCH_SIZE = 200
 

@@ -1,7 +1,28 @@
 let _runOverlayOpen = false;
 let _runOverlayCancelJobIds = null;
+let _runMetricChartInstances = [];
 
 async function openRunInfo(cluster, rootJobId, runName, cancelKey = '') {
+  return _openRunInfoFromUrl(
+    cluster,
+    rootJobId,
+    runName,
+    cancelKey,
+    `/api/run_info/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`,
+  );
+}
+
+async function openRunInfoByHash(cluster, runHash, runName = '') {
+  return _openRunInfoFromUrl(
+    cluster,
+    runHash,
+    runName || `Run ${runHash}`,
+    '',
+    `/api/run_info_by_hash/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`,
+  );
+}
+
+async function _openRunInfoFromUrl(cluster, runRef, runName, cancelKey, url) {
   const overlay = document.getElementById('run-overlay');
   const title = document.getElementById('run-title');
   const subtitle = document.getElementById('run-subtitle');
@@ -10,7 +31,7 @@ async function openRunInfo(cluster, rootJobId, runName, cancelKey = '') {
   if (markSlot) markSlot.innerHTML = '';
 
   title.textContent = runName || 'Run Info';
-  subtitle.textContent = `${cluster} · job ${rootJobId}`;
+  subtitle.textContent = `${cluster} · ${runRef}`;
   body.innerHTML = '<div class="log-loading">Loading run info…</div>';
   overlay.classList.add('open');
   _runOverlayOpen = true;
@@ -19,13 +40,14 @@ async function openRunInfo(cluster, rootJobId, runName, cancelKey = '') {
     : null;
 
   try {
-    const res = await fetch(`/api/run_info/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
+    const res = await fetch(url);
     const data = await res.json();
     if (data.status !== 'ok' || !data.run) {
       if (markSlot) markSlot.innerHTML = '';
       body.innerHTML = `<div class="err-msg">Could not load run info: ${data.error || 'unknown error'}</div>`;
       return;
     }
+    subtitle.textContent = `${cluster} · root ${data.run.root_job_id || runRef}`;
     _renderRunBody(data.run, cluster);
   } catch (e) {
     if (markSlot) markSlot.innerHTML = '';
@@ -39,6 +61,7 @@ function closeRunInfo(event) {
 }
 
 function closeRunInfoDirect() {
+  _destroyRunMetricCharts();
   const markSlot = document.getElementById('run-mark-slot');
   if (markSlot) markSlot.innerHTML = '';
   document.getElementById('run-overlay').classList.remove('open');
@@ -49,6 +72,7 @@ function closeRunInfoDirect() {
 let _runNoteTimer = null;
 
 function _renderRunBody(run, cluster) {
+  _destroyRunMetricCharts();
   const body = document.getElementById('run-body');
   const jobs = run.jobs || [];
 
@@ -67,16 +91,22 @@ function _renderRunBody(run, cluster) {
   if (markSlot) {
     const dc = escAttr(cluster);
     const dr = escAttr(String(run.root_job_id));
+    const hashChip = run.run_hash
+      ? `<span class="run-hash-chip" title="Run hash">run hash: ${_escHtml(run.run_hash)}</span>`
+      : '';
     markSlot.innerHTML = `<button type="button" class="run-mark-btn${starred ? ' active' : ''}" id="run-mark-btn"
             data-run-cluster="${dc}" data-run-root="${dr}"
             onclick="_toggleRunMark(${runId})" title="${starred ? 'Unmark this run' : 'Mark this run'}">
       ${starred ? 'Marked' : 'Mark'}
-    </button>`;
+    </button>${hashChip}`;
   }
 
-  let html = '';
+  let overviewHtml = '';
+  let metadataHtml = '';
+  let metricsHtml = '';
+  let jobsHtml = '';
 
-  html += `<div class="run-notes-block">
+  overviewHtml += `<div class="run-notes-block">
     <div class="run-notes-wrap">
       <textarea class="run-notes-textarea" id="run-notes-textarea"
                 placeholder="Add notes about this run…"
@@ -89,7 +119,7 @@ function _renderRunBody(run, cluster) {
   const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
   const _durationRing = _runDurationRing(earliest, latest);
 
-  html += `<div class="run-timing">
+  overviewHtml += `<div class="run-timing">
     <div class="run-timing-item">
       <span class="run-timing-label">Started</span>
       <span class="run-timing-value">${_fmtRunTime(earliest)}</span>
@@ -140,13 +170,15 @@ function _renderRunBody(run, cluster) {
     ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`
     : '';
 
-  html += `<div class="run-resource-bar">
+  overviewHtml += `<div class="run-resource-bar">
     <span class="job-count-text">${_jobStates}</span>
     ${_cancelRunBtn}
   </div>`;
 
   const paramsHtml = _renderRunParams(run.params, run.root_job_id);
-  if (paramsHtml) html += paramsHtml;
+  metadataHtml += '<div id="run-sdk-metadata"></div>';
+  if (paramsHtml) metadataHtml += paramsHtml;
+  metricsHtml += '<div class="run-empty-state" id="run-metrics-empty">No tracked metrics yet.</div><div id="run-sdk-metrics"></div><div id="run-custom-metrics"></div>';
 
   if (run.submit_command) {
     const cmdId = 'submit-cmd-pre-' + (run.root_job_id || '0');
@@ -154,40 +186,40 @@ function _renderRunBody(run, cluster) {
       <pre id="${cmdId}" style="white-space:pre-wrap;word-break:break-all;padding-right:36px">${_escHtml(run.submit_command)}</pre>
       <button onclick="navigator.clipboard.writeText(document.getElementById('${cmdId}').textContent).then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)})" style="position:absolute;top:6px;right:6px;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;line-height:1">⧉</button>
     </div>`;
-    html += _renderToggleSection('submit-cmd', 'Submit Command', cmdContent, false);
+    metadataHtml += _renderToggleSection('submit-cmd', 'Submit Command', cmdContent, false);
   }
 
   if (run.batch_script) {
-    html += _renderToggleSection('batch-script', 'Batch Script', `<pre>${_escHtml(run.batch_script)}</pre>`, true);
+    metadataHtml += _renderToggleSection('batch-script', 'Batch Script', `<pre>${_escHtml(run.batch_script)}</pre>`, true);
   }
 
   if (run.scontrol_raw) {
-    html += _renderToggleSection('scontrol', 'Slurm Configuration', `<pre>${_escHtml(run.scontrol_raw)}</pre>`, true);
+    metadataHtml += _renderToggleSection('scontrol', 'Slurm Configuration', `<pre>${_escHtml(run.scontrol_raw)}</pre>`, true);
   }
 
   if (run.env_vars) {
     const envHtml = _renderEnvTable(run.env_vars);
-    html += _renderToggleSection('env-vars', 'Environment Variables', envHtml, true);
+    metadataHtml += _renderToggleSection('env-vars', 'Environment Variables', envHtml, true);
   }
 
   if (run.conda_state) {
-    html += _renderToggleSection('conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true);
+    metadataHtml += _renderToggleSection('conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true);
   }
 
   if (!run.submit_command && !run.batch_script && !run.scontrol_raw && !run.env_vars && !run.conda_state) {
-    html += '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:12px 0">';
-    html += 'No metadata captured yet. ';
-    html += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';
-    html += '</div>';
+    metadataHtml += '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:12px 0">';
+    metadataHtml += 'No metadata captured yet. ';
+    metadataHtml += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';
+    metadataHtml += '</div>';
   }
 
   if (jobs.length > 0) {
-    html += `<div class="run-section" style="margin-top:14px">
+    jobsHtml += `<div class="run-section" style="margin-top:14px">
       <div class="run-section-head" onclick="toggleRunSection('run-jobs-sec')">
         <span>Jobs in this run (${jobs.length})</span>
-        <span class="run-section-chevron collapsed" id="run-jobs-sec-chevron">▼</span>
+        <span class="run-section-chevron" id="run-jobs-sec-chevron">▼</span>
       </div>
-      <div class="run-section-body hidden" id="run-jobs-sec">
+      <div class="run-section-body" id="run-jobs-sec">
         <table class="run-jobs-table">
           <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Nodes</th></tr></thead>
           <tbody>${(() => {
@@ -225,11 +257,29 @@ function _renderRunBody(run, cluster) {
         </table>
       </div>
     </div>`;
+  } else {
+    jobsHtml += '<div class="run-empty-state">No jobs are attached to this run yet.</div>';
   }
 
-  html += '<div id="run-custom-metrics"></div>';
+  const tabs = [
+    ['overview', 'Overview'],
+    ['metrics', 'Metrics'],
+    ['metadata', 'Metadata'],
+    ['jobs', `Jobs${jobs.length ? ` (${jobs.length})` : ''}`],
+  ];
+  const tabButtons = tabs.map(([id, label], idx) => `
+    <button type="button" class="run-tab-btn${idx === 0 ? ' active' : ''}"
+            id="run-tab-btn-${id}" onclick="switchRunTab('${id}')">${label}</button>`).join('');
+  const html = `<div class="run-tabs">${tabButtons}</div>
+    <div class="run-tab-panels">
+      <div class="run-tab-panel active" id="run-tab-overview">${overviewHtml}</div>
+      <div class="run-tab-panel" id="run-tab-metrics">${metricsHtml}</div>
+      <div class="run-tab-panel" id="run-tab-metadata">${metadataHtml}</div>
+      <div class="run-tab-panel" id="run-tab-jobs">${jobsHtml}</div>
+    </div>`;
 
   body.innerHTML = html;
+  _loadRunSdkMetrics(cluster, run.root_job_id);
   _loadRunCustomMetrics(cluster, run.root_job_id);
 }
 
@@ -312,10 +362,162 @@ async function _loadRunCustomMetrics(cluster, rootJobId) {
       </div>`;
     }
 
+    if (html) _hideRunMetricsEmpty();
     el.innerHTML = html;
   } catch (e) {
     console.error('Failed to load run custom metrics', e);
   }
+}
+
+function _destroyRunMetricCharts() {
+  _runMetricChartInstances.forEach(c => {
+    try { c.destroy(); } catch (_) {}
+  });
+  _runMetricChartInstances = [];
+}
+
+async function _loadRunSdkMetrics(cluster, rootJobId) {
+  const el = document.getElementById('run-sdk-metrics');
+  const metaEl = document.getElementById('run-sdk-metadata');
+  if ((!el && !metaEl) || document.hidden) return;
+  try {
+    const res = await fetch(`/api/run_metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
+    const d = await res.json();
+    if (d.status !== 'ok') return;
+    const metadata = d.metadata || {};
+    const series = d.series || {};
+    const keys = Object.keys(series).sort();
+    const hasMetadata = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
+    if (!hasMetadata && !keys.length) return;
+
+    if (hasMetadata) {
+      const rows = Object.entries(metadata).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `
+        <div class="run-params-row">
+          <span class="run-params-label">${_escHtml(k)}</span>
+          <span class="run-params-value">${_escHtml(_formatMetricValue(v))}</span>
+        </div>`).join('');
+      if (metaEl) {
+        metaEl.innerHTML = `<div class="run-params">
+        <div class="run-params-head">SDK Metadata</div>
+        <div class="run-params-grid">${rows}</div>
+      </div>`;
+      }
+    }
+
+    if (!el || !keys.length) return;
+    let html = '';
+
+    const latestRows = keys.map((k) => {
+      const pts = series[k] || [];
+      const p = pts[pts.length - 1] || {};
+      const step = p.step == null ? '' : ` <span class="run-params-muted">@ step ${_escHtml(String(p.step))}</span>`;
+      return `<div class="run-params-row">
+        <span class="run-params-label">${_escHtml(k)}</span>
+        <span class="run-params-value">${_escHtml(_formatMetricValue(p.value))}${step}</span>
+      </div>`;
+    }).join('');
+    if (latestRows) {
+      html += `<div class="run-params" style="margin-top:14px">
+        <div class="run-params-head">SDK Metrics (latest)</div>
+        <div class="run-params-grid">${latestRows}</div>
+      </div>`;
+    }
+
+    const numericKeys = keys.filter(k => (series[k] || []).filter(p => Number.isFinite(p.value_num)).length >= 2);
+    if (numericKeys.length && typeof Chart !== 'undefined') {
+      html += `<div class="run-section" style="margin-top:14px">
+        <div class="run-section-head" onclick="toggleRunSection('run-sdk-metrics-chart')">
+          <span>SDK Metrics (series)</span>
+          <span class="run-section-chevron" id="run-sdk-metrics-chart-chevron">▼</span>
+        </div>
+        <div class="run-section-body" id="run-sdk-metrics-chart">
+          <div style="height:260px"><canvas id="run-sdk-metrics-canvas"></canvas></div>
+        </div>
+      </div>`;
+    }
+
+    const sparseRows = keys.flatMap((k) => {
+      const pts = (series[k] || []).filter(p => !Number.isFinite(p.value_num) || (series[k] || []).length < 2);
+      return pts.slice(-5).map(p => {
+        const step = p.step == null ? '—' : _escHtml(String(p.step));
+        return `<tr><td>${_escHtml(k)}</td><td>${step}</td><td>${_escHtml(_formatMetricValue(p.value))}</td></tr>`;
+      });
+    }).join('');
+    if (sparseRows) {
+      html += `<div class="run-section" style="margin-top:14px">
+        <div class="run-section-head" onclick="toggleRunSection('run-sdk-metrics-table')">
+          <span>SDK Metrics (recent points)</span>
+          <span class="run-section-chevron collapsed" id="run-sdk-metrics-table-chevron">▼</span>
+        </div>
+        <div class="run-section-body hidden" id="run-sdk-metrics-table">
+          <table class="run-jobs-table">
+            <thead><tr><th>Metric</th><th>Step</th><th>Value</th></tr></thead>
+            <tbody>${sparseRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    if (html) _hideRunMetricsEmpty();
+    el.innerHTML = html;
+    if (numericKeys.length && typeof Chart !== 'undefined') {
+      _renderRunSdkMetricChart(series, numericKeys);
+    }
+  } catch (e) {
+    console.error('Failed to load SDK metrics', e);
+  }
+}
+
+function _hideRunMetricsEmpty() {
+  const empty = document.getElementById('run-metrics-empty');
+  if (empty) empty.style.display = 'none';
+}
+
+function _renderRunSdkMetricChart(series, numericKeys) {
+  const canvas = document.getElementById('run-sdk-metrics-canvas');
+  if (!canvas) return;
+  const cs = getComputedStyle(document.documentElement);
+  const textColor = cs.getPropertyValue('--text').trim();
+  const mutedColor = cs.getPropertyValue('--muted').trim();
+  const gridColor = cs.getPropertyValue('--border').trim();
+  const colors = ['#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6'];
+  const datasets = numericKeys.map((key, idx) => {
+    const pts = (series[key] || []).filter(p => Number.isFinite(p.value_num));
+    return {
+      label: key,
+      data: pts.map((p, i) => ({ x: p.step == null ? i + 1 : p.step, y: p.value_num })),
+      borderColor: colors[idx % colors.length],
+      backgroundColor: colors[idx % colors.length] + '22',
+      fill: false,
+      tension: 0.25,
+      pointRadius: pts.length < 20 ? 2 : 0,
+      borderWidth: 2,
+    };
+  });
+  _runMetricChartInstances.push(new Chart(canvas, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, position: 'bottom', labels: { color: mutedColor, boxWidth: 10, padding: 8, usePointStyle: true, pointStyle: 'line' } },
+        tooltip: { mode: 'nearest', intersect: false },
+      },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'step', color: mutedColor }, ticks: { color: mutedColor }, grid: { color: gridColor } },
+        y: { ticks: { color: mutedColor }, grid: { color: gridColor } },
+      },
+      interaction: { mode: 'nearest', intersect: false },
+    },
+  }));
+}
+
+function _formatMetricValue(value) {
+  if (value == null) return 'null';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(Math.round(value * 1000000) / 1000000);
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value); } catch (_) { return String(value); }
 }
 
 // ── Run Parameters block ──────────────────────────────────────────────────
@@ -564,6 +766,20 @@ function toggleRunSection(sectionId) {
   if (!body) return;
   body.classList.toggle('hidden');
   if (chevron) chevron.classList.toggle('collapsed');
+}
+
+function switchRunTab(tabId) {
+  document.querySelectorAll('.run-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.id === `run-tab-btn-${tabId}`);
+  });
+  document.querySelectorAll('.run-tab-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.id === `run-tab-${tabId}`);
+  });
+  if (tabId === 'metrics') {
+    _runMetricChartInstances.forEach(chart => {
+      try { chart.resize(); } catch (_) {}
+    });
+  }
 }
 
 function _renderEnvTable(envStr) {

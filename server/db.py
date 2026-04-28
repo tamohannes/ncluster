@@ -1,6 +1,8 @@
 """Database operations for job history."""
 
+import hashlib
 import json as _json
+import math
 import sqlite3
 import subprocess
 import threading as _th_db
@@ -8,6 +10,43 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from .config import DB_PATH, PINNABLE_TERMINAL_STATES, RESULT_DIR_NAMES
+
+
+def get_run_hash(cluster, root_job_id, run_uuid=""):
+    """Return the short user-facing run identity.
+
+    SQLite run IDs are internal row IDs and can change across databases. The UI
+    should show a stable 8-character hash instead.
+    """
+    uuid_text = str(run_uuid or "").replace("-", "").strip()
+    if uuid_text:
+        return uuid_text[:8]
+    raw = f"{cluster}:{root_job_id}".encode("utf-8", "replace")
+    return hashlib.sha1(raw).hexdigest()[:8]
+
+
+def get_run_by_hash(cluster, run_hash):
+    """Return a run row by its user-facing 8-character hash."""
+    target = str(run_hash or "").strip().lower()
+    if not target:
+        return None
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM runs WHERE cluster=?",
+        (cluster,),
+    ).fetchall()
+    con.close()
+    matches = []
+    for row in rows:
+        row_hash = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
+        if row_hash.lower() == target:
+            matches.append(dict(row))
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        matches.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        return matches[0]
+    return None
 
 
 def parse_slurm_elapsed_seconds(elapsed):
@@ -735,6 +774,10 @@ def get_history(
     from datetime import datetime, timedelta
 
     con = get_db()
+    try:
+        con.create_function("run_hash", 3, get_run_hash)
+    except Exception:
+        pass
     order = "ORDER BY COALESCE(jh.ended_at, jh.started, jh.submitted, '9999') DESC, jh.id DESC"
     conditions = []
     params = []
@@ -752,13 +795,15 @@ def get_history(
             "LOWER(COALESCE(jh.job_name, '')) LIKE LOWER(?) OR "
             "CAST(jh.job_id AS TEXT) LIKE ? OR "
             "LOWER(COALESCE(r.run_name, '')) LIKE LOWER(?) OR "
+            "LOWER(run_hash(jh.cluster, COALESCE(r.root_job_id, ''), COALESCE(r.run_uuid, ''))) LIKE LOWER(?) OR "
+            "LOWER(COALESCE(r.run_uuid, '')) LIKE LOWER(?) OR "
             "LOWER(COALESCE(jh.project, '')) LIKE LOWER(?) OR "
             "LOWER(COALESCE(jh.partition, '')) LIKE LOWER(?) OR "
             "LOWER(COALESCE(jh.account, '')) LIKE LOWER(?) OR "
             "LOWER(COALESCE(jh.cluster, '')) LIKE LOWER(?)"
             ")"
         )
-        params.extend([like, like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, like, like])
     state_values = [v.upper() for v in _csv_values(state)]
     if state_values:
         conditions.append("(" + " OR ".join(["UPPER(COALESCE(jh.state, '')) LIKE ?"] * len(state_values)) + ")")
@@ -781,7 +826,9 @@ def get_history(
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     query = (
         "SELECT jh.*, COALESCE(r.run_name, '') AS run_name, "
-        "COALESCE(r.starred, 0) AS starred "
+        "COALESCE(r.starred, 0) AS starred, "
+        "COALESCE(r.root_job_id, '') AS run_root_job_id, "
+        "COALESCE(r.run_uuid, '') AS run_uuid "
         "FROM job_history jh "
         "LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster "
         f"{where} {order}"
@@ -792,7 +839,16 @@ def get_history(
         query_params.append(limit)
     rows = con.execute(query, query_params).fetchall()
     con.close()
-    jobs = [normalize_job_times_local(dict(r)) for r in rows]
+    jobs = []
+    for r in rows:
+        job = normalize_job_times_local(dict(r))
+        if job.get("run_id"):
+            job["run_hash"] = get_run_hash(
+                job.get("cluster", ""),
+                job.get("run_root_job_id") or job.get("job_id", ""),
+                job.get("run_uuid", ""),
+            )
+        jobs.append(job)
     _restore_dependency_fields(jobs, parse_dependency)
     if campaign_values:
         jobs = [
@@ -1351,12 +1407,126 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
 
 
 def store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json):
-    """Insert an SDK event, ignoring duplicates."""
+    """Insert an SDK event, ignoring duplicates. Returns True when inserted."""
     with db_write() as con:
-        con.execute("""
+        cur = con.execute("""
             INSERT OR IGNORE INTO sdk_events (run_uuid, event_type, event_seq, ts, payload_json)
             VALUES (?, ?, ?, ?, ?)
         """, (run_uuid, event_type, event_seq, ts, payload_json))
+        return cur.rowcount > 0
+
+
+def store_run_metric(run_uuid, event_seq, ts, payload):
+    """Persist a generic SDK metric point for UI/API queries."""
+    if not isinstance(payload, dict):
+        return
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return
+    value = payload.get("value")
+    value_num = None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            num = float(value)
+            if math.isfinite(num):
+                value_num = num
+        except Exception:
+            value_num = None
+    step = payload.get("step")
+    try:
+        step_val = int(step) if step is not None and step != "" else None
+    except Exception:
+        step_val = None
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        context = {}
+    with db_write() as con:
+        con.execute("""
+            INSERT OR IGNORE INTO run_metrics
+                (run_uuid, event_seq, key, step, ts, value_num, value_json, context_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_uuid,
+            int(event_seq or 0),
+            key,
+            step_val,
+            ts,
+            value_num,
+            _json.dumps(value, default=str),
+            _json.dumps(context, default=str),
+        ))
+
+
+def merge_run_metadata(run_uuid, metadata):
+    """Shallow-merge user-provided static metadata into the SDK run row."""
+    if not isinstance(metadata, dict):
+        return
+    with db_write() as con:
+        row = con.execute(
+            "SELECT metadata_json FROM runs WHERE run_uuid=?",
+            (run_uuid,),
+        ).fetchone()
+        current = {}
+        if row and row["metadata_json"]:
+            try:
+                parsed = _json.loads(row["metadata_json"])
+                if isinstance(parsed, dict):
+                    current = parsed
+            except Exception:
+                current = {}
+        current.update(metadata)
+        con.execute(
+            "UPDATE runs SET metadata_json=? WHERE run_uuid=?",
+            (_json.dumps(current, default=str), run_uuid),
+        )
+
+
+def get_run_metrics(run_uuid):
+    """Return stored generic metric points for a run, ordered for charting."""
+    con = get_db()
+    metric_rows = con.execute("""
+        SELECT key, step, ts, value_num, value_json, context_json
+        FROM run_metrics
+        WHERE run_uuid=?
+        ORDER BY key, COALESCE(step, event_seq), event_seq
+    """, (run_uuid,)).fetchall()
+    run_row = con.execute(
+        "SELECT metadata_json FROM runs WHERE run_uuid=?",
+        (run_uuid,),
+    ).fetchone()
+    con.close()
+
+    metadata = {}
+    if run_row and run_row["metadata_json"]:
+        try:
+            parsed = _json.loads(run_row["metadata_json"])
+            if isinstance(parsed, dict):
+                metadata = parsed
+        except Exception:
+            metadata = {}
+
+    series = {}
+    latest = {}
+    for row in metric_rows:
+        key = row["key"]
+        try:
+            value = _json.loads(row["value_json"])
+        except Exception:
+            value = row["value_json"]
+        try:
+            context = _json.loads(row["context_json"] or "{}")
+        except Exception:
+            context = {}
+        point = {
+            "step": row["step"],
+            "ts": row["ts"],
+            "value": value,
+            "value_num": row["value_num"],
+            "context": context if isinstance(context, dict) else {},
+        }
+        series.setdefault(key, []).append(point)
+        latest[key] = point
+    return {"metadata": metadata, "series": series, "latest": latest}
 
 
 def cancel_sdk_job(synthetic_job_id):

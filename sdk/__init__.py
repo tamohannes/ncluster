@@ -20,11 +20,13 @@ Quick start (automatic — no user code needed):
     and emits run/job/metric events automatically.
 
 Manual metric logging from eval/training code:
-    from nemo_skills.clausius_sdk.metrics import log_metric, log_artifact
-    log_metric("accuracy", 0.84, step=100)
-    log_artifact("metrics.json", "/path/to/metrics.json")
+    from nemo_skills.clausius_sdk import Run
+    run = Run(run_name="my_eval", cluster="eos")
+    run.track("accuracy", 0.84, step=100)
+    run.close()
 """
 
+from nemo_skills.clausius_sdk.run import Run
 from nemo_skills.clausius_sdk.session import ClausiusSession
 
-__all__ = ["ClausiusSession"]
+__all__ = ["ClausiusSession", "Run"]

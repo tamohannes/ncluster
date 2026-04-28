@@ -499,6 +499,7 @@ _JOB_FIELDS = [
     "started_local", "ended_local",
     "progress", "depends_on", "dependents", "dep_details",
     "project", "project_color", "project_emoji", "campaign",
+    "run_hash", "run_root_job_id", "run_uuid",
     "_pinned", "exit_code", "crash_detected", "est_start",
 ]
 
@@ -588,7 +589,9 @@ async def mcp_self_check() -> dict:
 async def list_jobs(cluster: Optional[str] = None, project: Optional[str] = None) -> list[dict]:
     """List active jobs across all clusters, or filtered by cluster/project.
 
-    Returns compact job records with state, progress, dependencies, and est_start.
+    Returns compact job records with state, progress, dependencies, est_start,
+    and run identity fields. Use `run_hash` for all run-level MCP operations;
+    `run_id` is an internal SQLite row id.
     Includes both live squeue jobs and board-pinned terminal jobs.
     """
     if cluster:
@@ -649,9 +652,19 @@ async def get_job_stats(cluster: str, job_id: str) -> dict:
 
 
 @mcp.tool()
-async def get_run_info(cluster: str, root_job_id: str) -> dict:
-    """Get detailed run info: batch script, scontrol, env vars, conda state, and associated jobs."""
-    return await _api_async("GET", f"/api/run_info/{cluster}/{root_job_id}")
+async def get_run_info(cluster: str, run_hash: str) -> dict:
+    """Get detailed run info by run_hash: provenance, batch script, scontrol, env vars, conda state, and associated jobs."""
+    return await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
+
+
+@mcp.tool()
+async def get_run_metrics(cluster: str, run_hash: str) -> dict:
+    """Get SDK-tracked run metrics and metadata by run_hash.
+
+    Returns Aim-style metric series, latest values, and static metadata logged
+    through `nemo_skills.clausius_sdk.Run.track()` / `set_metadata()`.
+    """
+    return await _api_async("GET", f"/api/run_metrics_by_hash/{cluster}/{run_hash}")
 
 
 @mcp.tool()

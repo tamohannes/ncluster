@@ -24,6 +24,7 @@ from .db import (
     get_db,
     get_live_board,
     get_live_jobs_for_cluster,
+    get_run_hash,
     normalize_job_times_local,
 )
 from .jobs import parse_dependency, schedule_prefetch
@@ -74,7 +75,7 @@ def _fill_run_ids(cluster, jobs):
 
 
 def _fill_starred(cluster, jobs):
-    """Copy starred flag from runs table onto each job that has a run_id."""
+    """Copy run metadata from runs table onto each job that has a run_id."""
     run_ids = set()
     for j in jobs:
         rid = j.get("run_id")
@@ -85,15 +86,21 @@ def _fill_starred(cluster, jobs):
     con = get_db()
     placeholders = ",".join("?" for _ in run_ids)
     rows = con.execute(
-        f"SELECT id, starred FROM runs WHERE id IN ({placeholders})",
+        f"""SELECT id, root_job_id, run_name, run_uuid, starred
+            FROM runs WHERE id IN ({placeholders})""",
         list(run_ids),
     ).fetchall()
     con.close()
-    star_map = {row["id"]: row["starred"] for row in rows}
+    run_map = {row["id"]: row for row in rows}
     for j in jobs:
         rid = j.get("run_id")
-        if rid and int(rid) in star_map:
-            j["starred"] = star_map[int(rid)]
+        if rid and int(rid) in run_map:
+            row = run_map[int(rid)]
+            j["starred"] = row["starred"]
+            j["run_root_job_id"] = row["root_job_id"]
+            j["run_name"] = row["run_name"]
+            j["run_uuid"] = row["run_uuid"]
+            j["run_hash"] = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
 
 
 _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)

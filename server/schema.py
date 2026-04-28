@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS runs (
     primary_output_dir TEXT DEFAULT '',
     sdk_status         TEXT DEFAULT '',
     params_json        TEXT DEFAULT '',
+    metadata_json      TEXT DEFAULT '',
     UNIQUE(cluster, root_job_id)
 )
 """
@@ -240,6 +241,22 @@ CREATE TABLE IF NOT EXISTS sdk_events (
 )
 """
 """Append-only event log from the NeMo-Skills SDK ingest endpoint."""
+
+RUN_METRICS = """
+CREATE TABLE IF NOT EXISTS run_metrics (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_uuid     TEXT NOT NULL,
+    event_seq    INTEGER NOT NULL DEFAULT 0,
+    key          TEXT NOT NULL,
+    step         INTEGER,
+    ts           REAL,
+    value_num    REAL,
+    value_json   TEXT DEFAULT 'null',
+    context_json TEXT DEFAULT '{}',
+    UNIQUE(run_uuid, event_seq)
+)
+"""
+"""Generic Aim-style metric points emitted by the SDK."""
 
 PROJECTS = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -399,6 +416,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_wds_cluster ON wds_history(cluster, account, ts)",
     "CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_store(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)",
+    "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_key_step ON run_metrics(run_uuid, key, step)",
+    "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_ts ON run_metrics(run_uuid, ts)",
     "CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)",
     "CREATE INDEX IF NOT EXISTS idx_clusters_position ON clusters(position)",
     "CREATE INDEX IF NOT EXISTS idx_team_members_position ON team_members(position)",
@@ -463,6 +482,7 @@ MIGRATIONS = [
     ("runs", "primary_output_dir", "TEXT DEFAULT ''"),
     ("runs", "sdk_status", "TEXT DEFAULT ''"),
     ("runs", "params_json", "TEXT DEFAULT ''"),
+    ("runs", "metadata_json", "TEXT DEFAULT ''"),
     # logbook_entries columns added in v3
     ("logbook_entries", "entry_type", "TEXT NOT NULL DEFAULT 'note'"),
     ("logbook_entries", "pinned", "INTEGER NOT NULL DEFAULT 0"),
@@ -487,6 +507,7 @@ SCHEMA = [
     CLUSTER_STATE,
     CACHE_STORE,
     SDK_EVENTS,
+    RUN_METRICS,
     PROJECTS,
     CLUSTERS,
     TEAM_MEMBERS,

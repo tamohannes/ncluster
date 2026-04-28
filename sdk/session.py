@@ -159,10 +159,10 @@ class ClausiusSession:
     _instance: ClausiusSession | None = None
     _instance_lock = threading.Lock()
 
-    def __init__(self, transports: list[Transport], run_uuid: str | None = None):
+    def __init__(self, transports: list[Transport], run_uuid: str | None = None, seq_start: int = 0):
         self._run_uuid = run_uuid or uuid.uuid4().hex
         self._transports = list(transports)
-        self._seq = 0
+        self._seq = max(0, int(seq_start or 0))
         self._lock = threading.Lock()
         self._buffer: list[Event] = []
         self._closed = False
@@ -273,6 +273,9 @@ class ClausiusSession:
         for k, v in params.items():
             self.log_metric(f"param.{k}", v)
 
+    def log_metadata(self, metadata: dict[str, Any]):
+        self._emit(EventType.METADATA_LOGGED, {"metadata": _sanitize_params(metadata)})
+
     def log_artifact(self, name: str, path: str, **metadata):
         self._emit(EventType.ARTIFACT_LOGGED, {"name": name, "path": path, **metadata})
 
@@ -284,6 +287,11 @@ class ClausiusSession:
     def fail(self, error: str = "", **extra):
         self._finished = True
         self._emit(EventType.RUN_FAILED, {"error": error, **extra})
+        self._shutdown()
+
+    def close(self):
+        """Flush and close the session without emitting a terminal event."""
+        self._finished = True
         self._shutdown()
 
     # ── Factory / singleton ───────────────────────────────────────────

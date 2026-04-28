@@ -42,6 +42,20 @@ def test_group_jobs_for_runs_splits_same_name_reruns_by_submission_gap():
 
 
 @pytest.mark.unit
+def test_group_jobs_for_runs_keeps_slow_submission_wave_together():
+    jobs = [
+        _job("100", "hle_many-chunks", "2026-04-13T00:00:00"),
+        _job("101", "hle_many-chunks", "2026-04-13T00:04:30"),
+        _job("102", "hle_many-chunks", "2026-04-13T00:08:45"),
+    ]
+
+    groups = _group_jobs_for_runs(jobs)
+
+    assert len(groups) == 1
+    assert set(groups[0][2]) == {"100", "101", "102"}
+
+
+@pytest.mark.unit
 def test_detect_and_register_runs_repairs_stray_old_row_from_new_run(
     db_path,
     mock_cluster,

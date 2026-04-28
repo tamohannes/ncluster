@@ -554,6 +554,24 @@ function runAttemptBadge(job) {
   return `<span class="group-project-badge" title="${title}">${label}</span>`;
 }
 
+function runIdentityBadge(job) {
+  if (!job) return '';
+  const runHash = String(job.run_hash || '').trim();
+  const runUuid = String(job.run_uuid || '').trim();
+  const root = String(job.run_root_job_id || job.jobid || job.job_id || '').trim();
+  if (runHash) {
+    const titleParts = [`Run hash ${runHash}`];
+    if (runUuid) titleParts.push(`UUID ${runUuid}`);
+    if (root) titleParts.push(`root ${root}`);
+    return `<span class="group-project-badge" title="${escAttr(titleParts.join(' · '))}">${escAttr(runHash)}</span>`;
+  }
+  if (runUuid) {
+    const short = runUuid.slice(0, 8);
+    return `<span class="group-project-badge" title="Run UUID ${escAttr(runUuid)}">${short}</span>`;
+  }
+  return '';
+}
+
 function fmtStartCell(job) {
   const st = (job.state || '').toUpperCase();
   if (st === 'PENDING' && job.est_start) {
@@ -642,6 +660,9 @@ function historySearchValues(row) {
     row.job_name || row.name || '',
     row.run_name || '',
     String(row.job_id || row.jobid || ''),
+    row.run_hash || '',
+    row.run_uuid || '',
+    row.run_root_job_id || '',
     groupKeyForJob(baseName),
     row.project || '',
     row.campaign || '',
@@ -683,6 +704,9 @@ function normalizeHistoryJobRow(row) {
     exit_code: row.exit_code || '',
     run_id: row.run_id || null,
     run_name: row.run_name || '',
+    run_hash: row.run_hash || '',
+    run_root_job_id: row.run_root_job_id || '',
+    run_uuid: row.run_uuid || '',
     output_dir: row.output_dir || '',
     _cluster: row.cluster,
     _pinned: true,
@@ -732,39 +756,40 @@ function groupJobsByDependency(jobs) {
   }
   function union(a, b) { parent[find(a)] = find(b); }
 
+  function jobRunIdentity(j) {
+    if (j.run_uuid) return `uuid:${j.run_uuid}`;
+    if (j.run_id) return `run:${j.run_id}`;
+    if (j.output_dir) return `out:${j.output_dir}`;
+    return '';
+  }
+
+  function jobGroupTimestamp(j) {
+    const raw = j.submitted || j.started || j.ended_at || '';
+    const t = Date.parse(String(raw).replace(' ', 'T'));
+    return Number.isFinite(t) ? t / 1000 : null;
+  }
+
   for (const j of jobs) {
     for (const pid of (j.depends_on || [])) {
       if (byId[pid]) union(j.jobid, pid);
     }
   }
 
-  // Union by run_id so all jobs from the same detected run stay grouped.
+  // Union by stable run identity so all jobs from the same detected run stay grouped.
   const runGroups = {};
   for (const j of jobs) {
-    if (j.run_id) {
-      if (!runGroups[j.run_id]) runGroups[j.run_id] = [];
-      runGroups[j.run_id].push(j.jobid);
+    const ident = jobRunIdentity(j);
+    if (ident) {
+      if (!runGroups[ident]) runGroups[ident] = [];
+      runGroups[ident].push(j.jobid);
     }
   }
   for (const ids of Object.values(runGroups)) {
     for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
   }
 
-  // Union by output_dir so continuation runs (same experiment restarted) are
-  // displayed as a single entity rather than separate groups.
-  const outputDirGroups = {};
-  for (const j of jobs) {
-    if (j.output_dir) {
-      if (!outputDirGroups[j.output_dir]) outputDirGroups[j.output_dir] = [];
-      outputDirGroups[j.output_dir].push(j.jobid);
-    }
-  }
-  for (const ids of Object.values(outputDirGroups)) {
-    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
-  }
-
-  // Merge resubmissions: if jobs share the same group key and one set has
-  // a run_id while the other doesn't, they're a skip_filled retry — merge.
+  // Provisional grouping before backend run_id metadata arrives: bucket
+  // same-name jobs by submission wave instead of rendering every chunk as a run.
   const nameGroups = {};
   for (const j of jobs) {
     const gk = groupKeyForJob(j.name);
@@ -772,6 +797,36 @@ function groupJobsByDependency(jobs) {
     nameGroups[gk].push(j);
   }
   for (const sameNameJobs of Object.values(nameGroups)) {
+    const sorted = [...sameNameJobs].sort((a, b) => {
+      const ta = jobGroupTimestamp(a) ?? 0;
+      const tb = jobGroupTimestamp(b) ?? 0;
+      if (ta !== tb) return ta - tb;
+      return String(a.jobid).localeCompare(String(b.jobid));
+    });
+    let bucket = [];
+    let prevTs = null;
+    const flush = () => {
+      if (bucket.length > 1) {
+        for (let i = 1; i < bucket.length; i++) union(bucket[0].jobid, bucket[i].jobid);
+      }
+      bucket = [];
+    };
+    for (const j of sorted) {
+      const ts = jobGroupTimestamp(j);
+      const hasIdentity = !!jobRunIdentity(j);
+      if (hasIdentity) {
+        flush();
+        prevTs = null;
+        continue;
+      }
+      if (prevTs != null && ts != null && ts - prevTs > 600) flush();
+      bucket.push(j);
+      if (ts != null) prevTs = ts;
+    }
+    flush();
+
+    // Merge resubmissions: if jobs share the same group key and one set has
+    // a run_id while the other doesn't, they're a skip_filled retry — merge.
     const withRun = sameNameJobs.filter(j => j.run_id);
     const withoutRun = sameNameJobs.filter(j => !j.run_id);
     if (withRun.length && withoutRun.length) {

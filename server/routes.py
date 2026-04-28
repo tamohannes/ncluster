@@ -62,7 +62,7 @@ from .jobs import (
     fetch_team_usage,
 )
 from .poller import get_poller, get_version, touch_demand
-from .db import get_run_with_jobs, update_run_fields
+from .db import get_run_by_hash, get_run_hash, get_run_with_jobs, update_run_fields
 from .board import build_board_snapshot, build_cluster_board_entry, _fill_output_dirs
 
 api = Blueprint("api", __name__)
@@ -1269,17 +1269,25 @@ def _inherit_sdk_provenance(run, cluster):
         pass
 
 
-@api.route("/api/run_info/<cluster>/<root_job_id>")
-def api_run_info(cluster, root_job_id):
-    if cluster not in CLUSTERS:
-        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    run = get_run_with_jobs(cluster, root_job_id)
-    if not run:
-        actual_root = create_run_on_demand(cluster, root_job_id)
+def _load_run_by_ref(cluster, run_ref, *, allow_on_demand=True):
+    run = get_run_with_jobs(cluster, run_ref)
+    if not run and allow_on_demand:
+        actual_root = create_run_on_demand(cluster, run_ref)
         if actual_root:
             run = get_run_with_jobs(cluster, actual_root)
     if not run:
-        run = _resolve_run_via_job(cluster, root_job_id)
+        run = _resolve_run_via_job(cluster, run_ref)
+    if not run:
+        run_row = get_run_by_hash(cluster, run_ref)
+        if run_row:
+            run = get_run_with_jobs(cluster, run_row["root_job_id"])
+    return run
+
+
+def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run = _load_run_by_ref(cluster, run_ref, allow_on_demand=allow_on_demand)
     if not run:
         return jsonify({"status": "error", "error": "Run not found"}), 404
     if not run.get("meta_fetched"):
@@ -1302,6 +1310,7 @@ def api_run_info(cluster, root_job_id):
     run["unique_nodes"] = unique_nodes
     run["total_gpus"] = total_gpus
     run["gpus_per_node"] = gpus_per_node
+    run["run_hash"] = get_run_hash(cluster, run.get("root_job_id", ""), run.get("run_uuid", ""))
 
     if not run.get("submit_command") and run.get("source") != "sdk":
         _inherit_sdk_provenance(run, cluster)
@@ -1319,6 +1328,46 @@ def api_run_info(cluster, root_job_id):
         run["params"] = {}
 
     return jsonify({"status": "ok", "run": run})
+
+
+@api.route("/api/run_info/<cluster>/<root_job_id>")
+def api_run_info(cluster, root_job_id):
+    return _run_info_response(cluster, root_job_id)
+
+
+@api.route("/api/run_info_by_hash/<cluster>/<run_hash>")
+def api_run_info_by_hash(cluster, run_hash):
+    return _run_info_response(cluster, run_hash, allow_on_demand=False)
+
+
+@api.route("/api/run_metrics/<cluster>/<root_job_id>")
+def api_run_metrics(cluster, root_job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run = _load_run_by_ref(cluster, root_job_id)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+    run_uuid = run.get("run_uuid") or ""
+    if not run_uuid:
+        return jsonify({"status": "ok", "metadata": {}, "series": {}, "latest": {}})
+    from .db import get_run_metrics
+    payload = get_run_metrics(run_uuid)
+    return jsonify({"status": "ok", **payload})
+
+
+@api.route("/api/run_metrics_by_hash/<cluster>/<run_hash>")
+def api_run_metrics_by_hash(cluster, run_hash):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run = _load_run_by_ref(cluster, run_hash, allow_on_demand=False)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+    run_uuid = run.get("run_uuid") or ""
+    if not run_uuid:
+        return jsonify({"status": "ok", "metadata": {}, "series": {}, "latest": {}})
+    from .db import get_run_metrics
+    payload = get_run_metrics(run_uuid)
+    return jsonify({"status": "ok", **payload})
 
 
 @api.route("/api/run_info/<cluster>/<root_job_id>/retry_meta", methods=["POST"])
@@ -2870,17 +2919,63 @@ def api_spotlight():
             {"cluster": r["cluster"], "job_id": r.get("job_id") or r.get("jobid", ""),
              "job_name": r.get("job_name") or r.get("name", ""),
              "state": r.get("state", ""), "project": r.get("project", ""),
-             "started": r.get("started", "")}
+             "started": r.get("started", ""), "run_hash": r.get("run_hash", ""),
+             "run_root_job_id": r.get("run_root_job_id", "")}
             for r in get_history(limit=8, search=q)
         ]
+
+    def _search_runs():
+        try:
+            con = get_db()
+            rows = con.execute(
+                """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
+                          r.sdk_status, r.project, r.started_at, COUNT(jh.job_id) AS job_count
+                   FROM runs r
+                   LEFT JOIN job_history jh ON jh.run_id = r.id AND jh.cluster = r.cluster
+                   GROUP BY r.id
+                   ORDER BY COALESCE(r.started_at, r.created_at, '') DESC
+                   LIMIT 2000"""
+            ).fetchall()
+            con.close()
+            out = []
+            for r in rows:
+                rh = get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"])
+                haystack = " ".join([
+                    rh,
+                    r["run_uuid"] or "",
+                    r["root_job_id"] or "",
+                    r["run_name"] or "",
+                    r["project"] or "",
+                    r["cluster"] or "",
+                ]).lower()
+                if ql not in haystack:
+                    continue
+                out.append({
+                    "cluster": r["cluster"],
+                    "root_job_id": r["root_job_id"],
+                    "run_hash": rh,
+                    "run_name": r["run_name"],
+                    "run_uuid": r["run_uuid"],
+                    "sdk_status": r["sdk_status"],
+                    "project": r["project"],
+                    "started_at": r["started_at"],
+                    "job_count": r["job_count"],
+                })
+                if len(out) >= 8:
+                    break
+            return out
+        except Exception:
+            return []
 
     f_proj = _shared_pool.submit(_search_projects)
     f_lb = _shared_pool.submit(_search_logbook)
     f_hist = _shared_pool.submit(_search_history)
+    f_runs = _shared_pool.submit(_search_runs)
 
     return jsonify({
         "projects": f_proj.result(),
         "logbook": f_lb.result(),
+        "runs": f_runs.result(),
         "history": f_hist.result(),
     })
 
@@ -2925,6 +3020,8 @@ def api_sdk_ingest():
     from .db import (
         upsert_run_from_sdk,
         store_sdk_event,
+        store_run_metric,
+        merge_run_metadata,
         finalize_sdk_run,
         get_run_by_uuid,
         invalidate_pinned_cache,
@@ -2955,7 +3052,9 @@ def api_sdk_ingest():
 
         import json as _j
         payload_json = _j.dumps(payload, default=str)
-        store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json)
+        inserted = store_sdk_event(run_uuid, event_type, event_seq, ts, payload_json)
+        if not inserted:
+            continue
 
         if event_type == "run_started":
             expname = payload.get("expname", "")
@@ -3021,6 +3120,11 @@ def api_sdk_ingest():
             elif payload.get("key") == "progress":
                 _ingest_progress(run_uuid, payload)
                 bump_version()
+            else:
+                store_run_metric(run_uuid, event_seq, ts, payload)
+
+        elif event_type == "metadata_logged":
+            merge_run_metadata(run_uuid, payload.get("metadata", {}))
 
         accepted += 1
 

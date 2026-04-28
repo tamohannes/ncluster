@@ -191,6 +191,7 @@ function _renderHistPage() {
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
     const runDataAttrs = ` data-run-cluster="${escAttr(g.cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
     const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+    const identityBadge = typeof runIdentityBadge === 'function' ? runIdentityBadge(rootJob) : '';
     const hasMultiple = groupJobs.length > 1;
     const groupId = `${g.cluster}:${rootJobId}`;
     const isGroupExpanded = _expandedGroups.has(groupId);
@@ -203,7 +204,7 @@ function _renderHistPage() {
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')`;
       const groupGpus = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
       const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span></span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span></span>`;
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
       const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;

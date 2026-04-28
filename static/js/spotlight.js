@@ -97,6 +97,21 @@ async function _fetchSpotlight(q) {
       groups.push({ label: 'Logbook', items });
     }
 
+    if (data.runs && data.runs.length) {
+      const items = data.runs.map(r => ({
+        icon: '◈',
+        title: r.run_name || `Run ${r.run_hash}`,
+        sub: `${r.cluster} · ${r.job_count || 0} jobs${r.project ? ` · ${r.project}` : ''}`,
+        hint: r.run_hash,
+        idx: idx++,
+        action: () => {
+          closeSpotlight();
+          openRunInfoByHash(r.cluster, r.run_hash, r.run_name || `Run ${r.run_hash}`);
+        },
+      }));
+      groups.push({ label: 'Runs', items });
+    }
+
     if (data.history && data.history.length) {
       const items = data.history.map(r => {
         const stateIcon = { RUNNING: '🟢', PENDING: '🟡', COMPLETED: '✅', FAILED: '🔴', CANCELLED: '⚪' };
@@ -104,15 +119,16 @@ async function _fetchSpotlight(q) {
           icon: stateIcon[r.state] || '⚪',
           title: r.job_name || r.job_id,
           sub: `${r.cluster} · ${r.state}`,
-          hint: r.job_id,
+          hint: r.run_hash || r.job_id,
           idx: idx++,
           action: () => {
             closeSpotlight();
-            openLog(r.cluster, r.job_id, r.job_name || '');
+            if (r.run_hash) openRunInfoByHash(r.cluster, r.run_hash, r.job_name || `Run ${r.run_hash}`);
+            else openLog(r.cluster, r.job_id, r.job_name || '');
           },
         };
       });
-      groups.push({ label: 'Runs', items });
+      groups.push({ label: 'Jobs', items });
     }
 
     _spotlightItems = groups.flatMap(g => g.items);

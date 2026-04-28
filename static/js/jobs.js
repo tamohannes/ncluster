@@ -527,7 +527,7 @@ function renderCard(name, data) {
       const _projColor = groupJobs[0]?.project_color || '';
       const _projEmoji = groupJobs[0]?.project_emoji || '';
       const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
-      const rootJobId = rootJob.jobid;
+      const rootJobId = rootJob.run_root_job_id || rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
       const cancelKey = `${name}:${rootJobId}`;
       const cancelableGroupJobIds = groupJobs
@@ -540,7 +540,8 @@ function renderCard(name, data) {
       const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
       const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix, _campaign, _shadedColor);
-      const attemptBadge = groupKeyCounts[gk] > 1 ? runAttemptBadge(rootJob) : '';
+      const identityBadge = runIdentityBadge(rootJob);
+      const attemptBadge = groupKeyCounts[gk] > 1 && !identityBadge ? runAttemptBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
@@ -576,7 +577,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${noProjectBtn}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${attemptBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
