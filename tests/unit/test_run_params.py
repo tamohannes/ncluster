@@ -264,6 +264,55 @@ def _load_sanitize_params():
     return ns["_sanitize_params"]
 
 
+def _load_enrich_submission_params():
+    """Compile the pure-stdlib submission-param parser from sdk/session.py."""
+    import ast
+    import os
+
+    src_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "sdk", "session.py",
+    )
+    with open(src_path, "r", encoding="utf-8") as f:
+        source = f.read()
+    tree = ast.parse(source)
+    wanted = {
+        "_SECRET_PARAM_RE",
+        "_HYDRA_PARAM_PREFIXES",
+        "_HYDRA_PARAM_KEYS",
+        "_HYDRA_ALIAS_KEYS",
+        "_CLI_STRING_OPTIONS",
+        "_SERVER_ARG_KEYS",
+        "_parse_scalar",
+        "_split_cli_text",
+        "_dedupe_args",
+        "_is_safe_param_key",
+        "_should_capture_hydra_key",
+        "_parse_hydra_overrides",
+        "_extract_option_values",
+        "_as_list",
+        "_parse_server_args",
+        "_set_prefixed_params",
+        "_enrich_submission_params",
+    }
+    kept = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            kept.append(node)
+        elif isinstance(node, ast.Import) and any(alias.name in {"ast", "re", "shlex"} for alias in node.names):
+            kept.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id in wanted for t in node.targets
+        ):
+            kept.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name in wanted:
+            kept.append(node)
+    module = ast.Module(body=kept, type_ignores=[])
+    ns: dict = {"Any": object}
+    exec(compile(module, src_path, "exec"), ns)
+    return ns["_enrich_submission_params"]
+
+
 def test_sanitize_params_handles_primitives_and_limits():
     sanitize = _load_sanitize_params()
 
@@ -301,3 +350,51 @@ def test_sanitize_params_passes_through_json_safe_values(value):
     sanitize = _load_sanitize_params()
 
     assert sanitize(value) == value
+
+
+def test_enrich_submission_params_captures_generation_and_server_knobs():
+    enrich = _load_enrich_submission_params()
+    params = {
+        "server_args": (
+            "--tensor-parallel-size 8 "
+            "--max-model-len 262144 "
+            "--reasoning-parser nemotron_v3 "
+            "--enable-expert-parallel"
+        ),
+        "judge_server_args": "--max-model-len 131072",
+    }
+    args = [
+        "++inference.temperature=1.0",
+        "++inference.top_p=0.95",
+        "++inference.tokens_to_generate=240000",
+        "++max_concurrent_requests=32",
+    ]
+
+    enriched = enrich(params, args)
+
+    assert enriched["tokens_to_generate"] == 240000
+    assert enriched["temperature"] == 1.0
+    assert enriched["top_p"] == 0.95
+    assert enriched["max_concurrent_requests"] == 32
+    assert enriched["context_length"] == 262144
+    assert enriched["server.max_model_len"] == 262144
+    assert enriched["server.tensor_parallel_size"] == 8
+    assert enriched["server.reasoning_parser"] == "nemotron_v3"
+    assert enriched["server.enable_expert_parallel"] is True
+    assert enriched["judge_context_length"] == 131072
+    assert enriched["judge.server.max_model_len"] == 131072
+
+
+def test_enrich_submission_params_keeps_token_generation_but_filters_secret_tokens():
+    enrich = _load_enrich_submission_params()
+    args = [
+        "++inference.tokens_to_generate=80000",
+        "++server.api_key=should-not-be-stored",
+        "++tool_overrides.SearchTool.bearer_token=should-not-be-stored",
+    ]
+
+    enriched = enrich({}, args)
+
+    assert enriched["tokens_to_generate"] == 80000
+    assert "server.api_key" not in enriched
+    assert "tool_overrides.SearchTool.bearer_token" not in enriched

@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import atexit
+import ast
 import logging
 import os
 import platform
+import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -117,6 +120,81 @@ _PARAMS_MAX_DEPTH = 3
 _PARAMS_MAX_STR_LEN = 2048
 _PARAMS_MAX_ITEMS = 64
 
+_SECRET_PARAM_RE = re.compile(
+    r"(^|[._-])(api[_-]?key|auth|bearer|credential|password|passwd|secret|token)($|[._-])",
+    re.IGNORECASE,
+)
+
+_HYDRA_PARAM_PREFIXES = (
+    "inference.",
+    "server.",
+    "sandbox.",
+    "chat_template_kwargs.",
+    "parallel_thinking.",
+    "eval_config.",
+    "tool_overrides.",
+    "schema_overrides.",
+)
+_HYDRA_PARAM_KEYS = {
+    "add_generation_stats",
+    "code_execution",
+    "count_prompt_tokens",
+    "enable_litellm_cache",
+    "end_reasoning_string",
+    "examples_type",
+    "generation_key",
+    "max_concurrent_requests",
+    "max_samples",
+    "max_tool_calls",
+    "parse_reasoning",
+    "prompt_config",
+    "prompt_format",
+    "prompt_suffix",
+    "skip_filled",
+    "stop_phrase",
+    "structured_output",
+    "system_message",
+    "total_code_executions_in_prompt",
+}
+_HYDRA_ALIAS_KEYS = {
+    "inference.tokens_to_generate": "tokens_to_generate",
+    "inference.temperature": "temperature",
+    "inference.top_p": "top_p",
+    "inference.top_k": "top_k",
+    "inference.min_p": "min_p",
+    "inference.random_seed": "random_seed",
+    "inference.repetition_penalty": "repetition_penalty",
+    "inference.top_logprobs": "top_logprobs",
+    "inference.timeout": "inference_timeout",
+    "inference.reasoning_effort": "reasoning_effort",
+    "max_concurrent_requests": "max_concurrent_requests",
+    "max_tool_calls": "max_tool_calls",
+    "parse_reasoning": "parse_reasoning",
+}
+_CLI_STRING_OPTIONS = {
+    "--extra-judge-args": "extra_judge_args",
+    "--judge-server-args": "judge_server_args",
+    "--server-args": "server_args",
+}
+_SERVER_ARG_KEYS = {
+    "max-model-len": "max_model_len",
+    "max-num-seqs": "max_num_seqs",
+    "max-seq-len-to-capture": "max_seq_len_to_capture",
+    "gpu-memory-utilization": "gpu_memory_utilization",
+    "tensor-parallel-size": "tensor_parallel_size",
+    "pipeline-parallel-size": "pipeline_parallel_size",
+    "data-parallel-size": "data_parallel_size",
+    "reasoning-parser": "reasoning_parser",
+    "reasoning-parser-plugin": "reasoning_parser_plugin",
+    "served-model-name": "served_model_name",
+    "dtype": "dtype",
+    "kv-cache-dtype": "kv_cache_dtype",
+    "attention-backend": "attention_backend",
+    "enable-chunked-prefill": "enable_chunked_prefill",
+    "enable-expert-parallel": "enable_expert_parallel",
+    "async-scheduling": "async_scheduling",
+}
+
 
 def _sanitize_params(raw: Any, depth: int = 0) -> Any:
     """Coerce pipeline kwargs into a JSON-safe shape with size limits.
@@ -146,6 +224,188 @@ def _sanitize_params(raw: Any, depth: int = 0) -> Any:
         return str(raw)[:_PARAMS_MAX_STR_LEN]
     except Exception:
         return None
+
+
+def _parse_scalar(value: str) -> Any:
+    """Best-effort conversion of CLI strings into JSON-safe primitive values."""
+    value = value.strip()
+    if value == "":
+        return value
+    lower = value.lower()
+    if lower in {"true", "false"}:
+        return lower == "true"
+    if lower in {"none", "null"}:
+        return None
+    try:
+        return ast.literal_eval(value)
+    except Exception:
+        pass
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def _split_cli_text(text: str) -> list[str]:
+    if not text:
+        return []
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _dedupe_args(args: list[str]) -> list[str]:
+    out = []
+    seen = set()
+    for arg in args:
+        marker = (len(out), arg) if arg.startswith("-") and "=" not in arg else arg
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(arg)
+    return out
+
+
+def _is_safe_param_key(key: str) -> bool:
+    return not _SECRET_PARAM_RE.search(key)
+
+
+def _should_capture_hydra_key(key: str) -> bool:
+    if not _is_safe_param_key(key):
+        return False
+    return key in _HYDRA_PARAM_KEYS or any(key.startswith(prefix) for prefix in _HYDRA_PARAM_PREFIXES)
+
+
+def _parse_hydra_overrides(args: list[str]) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for arg in args:
+        stripped = arg.lstrip("+")
+        if "=" not in stripped or stripped == arg:
+            continue
+        key, value = stripped.split("=", 1)
+        if _should_capture_hydra_key(key):
+            overrides[key] = _parse_scalar(value)
+    return overrides
+
+
+def _extract_option_values(args: list[str]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        opt, sep, inline_value = arg.partition("=")
+        if opt in _CLI_STRING_OPTIONS:
+            key = _CLI_STRING_OPTIONS[opt]
+            if sep:
+                values[key] = inline_value
+            elif idx + 1 < len(args):
+                values[key] = args[idx + 1]
+                idx += 1
+        idx += 1
+    return values
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _parse_server_args(raw: Any) -> dict[str, Any]:
+    parsed_by_model: list[dict[str, Any]] = []
+    for item in _as_list(raw):
+        if not item:
+            continue
+        tokens = _split_cli_text(str(item))
+        parsed: dict[str, Any] = {}
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if not token.startswith("--"):
+                idx += 1
+                continue
+            option, sep, inline_value = token[2:].partition("=")
+            key = _SERVER_ARG_KEYS.get(option)
+            if not key:
+                idx += 1
+                continue
+            if sep:
+                value: Any = _parse_scalar(inline_value)
+            elif idx + 1 < len(tokens) and not tokens[idx + 1].startswith("--"):
+                value = _parse_scalar(tokens[idx + 1])
+                idx += 1
+            else:
+                value = True
+            parsed[key] = value
+            idx += 1
+        if parsed:
+            parsed_by_model.append(parsed)
+
+    if not parsed_by_model:
+        return {}
+    merged: dict[str, Any] = {}
+    for key in sorted({k for parsed in parsed_by_model for k in parsed}):
+        values = [parsed.get(key) for parsed in parsed_by_model]
+        merged[key] = values[0] if len(values) == 1 else values
+    return merged
+
+
+def _set_prefixed_params(params: dict[str, Any], prefix: str, values: dict[str, Any]) -> None:
+    for key, value in values.items():
+        params.setdefault(f"{prefix}.{key}", value)
+
+
+def _enrich_submission_params(params: dict[str, Any], argv: list[str], command: str = "") -> dict[str, Any]:
+    """Capture common generation/server submission knobs as first-class metadata.
+
+    The raw command is already preserved in RunProvenance. This helper extracts
+    the safe, high-signal knobs that users need on the run page for comparing
+    submissions: output token caps, sampling params, concurrency, and server
+    context/parser settings.
+    """
+    enriched = dict(params)
+    args = _dedupe_args([*argv, *_split_cli_text(command)])
+    cli_options = _extract_option_values(args)
+    for key, value in cli_options.items():
+        enriched.setdefault(key, value)
+
+    hydra_overrides = _parse_hydra_overrides(args)
+    for key, value in hydra_overrides.items():
+        enriched.setdefault(key, value)
+        alias = _HYDRA_ALIAS_KEYS.get(key)
+        if alias:
+            enriched.setdefault(alias, value)
+
+    server_values = _parse_server_args(enriched.get("server_args"))
+    _set_prefixed_params(enriched, "server", server_values)
+    if "max_model_len" in server_values:
+        enriched.setdefault("max_model_len", server_values["max_model_len"])
+        enriched.setdefault("context_length", server_values["max_model_len"])
+    if "reasoning_parser" in server_values:
+        enriched.setdefault("reasoning_parser", server_values["reasoning_parser"])
+    if "reasoning_parser_plugin" in server_values:
+        enriched.setdefault("reasoning_parser_plugin", server_values["reasoning_parser_plugin"])
+
+    judge_server_values = _parse_server_args(enriched.get("judge_server_args"))
+    _set_prefixed_params(enriched, "judge.server", judge_server_values)
+    if "max_model_len" in judge_server_values:
+        enriched.setdefault("judge_context_length", judge_server_values["max_model_len"])
+
+    judge_overrides = _parse_hydra_overrides(_split_cli_text(str(enriched.get("extra_judge_args") or "")))
+    for key, value in judge_overrides.items():
+        enriched.setdefault(f"judge.{key}", value)
+        alias = _HYDRA_ALIAS_KEYS.get(key)
+        if alias:
+            enriched.setdefault(f"judge_{alias}", value)
+
+    return enriched
 
 
 class ClausiusSession:
@@ -336,7 +596,7 @@ class ClausiusSession:
             conda_env=_detect_conda_env(),
             python_executable=sys.executable,
             env_vars_set=_detect_env_vars_set(),
-            params=_sanitize_params(params or {}),
+            params=_sanitize_params(_enrich_submission_params(params or {}, sys.argv[1:], command)),
         )
         session.emit_run_started(provenance)
         return session
