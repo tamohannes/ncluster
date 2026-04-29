@@ -2853,6 +2853,63 @@ function utilBarHtml(clusterName) {
   </span>`;
 }
 
+function _positionPppPopup(anchor) {
+  const popup = anchor ? anchor.querySelector('.ppp-popup') : null;
+  if (!popup) return;
+
+  popup.classList.add('ppp-popup-floating');
+  popup.style.visibility = 'hidden';
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+
+  const rect = anchor.getBoundingClientRect();
+  const popRect = popup.getBoundingClientRect();
+  const margin = 8;
+  let left = rect.left;
+  let top = rect.bottom + 6;
+
+  if (left + popRect.width > window.innerWidth - margin) {
+    left = window.innerWidth - popRect.width - margin;
+  }
+  if (left < margin) left = margin;
+
+  if (top + popRect.height > window.innerHeight - margin) {
+    top = rect.top - popRect.height - 6;
+  }
+  if (top < margin) top = margin;
+
+  popup.style.left = `${left}px`;
+  popup.style.top = `${top}px`;
+  popup.style.visibility = '';
+}
+
+function _hidePppPopup(anchor) {
+  const popup = anchor ? anchor.querySelector('.ppp-popup') : null;
+  if (!popup) return;
+  popup.classList.remove('ppp-popup-floating');
+  popup.style.left = '';
+  popup.style.top = '';
+  popup.style.visibility = '';
+}
+
+document.addEventListener('mouseover', e => {
+  const anchor = e.target.closest('.ppp-bar-hoverable');
+  if (!anchor || anchor.contains(e.relatedTarget)) return;
+  _positionPppPopup(anchor);
+});
+
+document.addEventListener('mouseout', e => {
+  const anchor = e.target.closest('.ppp-bar-hoverable');
+  if (!anchor || anchor.contains(e.relatedTarget)) return;
+  _hidePppPopup(anchor);
+});
+
+window.addEventListener('scroll', () => {
+  document.querySelectorAll('.ppp-popup-floating').forEach(popup => {
+    _hidePppPopup(popup.closest('.ppp-bar-hoverable'));
+  });
+}, true);
+
 function quotaBadgesHtml(clusterName) {
   const q = _storageQuota[clusterName];
   if (!q || !q.project_quotas) return '';

@@ -3871,8 +3871,14 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   box-shadow: 0 8px 24px rgba(0,0,0,0.25);
   min-width: 220px; white-space: nowrap;
   font-family: var(--mono);
+  pointer-events: none;
 }
 .ppp-bar-hoverable:hover .ppp-popup { display: block; }
+.ppp-popup.ppp-popup-floating {
+  display: block;
+  position: fixed;
+  z-index: 2400;
+}
 .ppp-pop-row {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 0;
