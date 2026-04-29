@@ -595,7 +595,7 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
         mounted_logdir = resolve_mounted_path(cluster_name, logdir, want_dir=True)
         if mounted_logdir and os.path.isdir(mounted_logdir):
             _discover_local_dir_files(
-                mounted_logdir, logdir, job_id, seen_paths, files, include_recognized=True
+                mounted_logdir, logdir, job_id, seen_paths, files, include_recognized=is_sdk_job
             )
 
     if output_dir:
@@ -604,7 +604,7 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
             _append_discovered_dir(dirs, seen_dirs, output_dir)
             _discover_local_dir_files(
                 mounted_output, output_dir, job_id, seen_paths, files,
-                include_recognized=True,
+                include_recognized=is_sdk_job,
             )
         od = output_dir.rstrip("/")
         for sub in ("eval-results", "eval-logs", "tmp-eval-results"):
@@ -614,7 +614,7 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
                 _append_discovered_dir(dirs, seen_dirs, sub_remote)
                 _discover_local_dir_files(
                     mounted_sub, sub_remote, job_id, seen_paths, files,
-                    include_recognized=True,
+                    include_recognized=is_sdk_job,
                 )
 
     run_dir = os.path.dirname(logdir) if logdir else (output_dir or "")
@@ -646,21 +646,25 @@ def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
 
+    is_sdk_job = str(job_id).startswith("sdk-")
     log_ctx = _db_log_context(cluster_name, job_id)
     db_path = log_ctx["log_path"]
     output_dir = log_ctx["output_dir"]
     custom_dir = _db_custom_log_dir(cluster_name, job_id)
 
     local = _try_local_discovery(cluster_name, job_id, db_path, output_dir=output_dir)
+    local_dirs = []
     if local:
         if custom_dir:
             already = {d["path"].rstrip("/") for d in local.get("dirs", [])}
             if custom_dir.rstrip("/") not in already:
                 local["dirs"] = [{"label": "custom logs", "path": custom_dir}] + local.get("dirs", [])
         local["custom_log_dir"] = custom_dir
-        return local
+        if is_sdk_job or local.get("files"):
+            return local
+        local_dirs = local.get("dirs", [])
 
-    if str(job_id).startswith("sdk-"):
+    if is_sdk_job:
         if db_path or output_dir:
             return {"files": [], "dirs": _derive_result_dirs([{"path": db_path}]) if db_path else [], "error": ""}
         return {"files": [], "dirs": [], "error": "SDK run — waiting for Slurm job logs"}
@@ -783,6 +787,8 @@ fi
     try:
         out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=25)
     except Exception as e:
+        if local_dirs:
+            return {"files": [], "dirs": local_dirs, "custom_log_dir": custom_dir, "error": ""}
         return {"files": [], "dirs": [], "error": f"SSH error: {e}"}
 
     seen = set()
@@ -815,6 +821,14 @@ fi
 
     files.sort(key=lambda f: _LOG_DISCOVERY_ORDER.get(f["label"], 10))
     dirs = _derive_result_dirs(jobid_files, cluster_name) + extra_dirs
+    if local_dirs:
+        seen_dirs = {d["path"].rstrip("/") for d in dirs if d.get("path")}
+        for d in local_dirs:
+            p = d.get("path", "")
+            key = p.rstrip("/")
+            if p and key not in seen_dirs:
+                seen_dirs.add(key)
+                dirs.append(d)
 
     if custom_dir:
         already = {d["path"].rstrip("/") for d in dirs}

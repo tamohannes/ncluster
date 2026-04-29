@@ -248,6 +248,42 @@ class TestMountedLogDiscovery:
         assert any(f["path"] == "/remote/run/eval-logs/main_123_srun.log" for f in result["files"])
         assert any(f["label"] == "main output" for f in result["files"])
 
+    @pytest.mark.unit
+    def test_mounted_discovery_ignores_previous_retry_logs_for_real_job(self, db_path, tmp_path, monkeypatch, mock_cluster):
+        run_dir = tmp_path / "run"
+        eval_logs = run_dir / "eval-logs"
+        eval_logs.mkdir(parents=True)
+        (eval_logs / "main_exp_11400143_srun.log").write_text("old retry")
+
+        upsert_job(mock_cluster, {
+            "jobid": "11404503",
+            "name": "demo_eval",
+            "state": "RUNNING",
+            "log_path": "/remote/run/eval-logs/main_exp_11400143_srun.log",
+        })
+
+        mapping = {
+            "/remote/run/eval-logs": str(eval_logs),
+            "/remote/run": str(run_dir),
+        }
+        monkeypatch.setattr("server.logs.resolve_mounted_path", lambda cluster, path, want_dir=False: mapping.get(path, ""))
+
+        def fake_ssh(cluster, script, timeout_sec=25):
+            assert cluster == mock_cluster
+            assert "JOB=11404503" in script
+            return (
+                "FILE:main_exp_11404503_srun.log:/remote/run/eval-logs/main_exp_11404503_srun.log\n",
+                "",
+            )
+
+        monkeypatch.setattr("server.logs.ssh_run_with_timeout", fake_ssh)
+
+        result = get_job_log_files(mock_cluster, "11404503")
+        paths = [f["path"] for f in result["files"]]
+
+        assert "/remote/run/eval-logs/main_exp_11404503_srun.log" in paths
+        assert "/remote/run/eval-logs/main_exp_11400143_srun.log" not in paths
+
 
 class TestExtractCustomMetrics:
     @pytest.mark.unit
