@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 
 BODY_PREVIEW_LEN = 200
 _CAMPAIGN_PREFIX_RE = re.compile(r'^\[([^\]]+)\]\s*')
+_ENTRY_ID_QUERY_RE = re.compile(r'^\s*(?:#|id:)\s*(\d+)\s*$', re.IGNORECASE)
+_BARE_ENTRY_ID_QUERY_RE = re.compile(r'^\s*(\d+)\s*$')
 _LEGACY_DIR = os.path.join(PROJECT_ROOT, "data", "logbooks")
 IMAGES_DIR = os.path.join(PROJECT_ROOT, "data", "logbook_images")
 ALLOWED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".html", ".htm"}
@@ -89,6 +91,75 @@ def _fts_safe_query(raw):
     return " ".join(f'"{t}"' for t in tokens)
 
 
+def _entry_id_from_query(query):
+    """Return an exact entry id for queries like ``#123`` or ``id:123``."""
+    m = _ENTRY_ID_QUERY_RE.match(query or "")
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _bare_entry_id_from_query(query):
+    """Return an entry id for bare numeric queries, while still allowing text search."""
+    m = _BARE_ENTRY_ID_QUERY_RE.match(query or "")
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _id_search(
+    con,
+    entry_id,
+    project=None,
+    entry_type=None,
+    limit=50,
+    offset=0,
+    campaign=None,
+    date_from=None,
+    date_to=None,
+):
+    """Exact id lookup that preserves the same filters as list/search."""
+    conditions = ["id = ?"]
+    params = [entry_id]
+    if project:
+        conditions.append("project = ?")
+        params.append(project)
+    if entry_type:
+        conditions.append("entry_type = ?")
+        params.append(entry_type)
+    if campaign:
+        conditions.append("campaign = ?")
+        params.append(campaign)
+    if date_from:
+        conditions.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        conditions.append("created_at <= ?")
+        params.append(date_to)
+    where = " AND ".join(conditions)
+    params.extend([limit, offset])
+    return con.execute(
+        f"""SELECT id, project, title, body, created_at, edited_at, entry_type, pinned, campaign
+            FROM logbook_entries
+            WHERE {where}
+            ORDER BY pinned DESC, edited_at DESC
+            LIMIT ? OFFSET ?""",
+        params,
+    ).fetchall()
+
+
+def _merge_id_first(id_rows, text_rows, limit, offset):
+    merged = []
+    seen = set()
+    for row in list(id_rows) + list(text_rows):
+        row_id = row["id"]
+        if row_id in seen:
+            continue
+        seen.add(row_id)
+        merged.append(row)
+    return merged[offset:offset + limit]
+
+
 def _fts_search(con, project, query, entry_type, limit, offset, campaign=None):
     """FTS5 search with snippet extraction, falling back to LIKE."""
     fts_q = _fts_safe_query(query)
@@ -149,7 +220,36 @@ def list_entries(project, query=None, sort="edited_at", limit=50, offset=0, entr
     sort_dir = "ASC" if sort_col == "title" else "DESC"
 
     if query and query.strip():
-        rows = _fts_search(con, project, query.strip(), entry_type, limit, offset, campaign=campaign)
+        query_text = query.strip()
+        entry_id = _entry_id_from_query(query_text)
+        if entry_id is not None:
+            rows = _id_search(
+                con,
+                entry_id,
+                project=project,
+                entry_type=entry_type,
+                limit=limit,
+                offset=offset,
+                campaign=campaign,
+            )
+        elif _bare_entry_id_from_query(query_text) is not None:
+            row_limit = limit + offset
+            rows = _merge_id_first(
+                _id_search(
+                    con,
+                    _bare_entry_id_from_query(query_text),
+                    project=project,
+                    entry_type=entry_type,
+                    limit=1,
+                    offset=0,
+                    campaign=campaign,
+                ),
+                _fts_search(con, project, query_text, entry_type, row_limit, 0, campaign=campaign),
+                limit,
+                offset,
+            )
+        else:
+            rows = _fts_search(con, project, query_text, entry_type, limit, offset, campaign=campaign)
     else:
         conditions = ["project = ?"]
         params = [project]
@@ -322,7 +422,22 @@ def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
         return []
 
     con = get_db()
-    fts_q = _fts_safe_query(query.strip())
+    query_text = query.strip()
+    entry_id = _entry_id_from_query(query_text)
+    if entry_id is not None:
+        rows = _id_search(
+            con,
+            entry_id,
+            project=project,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        con.close()
+        return [_row_to_dict(r, preview=True) for r in rows]
+
+    bare_entry_id = _bare_entry_id_from_query(query_text)
+    fts_q = _fts_safe_query(query_text)
     conditions = ["f.logbook_fts MATCH ?"]
     params = [fts_q]
 
@@ -353,6 +468,16 @@ def search_entries(query, project=None, date_from=None, date_to=None, limit=50):
     except Exception:
         log.debug("FTS MATCH failed for %r in search_entries, returning empty", query)
         rows = []
+    if bare_entry_id is not None:
+        id_rows = _id_search(
+            con,
+            bare_entry_id,
+            project=project,
+            limit=1,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        rows = _merge_id_first(id_rows, rows, limit, 0)
     con.close()
     return [_row_to_dict(r, preview=True) for r in rows]
 

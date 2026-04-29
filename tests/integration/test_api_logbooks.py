@@ -66,6 +66,21 @@ class TestLogbookApi:
         assert len(entries) == 1
         assert "CUDA" in entries[0]["title"]
 
+    def test_list_search_by_id(self, client):
+        r = client.post("/api/logbook/testproj/entries",
+                        data=json.dumps({"title": "Find by id", "body": "body"}),
+                        content_type="application/json")
+        entry_id = r.get_json()["id"]
+        client.post("/api/logbook/testproj/entries",
+                    data=json.dumps({"title": "Other", "body": f"mentions {entry_id}"}),
+                    content_type="application/json")
+
+        resp = client.get(f"/api/logbook/testproj/entries?q=%23{entry_id}")
+        entries = resp.get_json()
+
+        assert len(entries) == 1
+        assert entries[0]["id"] == entry_id
+
     def test_update_entry(self, client):
         r = client.post("/api/logbook/testproj/entries",
                         data=json.dumps({"title": "Old", "body": "old body"}),
@@ -198,6 +213,19 @@ class TestLogbookApi:
         resp = client.get("/api/logbook/search?q=shared&project=alpha")
         results = resp.get_json()
         assert len(results) == 1
+        assert results[0]["project"] == "alpha"
+
+    def test_cross_project_search_by_id(self, client):
+        r = client.post("/api/logbook/alpha/entries",
+                        data=json.dumps({"title": "Alpha id target", "body": "body"}),
+                        content_type="application/json")
+        entry_id = r.get_json()["id"]
+
+        resp = client.get(f"/api/logbook/search?q=id:{entry_id}")
+        results = resp.get_json()
+
+        assert len(results) == 1
+        assert results[0]["id"] == entry_id
         assert results[0]["project"] == "alpha"
 
     def test_search_empty_query(self, client):

@@ -85,6 +85,25 @@ class TestListEntries:
         assert "CUDA" in results[0]["title"]
 
     @pytest.mark.unit
+    def test_list_search_by_prefixed_id(self):
+        target = create_entry("alpha", "Target note", "body")
+        create_entry("alpha", "Other note", f"mentions {target['id']}")
+
+        results = list_entries("alpha", query=f"#{target['id']}")
+
+        assert len(results) == 1
+        assert results[0]["id"] == target["id"]
+
+    @pytest.mark.unit
+    def test_list_search_by_bare_id_keeps_text_matches(self):
+        target = create_entry("alpha", "Target note", "body")
+        other = create_entry("alpha", "Other note", f"mentions {target['id']}")
+
+        results = list_entries("alpha", query=str(target["id"]))
+
+        assert [r["id"] for r in results] == [target["id"], other["id"]]
+
+    @pytest.mark.unit
     def test_list_limit_offset(self):
         for i in range(5):
             create_entry("alpha", f"Note {i}", f"body {i}")
@@ -158,6 +177,23 @@ class TestSearchEntries:
         results = search_entries("accuracy", project="alpha")
         assert len(results) == 1
         assert results[0]["project"] == "alpha"
+
+    @pytest.mark.unit
+    def test_global_search_by_id(self):
+        target = create_entry("alpha", "Target note", "body")
+        create_entry("beta", "Other note", "body")
+
+        results = search_entries(f"id:{target['id']}")
+
+        assert len(results) == 1
+        assert results[0]["id"] == target["id"]
+        assert results[0]["project"] == "alpha"
+
+    @pytest.mark.unit
+    def test_global_search_by_id_respects_project_filter(self):
+        target = create_entry("alpha", "Target note", "body")
+
+        assert search_entries(f"#{target['id']}", project="beta") == []
 
     @pytest.mark.unit
     def test_search_empty_query(self):
