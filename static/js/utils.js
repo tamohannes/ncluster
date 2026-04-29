@@ -1568,9 +1568,11 @@ function _getJobStats(cn) {
   const me = byUser[USERNAME] || {};
   return {
     myRunning: me.running || 0,
-    myPending: (me.pending || 0) + (me.dependent || 0),
+    myPending: me.pending || 0,
+    myDependent: me.dependent || 0,
     teamRunning: s.total_running || 0,
-    teamPending: (s.total_pending || 0) + (s.total_dependent || 0),
+    teamPending: s.total_pending || 0,
+    teamDependent: s.total_dependent || 0,
   };
 }
 
@@ -1589,6 +1591,8 @@ function computeWds(cn, acct, ad, curGpuType) {
   const s = _clusterSubmitScore(_pppAllocData?.clusters?.[cn] || {}, cn);
   const freeForTeam = s.freeForTeam || 0;
   const teamNum = s.teamNum;
+  const jobs = _getJobStats(cn);
+  const liveTeamRunning = s.teamRunning || jobs.teamRunning || 0;
 
   const myFs = _myFairshareData?.clusters?.[cn]?.[acct];
   const myLevelFs = myFs?.level_fs || 0;
@@ -1607,10 +1611,14 @@ function computeWds(cn, acct, ad, curGpuType) {
   // clusters every node is mixed/alloc most of the time, but jobs still
   // start instantly thanks to fairshare and PPP headroom. idle_nodes
   // still feeds the queue score below (pending vs. idle ratio).
-  const hardCapacity = Math.max(pppHeadroom, freeForTeam);
-  const resourceGate = Math.min(1, hardCapacity / Math.max(reqGpus, 1));
+  const hardCapacity = Math.max(0, pppHeadroom, freeForTeam);
+  const capacityGate = Math.min(1, hardCapacity / Math.max(reqGpus, 1));
+  const myRunningRatio = Math.min(Math.max(jobs.myRunning || 0, 0) / Math.max(reqGpus, 1), 1);
+  const teamRunningRatio = Math.min(Math.max(liveTeamRunning, 0) / Math.max(reqGpus, 1), 1);
+  const liveGate = myRunningRatio > 0 ? 0.70 * myRunningRatio : 0.25 * teamRunningRatio;
+  const resourceGate = Math.max(capacityGate, liveGate);
 
-  const teamPenalty = (teamNum && teamNum > 0 && freeForTeam <= 0) ? 0.7 : 1.0;
+  const teamPenalty = (teamNum && teamNum > 0 && liveTeamRunning >= teamNum) ? 0.7 : 1.0;
 
   const effectiveMyFs = myLevelFs > 0 ? myLevelFs : pppLevelFs;
   const myFsScore = Math.min(effectiveMyFs / 1.5, 1);
@@ -1618,15 +1626,30 @@ function computeWds(cn, acct, ad, curGpuType) {
   const queueScore = 1 - Math.min(Math.log1p(pendingQueue / Math.max(idleNodes, 1)) / Math.log1p(50), 1);
   const occupancyFactor = 1.15 - 0.30 * Math.min(occPct / 100, 1);
 
+  let myWaitFactor = 1.0;
+  if ((jobs.myRunning || 0) <= 0 && (jobs.myPending || 0) >= reqGpus) {
+    myWaitFactor = 0.45 + 0.30 * queueScore;
+  } else if ((jobs.myRunning || 0) <= 0 && (jobs.myPending || 0) > 0) {
+    myWaitFactor = 0.75 + 0.15 * queueScore;
+  }
+  const liveFactor = 1.0 + 0.10 * myRunningRatio;
+
   const priorityBlend = 0.55 * myFsScore + 0.20 * pppFsScore + 0.25 * queueScore;
-  const wds = Math.round(100 * resourceGate * priorityBlend * machineScore * teamPenalty * occupancyFactor);
+  const wds = Math.round(
+    100 * resourceGate * priorityBlend * machineScore * teamPenalty *
+    occupancyFactor * myWaitFactor * liveFactor
+  );
 
   return {
     wds: Math.max(0, Math.min(100, wds)),
     resourceGate: Math.round(resourceGate * 100) / 100,
+    capacityGate: Math.round(capacityGate * 100) / 100,
+    liveGate: Math.round(liveGate * 100) / 100,
     myLevelFs, pppLevelFs,
     queueScore: Math.round(queueScore * 100) / 100,
     machineScore, occupancyFactor: Math.round(occupancyFactor * 1000) / 1000,
+    myWaitFactor: Math.round(myWaitFactor * 100) / 100,
+    liveFactor: Math.round(liveFactor * 100) / 100,
     idleNodes, pendingQueue, freeForTeam, pppHeadroom,
   };
 }
@@ -1666,20 +1689,20 @@ function _clusterSubmitScore(cd, cn) {
 
   const teamAlloc = cd.team_gpu_alloc;
   const teamNum = teamAlloc === 'any' ? null : (typeof teamAlloc === 'number' ? teamAlloc : null);
-  const teamRunning = _getTeamRunningOnCluster(cn);
+  const jobs = _getJobStats(cn);
+  const teamRunning = jobs.teamRunning || _getTeamRunningOnCluster(cn);
 
   let freeForTeam;
   if (teamNum && teamNum > 0) {
-    freeForTeam = Math.min(pppHeadroom, Math.max(0, teamNum - teamRunning));
+    freeForTeam = Math.max(0, Math.min(pppHeadroom, Math.max(0, teamNum - teamRunning)));
   } else {
-    freeForTeam = pppHeadroom;
+    freeForTeam = Math.max(0, pppHeadroom);
   }
-
-  const jobs = _getJobStats(cn);
 
   return { freeForTeam, pppHeadroom, teamRunning, teamNum, levelFs,
            myRunning: jobs.myRunning, myPending: jobs.myPending,
-           teamPending: jobs.teamPending,
+           myDependent: jobs.myDependent, teamPending: jobs.teamPending,
+           teamDependent: jobs.teamDependent,
            score: freeForTeam * Math.min(levelFs, 3) };
 }
 
@@ -1759,13 +1782,31 @@ function _renderPppAllocations(data) {
   const allClusterNames = [...new Set([
     ...Object.keys(clusters), ...partOnlySet, ...configOnlySet,
   ])];
-  // Stable sort: GPU memory rank (highest-memory GPU first), then total GPU
-  // count descending within the same tier, then cluster name alphabetically.
-  // Only static properties are used so cards never reorder on refresh.
-  const _gpuMemRank = { 'GB200': 0, 'B200': 1, 'H200': 2, 'H100': 3, 'A100': 4, 'L40S': 5 };
-  const _gpuRank = (cn) => {
+  // Stable sort: usable clusters first, then GPU memory, then GPUs per node.
+  // Dynamic queue/usage numbers stay out of the ordering so refreshes do not
+  // reshuffle the grid while the user is looking at it.
+  const _gpuMemByType = {
+    GB300: 288, GB200: 192, B200: 192, H200: 141,
+    H100: 80, A100: 80, L40S: 48,
+  };
+  const _gpuType = (cn) => {
     const gt = (clusters[cn]?.gpu_type || CLUSTERS[cn]?.gpu_type || '').toUpperCase();
-    return _gpuMemRank[gt] ?? 99;
+    return gt;
+  };
+  const _gpuMemGb = (cn) => {
+    const explicit = clusters[cn]?.gpu_mem_gb || CLUSTERS[cn]?.gpu_mem_gb || 0;
+    return explicit || _gpuMemByType[_gpuType(cn)] || 0;
+  };
+  const _gpusPerNode = (cn) => {
+    const ps = _partitionData?.[cn];
+    const partGpn = Math.max(...(ps?.partitions || []).map(p => p.gpus_per_node || 0), 0);
+    return partGpn || clusters[cn]?.gpus_per_node || CLUSTERS[cn]?.gpus_per_node || 0;
+  };
+  const _isDimmedCluster = (cn) => {
+    if (configOnlySet.has(cn)) return true;
+    const teamAlloc = clusters[cn]?.team_gpu_alloc ?? _teamGpuAlloc[cn];
+    const teamNum = typeof teamAlloc === 'number' && teamAlloc > 0 ? teamAlloc : null;
+    return !(teamAlloc === 'any' || teamNum);
   };
   const _clusterSize = (cn) => {
     let total = 0;
@@ -1784,9 +1825,15 @@ function _renderPppAllocations(data) {
     return _clusterSizeCache[cn] || 0;
   };
   const names = allClusterNames.sort((a, b) => {
-    const aGpu = _gpuRank(a);
-    const bGpu = _gpuRank(b);
-    if (aGpu !== bGpu) return aGpu - bGpu;
+    const aDim = _isDimmedCluster(a) ? 1 : 0;
+    const bDim = _isDimmedCluster(b) ? 1 : 0;
+    if (aDim !== bDim) return aDim - bDim;
+    const aMem = _gpuMemGb(a);
+    const bMem = _gpuMemGb(b);
+    if (aMem !== bMem) return bMem - aMem;
+    const aGpn = _gpusPerNode(a);
+    const bGpn = _gpusPerNode(b);
+    if (aGpn !== bGpn) return bGpn - aGpn;
     const aSize = _clusterSize(a);
     const bSize = _clusterSize(b);
     if (aSize !== bSize) return bSize - aSize;
@@ -1889,18 +1936,18 @@ function _renderPppAllocations(data) {
           }
           const acctList = [...acctSet].sort();
 
-          let teamAllocMarker = '';
-          if (teamNum) {
-            const mPct = Math.min(98, Math.round(teamNum / (teamScale && teamNum > 0 ? teamNum * 1.2 : totalGpus) * 100));
-            teamAllocMarker = `<div class="ppp-team-marker" style="left:${mPct}%"></div>`;
-          }
+          const teamAllocMarkerFor = (barMax) => {
+            if (!teamNum || barMax <= 0) return '';
+            const mPct = Math.min(98, Math.max(2, Math.round(teamNum / barMax * 100)));
+            return `<div class="ppp-team-marker" style="left:${mPct}%"></div>`;
+          };
 
           html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'} ppp-card-partonly">
             <div class="ppp-card-head">
               <span class="ppp-card-cluster">${cn}</span>
               ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
               <span class="ppp-card-gpu" style="opacity:0.5">no PPP data</span>
-              ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
+              ${teamScale && teamNum ? `<span class="ppp-card-scale-label">alloc ${teamNum}</span>` : ''}
               ${pppCardFreshnessHtml(cn)}
             </div>
             <div class="ppp-card-live"><span class="${idleCls}">${idleGpusP} idle</span> · ${pendingJobs} queued</div>`;
@@ -1909,32 +1956,38 @@ function _renderPppAllocations(data) {
             for (const acct of acctList) {
               const acctJobs = tjJobs.filter(j => j.account === acct);
               let myRun = 0, myPend = 0, teamRun = 0, teamPend = 0, totalAcctGpus = 0;
-              let myAllGpus = 0;
+              let myAllGpus = 0, myDependent = 0;
               for (const j of acctJobs) {
                 const g = j.gpus || 0;
+                const st = (j.state || '').toUpperCase();
                 totalAcctGpus += g;
                 if (j.user === currentUser) {
                   myAllGpus += g;
-                  if (j.state === 'RUNNING') myRun += g; else myPend += g;
+                  if (st === 'RUNNING') myRun += g;
+                  else if (st === 'DEPENDENT' || st === 'BACKUP') myDependent += g;
+                  else myPend += g;
                 } else {
-                  if (j.state === 'RUNNING') teamRun += g; else teamPend += g;
+                  if (st === 'RUNNING') teamRun += g; else teamPend += g;
                 }
               }
+              const myActiveGpus = myRun + myPend;
               const barMax = Math.max(
                 (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus,
-                myAllGpus * 1.05
+                totalAcctGpus * 1.05
               );
               const toPct = (v) => Math.min(100, Math.round(v / barMax * 100));
+              const teamAllocMarker = teamAllocMarkerFor(barMax);
               let segments = '';
               if (showMe && myRun > 0) segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRun)}%"></div>`;
               if (showMe && myPend > 0) segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPend)}%"></div>`;
               if (showTeamUsage && teamRun > 0) segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRun)}%"></div>`;
               if (showTeamUsage && teamPend > 0) segments += `<div class="ppp-seg ppp-seg-team-pend" style="width:${toPct(teamPend)}%"></div>`;
               const myPopL = myRun > 0 || myPend > 0 ? `${myRun} run${myPend > 0 ? ` · ${myPend} pend` : ''}` : '0';
+              const myDepL = myDependent > 0 ? ` · ${myDependent} dep excluded` : '';
               const teamPopL = teamRun > 0 || teamPend > 0 ? `${teamRun} run${teamPend > 0 ? ` · ${teamPend} pend` : ''}` : '0';
               const teamAllocL = teamNum ? `${teamNum} GPUs` : (teamAlloc === 'any' ? 'unlimited' : '');
               const popRows = [
-                { label: currentUser, value: myPopL, cls: 'pop-me' },
+                { label: currentUser, value: `${myPopL}${myDepL}`, cls: 'pop-me' },
                 { label: 'team', value: teamPopL, cls: 'pop-team' },
                 ...(teamAllocL ? [{ label: 'team alloc', value: teamAllocL, detail: 'informal', cls: 'pop-team-alloc' }] : []),
                 { label: 'cluster total', value: `${usedGpus} / ${totalGpus}`, detail: totalGpus > 0 ? `${Math.round(usedGpus/totalGpus*100)}%` : '', cls: 'pop-cluster' },
@@ -1950,12 +2003,16 @@ function _renderPppAllocations(data) {
                   ${teamAllocMarker}
                   <div class="ppp-popup">${popHtml}</div>
                 </div>
-                <span class="ppp-acct-nums"><strong>${totalAcctGpus}</strong> GPUs</span>
+                <span class="ppp-acct-nums" title="${currentUser} running + pending GPUs, excluding dependent jobs / cluster total GPUs"><strong>${myActiveGpus}</strong> / ${totalGpus}</span>
               </div>`;
             }
           } else {
-            const barMax = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus;
+            const barMax = Math.max(
+              (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus,
+              usedGpus * 1.05
+            );
             const toPct = (v) => Math.min(100, Math.round(v / barMax * 100));
+            const teamAllocMarker = teamAllocMarkerFor(barMax);
             html += `<div class="ppp-acct-row">
               <span class="ppp-acct-name">cluster</span>
               <div class="ppp-bar-outer">
@@ -1964,7 +2021,7 @@ function _renderPppAllocations(data) {
                 </div>
                 ${teamAllocMarker}
               </div>
-              <span class="ppp-acct-nums"><strong>${usedGpus}</strong> / ${totalGpus} GPUs</span>
+              <span class="ppp-acct-nums" title="Used GPUs / cluster total GPUs"><strong>${usedGpus}</strong> / ${totalGpus}</span>
             </div>`;
           }
 
@@ -2014,7 +2071,7 @@ function _renderPppAllocations(data) {
       <div class="ppp-card-head">
         <span class="ppp-card-cluster">${cn}</span>
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${clusterGpuBadge(cn)}</span>` : ''}
-        ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
+        ${teamScale && teamNum ? `<span class="ppp-card-scale-label">alloc ${teamNum}</span>` : ''}
         ${pppCardFreshnessHtml(cn)}
       </div>
       ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleGpus} idle</span> · ${pendingJobs} queued</div>` : ''}`;
@@ -2030,12 +2087,12 @@ function _renderPppAllocations(data) {
       const allTjJobs = _teamJobsData?.clusters?.[cn]?.jobs || [];
       const currentUser = _pppOverlayData?.current_user || USERNAME;
       for (const [acct] of accts) {
-        let myAllGpus = 0;
+        let rowUsageGpus = 0;
         for (const j of allTjJobs) {
-          if (j.account !== acct || j.user !== currentUser) continue;
-          myAllGpus += (j.gpus || 0);
+          if (j.account !== acct) continue;
+          rowUsageGpus += (j.gpus || 0);
         }
-        if (myAllGpus > maxAlloc) maxAlloc = myAllGpus * 1.05;
+        if (rowUsageGpus > maxAlloc) maxAlloc = rowUsageGpus * 1.05;
       }
     }
 
@@ -2095,6 +2152,8 @@ function _renderPppAllocations(data) {
       const clusterOccupied = cd.cluster_occupied_gpus || 0;
       const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
       const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
+      let rowMyActiveGpus = myTotal;
+      let rowMyDependentGpus = 0;
       let segments = '';
       if (hasJobSplit) {
         let myRunning = 0, myPending = 0, myDep = 0, myBackup = 0, teamRunGpus = 0, teamPendGpus = 0;
@@ -2114,6 +2173,8 @@ function _renderPppAllocations(data) {
         const myPendGpus = myPending;
         const myDepGpus = myDep;
         const myBkpGpus = myBackup;
+        rowMyActiveGpus = myRunGpus + myPendGpus;
+        rowMyDependentGpus = myDepGpus + myBkpGpus;
 
         const myAllGpus = myRunning + myPending + myDep + myBackup;
         const barRemaining = Math.max(0, maxAlloc - myAllGpus);
@@ -2174,9 +2235,15 @@ function _renderPppAllocations(data) {
       let myPopLabel, teamPopLabel;
       if (hasJobSplit) {
         const myR = acctJobs.filter(j => j.user === currentUser && j.state === 'RUNNING').reduce((s, j) => s + (j.gpus || 0), 0);
-        const myP = acctJobs.filter(j => j.user === currentUser && j.state !== 'RUNNING').reduce((s, j) => s + (j.gpus || 0), 0);
-        myPopLabel = myR > 0 || myP > 0 ? `${myR} run` : `${myTotal}`;
+        const myP = acctJobs
+          .filter(j => {
+            const st = (j.state || '').toUpperCase();
+            return j.user === currentUser && st !== 'RUNNING' && st !== 'DEPENDENT' && st !== 'BACKUP';
+          })
+          .reduce((s, j) => s + (j.gpus || 0), 0);
+        myPopLabel = myR > 0 || myP > 0 ? `${myR} run` : '0';
         if (myP > 0) myPopLabel += ` · ${myP} pend`;
+        if (rowMyDependentGpus > 0) myPopLabel += ` · ${rowMyDependentGpus} dep excluded`;
         let tR = 0, tP = 0;
         for (const j of acctJobs) {
           if (j.user === currentUser) continue;
@@ -2215,7 +2282,7 @@ function _renderPppAllocations(data) {
           ${teamAllocMarker}
           <div class="ppp-popup">${popupHtml}</div>
         </div>
-        <span class="ppp-acct-nums"><strong>${consumed}</strong> / ${ad.gpus_allocated}</span>
+        <span class="ppp-acct-nums" title="${currentUser} running + pending GPUs, excluding dependent jobs / cluster total GPUs"><strong>${rowMyActiveGpus}</strong> / ${clusterTot || ad.gpus_allocated}</span>
         ${(() => {
           const curGpu = CLUSTERS[cn]?.gpu_type || '';
           const w = computeWds(cn, acct, ad, curGpu);

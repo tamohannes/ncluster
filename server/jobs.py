@@ -2003,9 +2003,15 @@ def fetch_team_jobs(cluster):
 
     fmt = "%i|%u|%T|%r|%D|%b|%P|%a|%j|%l|%E"
     try:
+        # Team quota should come from PPP-account usage, but WDS also needs
+        # the current user's traction even when a job was submitted through a
+        # non-PPP account alias.  Query both and de-duplicate below.
         out, _ = ssh_run_with_timeout(
             cluster,
-            f'squeue -A {accts_csv} -h -o "{fmt}" 2>/dev/null',
+            (
+                f'squeue -A {accts_csv} -h -o "{fmt}" 2>/dev/null; '
+                f'squeue -u {DEFAULT_USER} -h -o "{fmt}" 2>/dev/null'
+            ),
             timeout_sec=12,
         )
     except Exception:
@@ -2014,12 +2020,18 @@ def fetch_team_jobs(cluster):
     # --- Pass 1: parse all lines, build job-name index ---
     parsed = []
     name_by_id = {}
+    seen_job_ids = set()
     for line in out.splitlines():
         parts = line.strip().split("|")
         if len(parts) < 10:
             continue
         jobid = parts[0].strip()
+        if not jobid or jobid in seen_job_ids:
+            continue
+        seen_job_ids.add(jobid)
         user = parts[1].strip()
+        if team_set and user not in team_set and user != DEFAULT_USER:
+            continue
         state = parts[2].strip().upper()
         reason = parts[3].strip()
         try:

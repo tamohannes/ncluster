@@ -21,7 +21,9 @@ log = logging.getLogger(__name__)
 
 def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
                  my_level_fs, ppp_level_fs, team_num,
-                 occ_pct=100, req_nodes=1, req_gpn=8):
+                 occ_pct=100, req_nodes=1, req_gpn=8,
+                 my_running=0, my_pending=0, team_running=0, team_pending=0,
+                 machine_score=1.0):
     """Compute WDS score using the same equation as the frontend.
 
     The resource gate intentionally does NOT include ``idle_nodes``: on
@@ -32,10 +34,15 @@ def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
     """
     req_gpus = req_nodes * req_gpn
 
-    hard_capacity = max(ppp_headroom, free_for_team)
-    resource_gate = min(1, hard_capacity / max(req_gpus, 1))
+    hard_capacity = max(0, ppp_headroom, free_for_team)
+    capacity_gate = min(1, hard_capacity / max(req_gpus, 1))
 
-    team_penalty = 0.7 if (team_num is not None and team_num > 0 and free_for_team <= 0) else 1.0
+    my_running_ratio = min(max(my_running, 0) / max(req_gpus, 1), 1)
+    team_running_ratio = min(max(team_running, 0) / max(req_gpus, 1), 1)
+    live_gate = 0.70 * my_running_ratio if my_running_ratio > 0 else 0.25 * team_running_ratio
+    resource_gate = max(capacity_gate, live_gate)
+
+    team_penalty = 0.7 if (team_num is not None and team_num > 0 and team_running >= team_num) else 1.0
 
     effective_my_fs = my_level_fs if my_level_fs > 0 else ppp_level_fs
     my_fs_score = min(effective_my_fs / 1.5, 1)
@@ -45,16 +52,31 @@ def _compute_wds(free_for_team, ppp_headroom, idle_nodes, pending_queue,
     )
     occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
 
+    # A cluster where our jobs are actively starting is empirically healthier
+    # than one where the same fairshare/headroom math leaves us pending.
+    if my_running <= 0 and my_pending >= req_gpus:
+        my_wait_factor = 0.45 + 0.30 * queue_score
+    elif my_running <= 0 and my_pending > 0:
+        my_wait_factor = 0.75 + 0.15 * queue_score
+    else:
+        my_wait_factor = 1.0
+    live_factor = 1.0 + 0.10 * my_running_ratio
+
     priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
     wds = max(0, min(100, round(
-        100 * resource_gate * priority_blend * team_penalty * occupancy_factor
+        100 * resource_gate * priority_blend * machine_score * team_penalty
+        * occupancy_factor * my_wait_factor * live_factor
     )))
 
     return {
         "wds": wds,
         "resource_gate": round(resource_gate, 3),
+        "capacity_gate": round(capacity_gate, 3),
+        "live_gate": round(live_gate, 3),
         "queue_score": round(queue_score, 3),
         "occupancy_factor": round(occupancy_factor, 3),
+        "my_wait_factor": round(my_wait_factor, 3),
+        "live_factor": round(live_factor, 3),
     }
 
 
@@ -127,10 +149,11 @@ def compute_wds_snapshot():
         tj_summary = (tj or {}).get("summary", {})
         tj_users = tj_summary.get("by_user", {})
         team_running = tj_summary.get("total_running", 0)
+        team_pending = tj_summary.get("total_pending", 0)
 
         my_data = tj_users.get(me, {})
         my_running = my_data.get("running", 0)
-        my_pending = my_data.get("pending", 0) + my_data.get("dependent", 0)
+        my_pending = my_data.get("pending", 0)
 
         for acct, ad in cd.get("accounts", {}).items():
             ppp_headroom = ad.get("headroom", 0)
@@ -142,13 +165,15 @@ def compute_wds_snapshot():
             my_level_fs = my_acct_fs.get("level_fs", 0)
 
             if team_num is not None:
-                free_for_team = min(ppp_headroom, max(0, team_num - team_running))
+                free_for_team = max(0, min(ppp_headroom, max(0, team_num - team_running)))
             else:
-                free_for_team = ppp_headroom
+                free_for_team = max(0, ppp_headroom)
 
             result = _compute_wds(
                 free_for_team, ppp_headroom, idle_nodes, pending_queue,
                 my_level_fs, ppp_level_fs, team_num, occ_pct=occ_pct,
+                my_running=my_running, my_pending=my_pending,
+                team_running=team_running, team_pending=team_pending,
             )
 
             rows.append((

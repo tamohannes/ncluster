@@ -89,8 +89,8 @@ class TestTeamPenalty:
     """Going over the informal team allocation still applies the 0.7 penalty."""
 
     def test_team_over_quota_applies_penalty(self):
-        no_penalty = _wds(team_num=8, free_for_team=8)
-        over_quota = _wds(team_num=8, free_for_team=0)
+        no_penalty = _wds(team_num=8, free_for_team=8, team_running=7)
+        over_quota = _wds(team_num=8, free_for_team=0, team_running=8)
         # 0.7x penalty must visibly reduce WDS for the over-quota case.
         assert over_quota["wds"] < no_penalty["wds"]
         assert over_quota["wds"] == pytest.approx(no_penalty["wds"] * 0.7, abs=2)
@@ -99,3 +99,30 @@ class TestTeamPenalty:
         result = _wds(team_num=None, free_for_team=0, ppp_headroom=100)
         assert result["resource_gate"] > 0
         assert result["wds"] > 0
+
+
+@pytest.mark.unit
+class TestLiveSchedulerSignals:
+    """Live starts and pending-only queues should move WDS beyond static PPP math."""
+
+    def test_running_jobs_rescue_negative_headroom(self):
+        result = _wds(
+            free_for_team=0,
+            ppp_headroom=-937,
+            pending_queue=4000,
+            idle_nodes=80,
+            my_level_fs=1.0,
+            ppp_level_fs=0.75,
+            my_running=120,
+            team_running=120,
+        )
+        assert result["capacity_gate"] == 0.0
+        assert result["live_gate"] >= 0.7
+        assert result["resource_gate"] >= 0.7
+        assert result["wds"] > 0
+
+    def test_pending_only_jobs_apply_wait_drag(self):
+        no_jobs = _wds(my_running=0, my_pending=0)
+        stuck = _wds(my_running=0, my_pending=64, pending_queue=200, idle_nodes=0)
+        assert stuck["my_wait_factor"] < 0.5
+        assert stuck["wds"] < no_jobs["wds"] * 0.6
