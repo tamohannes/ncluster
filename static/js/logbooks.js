@@ -518,6 +518,46 @@ function openHtmlLightbox(src) {
   });
 }
 
+function _layoutExpandedTable(wrap) {
+  const main = wrap && wrap.closest ? wrap.closest('.lb-main') : null;
+  if (!wrap || !main) return;
+
+  wrap.style.width = '';
+  wrap.style.marginLeft = '';
+
+  const mainStyle = window.getComputedStyle(main);
+  const padLeft = parseFloat(mainStyle.paddingLeft) || 0;
+  const padRight = parseFloat(mainStyle.paddingRight) || 0;
+  const mainRect = main.getBoundingClientRect();
+  const wrapRect = wrap.getBoundingClientRect();
+  const targetLeft = mainRect.left + padLeft;
+  const targetWidth = Math.max(320, mainRect.width - padLeft - padRight);
+
+  wrap.style.width = `${targetWidth}px`;
+  wrap.style.marginLeft = `${targetLeft - wrapRect.left}px`;
+}
+
+function toggleExpandedTable(btn) {
+  const wrap = btn && btn.closest ? btn.closest('.md-table-wrap') : null;
+  if (!wrap) return;
+  const expanded = !wrap.classList.contains('expanded');
+  wrap.classList.toggle('expanded', expanded);
+  if (expanded) {
+    _layoutExpandedTable(wrap);
+    btn.textContent = 'normal';
+    btn.title = 'Return table to entry width';
+  } else {
+    wrap.style.width = '';
+    wrap.style.marginLeft = '';
+    btn.textContent = 'wide';
+    btn.title = 'Fit table to page width';
+  }
+}
+
+window.addEventListener('resize', () => {
+  document.querySelectorAll('.md-table-wrap.expanded').forEach(_layoutExpandedTable);
+});
+
 
 // ── Export ───────────────────────────────────────────────────────────────────
 
@@ -595,6 +635,7 @@ async function exportEntryHtml() {
   bodyHtml = bodyHtml.replace(/\s*onload="[^"]*"/g, '');
   bodyHtml = bodyHtml.replace(/\s*sandbox="[^"]*"/g, '');
   bodyHtml = bodyHtml.replace(/<button class="lb-html-embed-zoom"[^>]*>[^<]*<\/button>/g, '');
+  bodyHtml = bodyHtml.replace(/<button class="md-table-expand"[^>]*>[^<]*<\/button>/g, '');
 
   const origin = window.location.origin;
   bodyHtml = bodyHtml.replace(

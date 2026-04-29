@@ -1051,7 +1051,7 @@ function _renderTableRows(tableLines, tblNum) {
     html += parseRow(tableLines[i], 'td');
   }
   html += '</tbody></table>';
-  return `<div class="md-table-wrap">${html}</div>`;
+  return `<div class="md-table-wrap"><button class="md-table-expand" onclick="event.stopPropagation();toggleExpandedTable(this)" title="Fit table to page width">wide</button>${html}</div>`;
 }
 
 function _isFigureCaption(text) {
