@@ -519,7 +519,6 @@ function renderCard(name, data) {
     const groupKeyCounts = {};
     for (const [gk] of groupEntries) groupKeyCounts[gk] = (groupKeyCounts[gk] || 0) + 1;
     const gkHL = computeNameHighlight(allGroupKeys);
-    const hasMixedCampaigns = seenCampaigns.filter(c => c).length > 1;
     let _prevCampaign = null;
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
@@ -682,7 +681,7 @@ function renderCard(name, data) {
       </tr>`;
       }).join('');
       let campaignDivider = '';
-      if (hasMixedCampaigns && _campaign && _campaign !== _prevCampaign) {
+      if (_campaign && _campaign !== _prevCampaign) {
         const _divSrc = _shadedColor || _projColor || '';
         const _divColor = _divSrc ? campaignDividerColor(_divSrc) : '';
         const _divBorder = _divColor ? ` style="border-color:${_divColor}"` : '';
