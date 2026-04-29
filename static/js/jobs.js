@@ -748,14 +748,15 @@ function renderCard(name, data) {
         <span class="badge">${clusterGpuBadge(name)}</span>
         ${quotaBadgesHtml(name)}
         <span class="status-indicator ${statusClass}"></span>
-        <span class="job-count-text">${jobCountText}</span>
-        ${staleBadge}
         ${mountBadge}
-        <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
-      </div>
-      <div class="card-actions-row">
         ${mountBtn}
         <button class="icon-btn" onclick="showClusterHistory('${name}')">runs</button>
+        <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
+        <span class="card-info-break"></span>
+        <span class="job-count-text">${jobCountText}</span>
+        ${staleBadge}
+      </div>
+      <div class="card-actions-row">
         ${clearCompletedBtn}
         ${clearCancelledBtn}
         ${clearFailedBtn}
