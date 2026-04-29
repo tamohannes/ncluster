@@ -539,14 +539,23 @@ function renderCard(name, data) {
       const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
       const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix, _campaign, _shadedColor);
-      const identityBadge = runIdentityBadge(rootJob);
-      const attemptBadge = groupKeyCounts[gk] > 1 && !identityBadge ? runAttemptBadge(rootJob) : '';
+      const runHash = String(rootJob.run_hash || '').trim();
+      const runUuid = String(rootJob.run_uuid || '').trim();
+      const hasRunIdentity = !!(runHash || runUuid);
+      const runHashAttrs = runHash
+        ? ` data-run-hash="${escAttr(runHash)}"`
+        : (runUuid ? ` data-run-hash="${escAttr(runUuid.slice(0, 8))}"` : '');
+      const runTitleParts = [gk];
+      if (runHash) runTitleParts.push(`run hash ${runHash}`);
+      if (runUuid) runTitleParts.push(`UUID ${runUuid}`);
+      if (rootJobId) runTitleParts.push(`root ${rootJobId}`);
+      const attemptBadge = groupKeyCounts[gk] > 1 && !hasRunIdentity ? runAttemptBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
       const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
         : highlightedGk;
       const noProjectBtn = (!_proj && name !== 'local' && /^[a-zA-Z][a-zA-Z0-9-]*_/.test(gk))
         ? `<button class="no-project-btn" type="button" onclick="event.stopPropagation();openNewProjectPopover('${escAttr(gk)}', this)" title="No project matches this run — click to create one">+ project</button>`
@@ -576,7 +585,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${attemptBadge}${noProjectBtn}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
@@ -737,7 +746,7 @@ function renderCard(name, data) {
     ? `<span class="mount-badge ${mount.mounted ? 'ok' : 'off'}" title="${(mount.root || '').replace(/"/g, '&quot;')}">${mount.mounted ? 'mounted' : 'ssh-only'}</span>`
     : '';
   const mountBtn = (name !== 'local' && !mount.mounted)
-    ? `<button class="icon-btn" onclick="mountCluster('${name}')">mount</button>`
+    ? `<button class="icon-btn card-mount-btn" onclick="mountCluster('${name}')">mount</button>`
     : '';
 
   const staleBadge = data._stale ? `<span class="card-stale-badge" title="This cluster's data is stale - retrying in background">stale</span>` : '';
@@ -748,13 +757,13 @@ function renderCard(name, data) {
         <span class="badge">${clusterGpuBadge(name)}</span>
         ${quotaBadgesHtml(name)}
         <span class="status-indicator ${statusClass}"></span>
-        ${mountBadge}
-        ${mountBtn}
-        <button class="icon-btn" onclick="showClusterHistory('${name}')">runs</button>
-        <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
         <span class="card-info-break"></span>
         <span class="job-count-text">${jobCountText}</span>
         ${staleBadge}
+        ${mountBadge}
+        ${mountBtn}
+        <button class="icon-btn card-runs-btn" onclick="showClusterHistory('${name}')">runs</button>
+        <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
       </div>
       <div class="card-actions-row">
         ${clearCompletedBtn}
