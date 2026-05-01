@@ -2,6 +2,9 @@ let _runOverlayOpen = false;
 let _runOverlayCancelJobIds = null;
 let _runMetricChartInstances = [];
 let _runSdkPlotData = { series: {}, scalars: {} };
+let _runOverlayCluster = '';
+let _runOverlayRootJobId = '';
+let _runCustomMetricsLoaded = false;
 
 async function openRunInfo(cluster, rootJobId, runName, cancelKey = '') {
   return _openRunInfoFromUrl(
@@ -23,13 +26,36 @@ async function openRunInfoByHash(cluster, runHash, runName = '') {
   );
 }
 
+function runPageUrl(cluster, runHash) {
+  if (!cluster || !runHash) return '#/history';
+  return `#/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`;
+}
+
+function openRunPageFromRun(cluster, runHash) {
+  if (!cluster || !runHash) return;
+  if (typeof openRunPage === 'function') {
+    openRunPage(cluster, runHash);
+  } else if (typeof _setHash === 'function') {
+    _setHash(runPageUrl(cluster, runHash));
+  } else {
+    location.hash = runPageUrl(cluster, runHash);
+  }
+}
+
+function _openRunPageFromModal(cluster, runHash) {
+  closeRunInfoDirect();
+  openRunPageFromRun(cluster, runHash);
+}
+
 async function _openRunInfoFromUrl(cluster, runRef, runName, cancelKey, url) {
   const overlay = document.getElementById('run-overlay');
   const title = document.getElementById('run-title');
   const subtitle = document.getElementById('run-subtitle');
   const body = document.getElementById('run-body');
   const markSlot = document.getElementById('run-mark-slot');
+  const pageSlot = document.getElementById('run-page-action-slot');
   if (markSlot) markSlot.innerHTML = '';
+  if (pageSlot) pageSlot.innerHTML = '';
 
   title.textContent = runName || 'Run Info';
   subtitle.textContent = `${cluster} · ${runRef}`;
@@ -45,6 +71,7 @@ async function _openRunInfoFromUrl(cluster, runRef, runName, cancelKey, url) {
     const data = await res.json();
     if (data.status !== 'ok' || !data.run) {
       if (markSlot) markSlot.innerHTML = '';
+      if (pageSlot) pageSlot.innerHTML = '';
       body.innerHTML = `<div class="err-msg">Could not load run info: ${data.error || 'unknown error'}</div>`;
       return;
     }
@@ -52,6 +79,7 @@ async function _openRunInfoFromUrl(cluster, runRef, runName, cancelKey, url) {
     _renderRunBody(data.run, cluster);
   } catch (e) {
     if (markSlot) markSlot.innerHTML = '';
+    if (pageSlot) pageSlot.innerHTML = '';
     body.innerHTML = `<div class="err-msg">Failed to fetch run info: ${e.message}</div>`;
   }
 }
@@ -64,10 +92,15 @@ function closeRunInfo(event) {
 function closeRunInfoDirect() {
   _destroyRunMetricCharts();
   const markSlot = document.getElementById('run-mark-slot');
+  const pageSlot = document.getElementById('run-page-action-slot');
   if (markSlot) markSlot.innerHTML = '';
+  if (pageSlot) pageSlot.innerHTML = '';
   document.getElementById('run-overlay').classList.remove('open');
   _runOverlayOpen = false;
   _runOverlayCancelJobIds = null;
+  _runOverlayCluster = '';
+  _runOverlayRootJobId = '';
+  _runCustomMetricsLoaded = false;
 }
 
 let _runNoteTimer = null;
@@ -76,6 +109,9 @@ function _renderRunBody(run, cluster) {
   _destroyRunMetricCharts();
   const body = document.getElementById('run-body');
   const jobs = run.jobs || [];
+  _runOverlayCluster = cluster;
+  _runOverlayRootJobId = String(run.root_job_id || '');
+  _runCustomMetricsLoaded = false;
 
   const earliest = _earliestTime(jobs, 'started');
   const latest = _latestTime(jobs, 'ended_at');
@@ -100,6 +136,14 @@ function _renderRunBody(run, cluster) {
             onclick="_toggleRunMark(${runId})" title="${starred ? 'Unmark this run' : 'Mark this run'}">
       ${starred ? 'Marked' : 'Mark'}
     </button>${hashChip}`;
+  }
+  const pageSlot = document.getElementById('run-page-action-slot');
+  if (pageSlot) {
+    pageSlot.innerHTML = run.run_hash
+      ? `<button type="button" class="run-page-action-btn"
+            onclick="_openRunPageFromModal('${escAttr(cluster)}','${escAttr(run.run_hash)}')"
+            title="Open the full run metrics page">Run page</button>`
+      : '';
   }
 
   let overviewHtml = '';
@@ -281,15 +325,15 @@ function _renderRunBody(run, cluster) {
 
   body.innerHTML = html;
   _loadRunSdkMetrics(cluster, run.root_job_id);
-  _loadRunCustomMetrics(cluster, run.root_job_id);
 }
 
 async function _loadRunCustomMetrics(cluster, rootJobId) {
   const el = document.getElementById('run-custom-metrics');
-  if (!el) return;
+  if (!el || document.hidden) return;
   try {
     const res = await fetch(`/api/custom_metrics_run/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
     const d = await res.json();
+    if (d.status === 'ok') _runCustomMetricsLoaded = true;
     if (d.status !== 'ok' || (!d.aggregates?.length && !d.jobs?.some(j => j.metrics?.length))) return;
 
     let html = '';
@@ -938,6 +982,9 @@ function switchRunTab(tabId) {
     panel.classList.toggle('active', panel.id === `run-tab-${tabId}`);
   });
   if (tabId === 'metrics') {
+    if (!_runCustomMetricsLoaded && _runOverlayCluster && _runOverlayRootJobId) {
+      _loadRunCustomMetrics(_runOverlayCluster, _runOverlayRootJobId);
+    }
     _runMetricChartInstances.forEach(chart => {
       try { chart.resize(); } catch (_) {}
     });

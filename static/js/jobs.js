@@ -38,9 +38,9 @@ function _persistAllData() {
 
 // ── App tabs ─────────────────────────────────────────────────────────────────
 const _tabIcons = {
-  live:    '⚡', history: '⏱',
+  live:    '⚡', history: '⏱', metrics: '◈',
   logbook: '📓', project: '📁',
-  clusters: '🖥',
+  clusters: '🖥', run: '◈',
 };
 let _appTabs = [{ id: 1, type: 'live', label: 'Live', project: null }];
 let _activeTabId = 1;
@@ -58,7 +58,17 @@ function _setHash(h) {
 function _hashForView(type, extra) {
   if (type === 'live') return '#/live';
   if (type === 'history') return '#/history';
+  if (type === 'metrics') {
+    if (typeof _metricsPageCurrentQuery === 'function') return `#/metrics${_metricsPageCurrentQuery()}`;
+    return '#/metrics';
+  }
   if (type === 'clusters') return '#/compute';
+  if (type === 'run') {
+    const info = extra || {};
+    const cluster = info.cluster || info.runCluster || '';
+    const runHash = info.runHash || info.hash || '';
+    return (cluster && runHash) ? `#/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}` : '#/history';
+  }
   if (type === 'logbook') {
     const proj = extra || (typeof _lbProject !== 'undefined' ? _lbProject : '');
     return proj ? `#/logbook/${proj}` : '#/logbook';
@@ -78,12 +88,20 @@ function _onHashChange() {
 
   if (view === 'live') showTab('live');
   else if (view === 'history') showTab('history');
+  else if (view === 'metrics') {
+    if (typeof openMetricsPage === 'function') openMetricsPage();
+  }
   else if (view === 'compute') showTab('clusters');
   else if (view === 'logbook') {
     if (parts[1] && typeof _lbProject !== 'undefined') _lbProject = decodeURIComponent(parts[1]);
     showTab('logbook');
   }
   else if (view === 'project' && parts[1]) openProject(decodeURIComponent(parts[1]));
+  else if (view === 'run' && parts.length >= 3) {
+    const cluster = decodeURIComponent(parts[1]);
+    const runHash = decodeURIComponent(parts[2]);
+    if (typeof openRunPage === 'function') openRunPage(cluster, runHash);
+  }
   else if (view === 'explorer' && parts.length >= 4) {
     const cluster = decodeURIComponent(parts[1]);
     const jobId = decodeURIComponent(parts[2]);
@@ -99,12 +117,18 @@ function _activateView(tab) {
   currentTab = tab;
   document.getElementById('live-view').classList.toggle('hidden', tab !== 'live');
   document.getElementById('history-view').classList.toggle('active', tab === 'history');
+  const metricsView = document.getElementById('metrics-view');
+  if (metricsView) metricsView.classList.toggle('active', tab === 'metrics');
   document.getElementById('project-view').classList.toggle('active', tab === 'project');
+  const runPage = document.getElementById('run-page-view');
+  if (runPage) runPage.classList.toggle('active', tab === 'run');
   document.getElementById('logbook-view').classList.toggle('active', tab === 'logbook');
   document.getElementById('clusters-view').classList.toggle('active', tab === 'clusters');
   document.getElementById('explorer-page').classList.remove('open');
   document.getElementById('tab-live').classList.toggle('active', tab === 'live');
   document.getElementById('tab-history').classList.toggle('active', tab === 'history');
+  const metricsTab = document.getElementById('tab-metrics');
+  if (metricsTab) metricsTab.classList.toggle('active', tab === 'metrics');
   document.getElementById('tab-logbook').classList.toggle('active', tab === 'logbook');
   document.getElementById('tab-clusters').classList.toggle('active', tab === 'clusters');
   if (tab !== 'project') {
@@ -123,7 +147,7 @@ function showTab(tab) {
   const at = _appTabs.find(t => t.id === _activeTabId);
   if (at) {
     at.type = tab;
-    at.label = { live: 'Live', history: 'Runs', logbook: 'Logbook', clusters: 'Compute' }[tab] || tab;
+    at.label = { live: 'Live', history: 'Runs', metrics: 'Metrics', logbook: 'Logbook', clusters: 'Compute', run: 'Run' }[tab] || tab;
     at.project = null;
     if (tab === 'logbook' && typeof _lbProject !== 'undefined' && _lbProject) {
       at.lbProject = _lbProject;
@@ -132,6 +156,9 @@ function showTab(tab) {
   _renderAppTabs();
   _persistTabs();
   _setHash(_hashForView(tab));
+  if (tab === 'metrics' && typeof openMetricsPage === 'function') {
+    openMetricsPage(true);
+  }
 }
 
 function switchAppTab(id) {
@@ -141,16 +168,22 @@ function switchAppTab(id) {
   if (t.type === 'project' && t.project) {
     _activateView('project');
     openProject(t.project, true);
+  } else if (t.type === 'metrics') {
+    _activateView('metrics');
+    if (typeof openMetricsPage === 'function') openMetricsPage(true);
   } else if (t.type === 'logbook') {
     if (t.lbProject) _lbProject = t.lbProject;
     _activateView('logbook');
     if (t.lbEntryId) setTimeout(() => openLogbookEntry(t.lbEntryId), 300);
+  } else if (t.type === 'run' && t.runCluster && t.runHash) {
+    _activateView('run');
+    if (typeof openRunPage === 'function') openRunPage(t.runCluster, t.runHash, true);
   } else {
     _activateView(t.type);
   }
   _renderAppTabs();
   _persistTabs();
-  _setHash(_hashForView(t.type, t.project || t.lbProject));
+  _setHash(_hashForView(t.type, t.type === 'run' ? t : (t.project || t.lbProject)));
 }
 
 function _updateActiveTabExtra(fields) {
@@ -176,6 +209,31 @@ function addAppTab(type, label, project) {
   }
   _renderAppTabs();
   _persistTabs();
+}
+
+function openRunAppTab(cluster, runHash, label) {
+  const c = String(cluster || '');
+  const h = String(runHash || '');
+  if (!c || !h) return;
+  const existing = _appTabs.find(t => t.type === 'run' && t.runCluster === c && t.runHash === h);
+  if (existing) {
+    _activeTabId = existing.id;
+  } else {
+    _appTabs.push({
+      id: _nextTabId++,
+      type: 'run',
+      label: label || `Run ${h}`,
+      project: null,
+      runCluster: c,
+      runHash: h,
+    });
+    _activeTabId = _appTabs[_appTabs.length - 1].id;
+  }
+  _activateView('run');
+  _renderAppTabs();
+  _persistTabs();
+  _setHash(_hashForView('run', { cluster: c, runHash: h }));
+  if (typeof openRunPage === 'function') openRunPage(c, h, true);
 }
 
 function closeAppTab(id) {
@@ -225,7 +283,7 @@ function _persistTabs() {
 }
 
 function _restoreTabs() {
-  const validTypes = new Set(['live', 'history', 'logbook', 'project', 'clusters']);
+  const validTypes = new Set(['live', 'history', 'metrics', 'logbook', 'project', 'clusters', 'run']);
   try {
     const raw = localStorage.getItem('clausius.appTabs');
     if (raw) {
