@@ -613,8 +613,8 @@ table { width: 100%; border-collapse: collapse; }
 thead th {
   font-family: var(--mono); font-size: 10px; font-weight: 500;
   color: var(--muted); text-transform: uppercase; letter-spacing: 0.7px;
-  padding: 7px 10px; text-align: left;
-  background: var(--bg); border-bottom: 1px solid var(--border);
+  padding: 5px 10px; text-align: left;
+  background: var(--surface); border-bottom: 1px solid var(--row-border);
   white-space: nowrap;
 }
 tbody tr { border-bottom: 1px solid var(--row-border); transition: background 0.1s; }
@@ -6258,6 +6258,14 @@ thead th,
 .run-jobs-table th {
   background: color-mix(in srgb, var(--glass-surface-soft) 72%, transparent);
   border-color: var(--glass-border);
+}
+
+.card-body thead th {
+  background: var(--surface) !important;
+  background-image: none !important;
+  border-color: var(--row-border) !important;
+  padding-top: 5px;
+  padding-bottom: 5px;
 }
 
 tbody tr:hover,
