@@ -71,7 +71,9 @@ function _onHashChange() {
   if (_hashNavigating) return;
   const raw = location.hash.replace(/^#\/?/, '');
   if (!raw) return;
-  const parts = raw.split('/');
+  const [route, query = ''] = raw.split('?');
+  const params = new URLSearchParams(query);
+  const parts = route.split('/');
   const view = parts[0];
 
   if (view === 'live') showTab('live');
@@ -86,7 +88,8 @@ function _onHashChange() {
     const cluster = decodeURIComponent(parts[1]);
     const jobId = decodeURIComponent(parts[2]);
     const path = decodeURIComponent(parts.slice(3).join('/'));
-    openExplorer(cluster, jobId, path, path.split('/').pop());
+    const rootDir = params.get('root') || '';
+    openExplorer(cluster, jobId, path, path.split('/').pop(), rootDir ? { rootDir } : undefined);
   }
 }
 

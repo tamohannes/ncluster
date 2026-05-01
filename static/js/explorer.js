@@ -5,10 +5,16 @@ let _expIsLoading = false, _expFullLoaded = false;
 let _expView = 'formatted';
 let _expRawContent = '';
 
-function openExplorer(cluster, jobId, path, filename) {
+function openExplorer(cluster, jobId, path, filename, options) {
+  const opts = options || {};
   _expCluster = cluster;
   _expJobId = jobId;
   _expPath = path;
+  if (Object.prototype.hasOwnProperty.call(opts, 'rootDir')) {
+    _exDirRoot = opts.rootDir || null;
+  } else if (jobId !== '__dir__') {
+    _exDirRoot = null;
+  }
   _expTopPage = 0;
   _expBottomPage = 0;
   _expIsLoading = false;
@@ -27,7 +33,10 @@ function openExplorer(cluster, jobId, path, filename) {
   document.getElementById('project-view').classList.remove('active');
   document.getElementById('explorer-page').classList.add('open');
 
-  if (typeof _setHash === 'function') _setHash(`#/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(jobId)}/${encodeURIComponent(path)}`);
+  if (typeof _setHash === 'function') {
+    const rootPart = _exDirRoot ? `?root=${encodeURIComponent(_exDirRoot)}` : '';
+    _setHash(`#/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(jobId)}/${encodeURIComponent(path)}${rootPart}`);
+  }
 
   const isJsonl = /\.jsonl(?:-async)?$/i.test(path);
   if (isJsonl && _expView === 'formatted') {
@@ -51,12 +60,15 @@ async function _loadExplorerTree() {
     _expPage = 0;
     _expRawContent = '';
     document.getElementById('exp-filename').textContent = path;
-    if (typeof _setHash === 'function') _setHash(`#/explorer/${encodeURIComponent(_expCluster)}/${encodeURIComponent(_expJobId)}/${encodeURIComponent(path)}`);
+    if (typeof _setHash === 'function') {
+      const rootPart = _exDirRoot ? `?root=${encodeURIComponent(_exDirRoot)}` : '';
+      _setHash(`#/explorer/${encodeURIComponent(_expCluster)}/${encodeURIComponent(_expJobId)}/${encodeURIComponent(path)}${rootPart}`);
+    }
     setExpView('formatted');
   };
 
   try {
-    if (_expJobId === '__dir__' && _exDirRoot) {
+    if (_exDirRoot) {
       const res = await fetchWithTimeout(`/api/ls/${_expCluster}?path=${encodeURIComponent(_exDirRoot)}&force=1`);
       const data = await res.json();
       if (data.status !== 'ok') {

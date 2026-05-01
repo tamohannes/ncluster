@@ -112,6 +112,21 @@ async function _fetchSpotlight(q) {
       groups.push({ label: 'Runs', items });
     }
 
+    if (data.files && data.files.length) {
+      const items = data.files.map(f => ({
+        icon: f.path && f.path.endsWith('/') ? '📁' : '📄',
+        title: f.filename || f.path,
+        sub: `${f.cluster}${f.run_name ? ` · ${f.run_name}` : ''} · ${f.path}`,
+        hint: f.run_hash || f.source || 'file',
+        idx: idx++,
+        action: () => {
+          closeSpotlight();
+          openExplorerPathResult(f);
+        },
+      }));
+      groups.push({ label: 'Files', items });
+    }
+
     if (data.history && data.history.length) {
       const items = data.history.map(r => {
         const stateIcon = { RUNNING: '🟢', PENDING: '🟡', COMPLETED: '✅', FAILED: '🔴', CANCELLED: '⚪' };
@@ -216,4 +231,13 @@ function _highlightSpotlight() {
 
 function _escHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function openExplorerPathResult(file) {
+  if (!file || !file.cluster || !file.path) return;
+  const path = file.path;
+  const rootDir = file.root_dir || path.replace(/\/[^/]*$/, '');
+  const jobId = file.job_id || '__dir__';
+  const filename = file.filename || path.split('/').pop() || path;
+  openExplorer(file.cluster, jobId, path, filename, { rootDir });
 }
