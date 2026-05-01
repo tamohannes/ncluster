@@ -68,6 +68,124 @@ from .board import build_board_snapshot, build_cluster_board_entry, _fill_output
 api = Blueprint("api", __name__)
 
 
+def _path_is_under(path, root):
+    if not path or not root:
+        return False
+    root = root.rstrip("/")
+    return path == root or path.startswith(root + "/")
+
+
+def _run_root_from_path(path, known_root=""):
+    """Infer the run directory that should anchor the explorer tree."""
+    if known_root and _path_is_under(path, known_root):
+        return known_root.rstrip("/")
+    parts = path.split("/")
+    result_dirs = set(RESULT_DIR_NAMES) | {"logs", "output"}
+    for idx, part in enumerate(parts):
+        if part in result_dirs and idx > 0:
+            root = "/".join(parts[:idx])
+            return root or "/"
+    parent = os.path.dirname(path.rstrip("/"))
+    return parent or path
+
+
+def _search_file_paths_for_spotlight(q, limit=8):
+    """Return Spotlight results that can open directly in the file explorer."""
+    query = (q or "").strip()
+    if not query:
+        return []
+    ql = query.lower()
+    query_looks_path = query.startswith(("/", "~")) or "/" in query
+
+    con = get_db()
+    rows = con.execute(
+        """SELECT jh.cluster, jh.job_id, jh.job_name, jh.state, jh.log_path,
+                  r.root_job_id, r.run_name, r.run_uuid, r.primary_output_dir, r.project
+           FROM job_history jh
+           LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+           WHERE COALESCE(jh.log_path, '') != ''
+              OR COALESCE(r.primary_output_dir, '') != ''
+           ORDER BY COALESCE(jh.started, jh.submitted, jh.ended_at, '') DESC
+           LIMIT 2000"""
+    ).fetchall()
+    con.close()
+
+    out = []
+    seen = set()
+
+    def add_result(row, path, root_dir, source):
+        if not path:
+            return
+        key = (row["cluster"], path)
+        if key in seen or len(out) >= limit:
+            return
+        seen.add(key)
+        root_job_id = row["root_job_id"] or row["job_id"]
+        run_hash = get_run_hash(row["cluster"], root_job_id, row["run_uuid"] or "")
+        out.append({
+            "cluster": row["cluster"],
+            "job_id": row["job_id"],
+            "job_name": row["job_name"] or "",
+            "state": row["state"] or "",
+            "path": path,
+            "filename": os.path.basename(path.rstrip("/")) or path,
+            "root_dir": root_dir or _run_root_from_path(path),
+            "run_name": row["run_name"] or row["job_name"] or "",
+            "run_hash": run_hash,
+            "project": row["project"] or "",
+            "source": source,
+        })
+
+    for row in rows:
+        log_path = row["log_path"] or ""
+        primary_output_dir = (row["primary_output_dir"] or "").rstrip("/")
+        log_root = _run_root_from_path(log_path, primary_output_dir) if log_path else primary_output_dir
+
+        if log_path and ql in log_path.lower():
+            add_result(row, log_path, log_root, "known log")
+
+        if query_looks_path and primary_output_dir and _path_is_under(query, primary_output_dir):
+            add_result(row, query, primary_output_dir, "run path")
+        elif query_looks_path and log_root and _path_is_under(query, log_root):
+            add_result(row, query, log_root, "run path")
+
+        if len(out) >= limit:
+            return out
+
+    if query_looks_path and query.startswith("/"):
+        for cluster, cfg in CLUSTERS.items():
+            if len(out) >= limit:
+                break
+            if cluster == "local" or not cfg.get("enabled", 1):
+                continue
+            remote_bases = [
+                str(p).replace("$USER", DEFAULT_USER).rstrip("/")
+                for p in (cfg.get("mount_paths") or [])
+                if p
+            ]
+            if remote_bases and not any(_path_is_under(query, base) for base in remote_bases):
+                continue
+            key = (cluster, query)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "cluster": cluster,
+                "job_id": "__dir__",
+                "job_name": "",
+                "state": "",
+                "path": query,
+                "filename": os.path.basename(query.rstrip("/")) or query,
+                "root_dir": _run_root_from_path(query),
+                "run_name": "",
+                "run_hash": "",
+                "project": "",
+                "source": "direct path",
+            })
+
+    return out
+
+
 @api.app_errorhandler(Exception)
 def _handle_unhandled(exc):
     _log.exception("Unhandled exception on %s %s", request.method, request.path)
@@ -2935,7 +3053,38 @@ def api_spotlight():
 
     def _search_runs():
         try:
+            def _run_result(row):
+                rh = get_run_hash(row["cluster"], row["root_job_id"], row["run_uuid"])
+                return {
+                    "cluster": row["cluster"],
+                    "root_job_id": row["root_job_id"],
+                    "run_hash": rh,
+                    "run_name": row["run_name"],
+                    "run_uuid": row["run_uuid"],
+                    "sdk_status": row["sdk_status"],
+                    "project": row["project"],
+                    "started_at": row["started_at"],
+                    "job_count": row["job_count"],
+                }
+
             con = get_db()
+            if re.fullmatch(r"[0-9a-fA-F]{4,8}", q):
+                rows = con.execute(
+                    """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
+                              r.sdk_status, r.project, r.started_at, COUNT(jh.job_id) AS job_count
+                       FROM runs r
+                       LEFT JOIN job_history jh ON jh.run_id = r.id AND jh.cluster = r.cluster
+                       GROUP BY r.id
+                       ORDER BY COALESCE(r.started_at, r.created_at, '') DESC"""
+                ).fetchall()
+                direct = [
+                    _run_result(r) for r in rows
+                    if get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"]).lower() == ql
+                ]
+                if direct:
+                    con.close()
+                    return direct[:8]
+
             rows = con.execute(
                 """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
                           r.sdk_status, r.project, r.started_at, COUNT(jh.job_id) AS job_count
@@ -2959,32 +3108,31 @@ def api_spotlight():
                 ]).lower()
                 if ql not in haystack:
                     continue
-                out.append({
-                    "cluster": r["cluster"],
-                    "root_job_id": r["root_job_id"],
-                    "run_hash": rh,
-                    "run_name": r["run_name"],
-                    "run_uuid": r["run_uuid"],
-                    "sdk_status": r["sdk_status"],
-                    "project": r["project"],
-                    "started_at": r["started_at"],
-                    "job_count": r["job_count"],
-                })
+                out.append(_run_result(r))
                 if len(out) >= 8:
                     break
             return out
         except Exception:
             return []
 
+    def _search_files():
+        try:
+            return _search_file_paths_for_spotlight(q, limit=8)
+        except Exception:
+            _log.exception("spotlight file path search failed")
+            return []
+
     f_proj = _shared_pool.submit(_search_projects)
     f_lb = _shared_pool.submit(_search_logbook)
     f_hist = _shared_pool.submit(_search_history)
     f_runs = _shared_pool.submit(_search_runs)
+    f_files = _shared_pool.submit(_search_files)
 
     return jsonify({
         "projects": f_proj.result(),
         "logbook": f_lb.result(),
         "runs": f_runs.result(),
+        "files": f_files.result(),
         "history": f_hist.result(),
     })
 

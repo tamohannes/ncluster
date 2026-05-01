@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from server.db import upsert_job
+from server.db import db_write, get_run_hash, upsert_job
 
 
 @pytest.mark.integration
@@ -105,6 +105,68 @@ class TestSpotlightHistory:
 
 
 @pytest.mark.integration
+class TestSpotlightRuns:
+    def test_finds_old_run_by_exact_run_hash(self, client, db_path, mock_cluster):
+        target_root = "target-root"
+        target_hash = get_run_hash(mock_cluster, target_root)
+        with db_write() as con:
+            con.execute(
+                """INSERT INTO runs (cluster, root_job_id, run_name, project, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (mock_cluster, target_root, "target_run", "demo", "2025-01-01T00:00:00"),
+            )
+            for idx in range(2001):
+                con.execute(
+                    """INSERT INTO runs (cluster, root_job_id, run_name, project, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (mock_cluster, f"newer-{idx}", f"newer_run_{idx}", "demo", f"2026-01-01T00:{idx % 60:02d}:00"),
+                )
+
+        resp = client.get(f"/api/spotlight?q={target_hash}")
+        data = resp.get_json()
+
+        assert data["runs"][0]["run_hash"] == target_hash
+        assert data["runs"][0]["run_name"] == "target_run"
+
+
+@pytest.mark.integration
+class TestSpotlightFiles:
+    def test_finds_known_log_path_by_filename(self, client, db_path, mock_cluster):
+        upsert_job(mock_cluster, {
+            "jobid": "12345",
+            "name": "demo_eval_math",
+            "state": "COMPLETED",
+            "log_path": "/runs/demo/eval-logs/worker-12345.out",
+        })
+
+        resp = client.get("/api/spotlight?q=worker-12345.out")
+        data = resp.get_json()
+
+        assert len(data["files"]) >= 1
+        result = data["files"][0]
+        assert result["cluster"] == mock_cluster
+        assert result["job_id"] == "12345"
+        assert result["path"] == "/runs/demo/eval-logs/worker-12345.out"
+        assert result["root_dir"] == "/runs/demo"
+
+    def test_opens_direct_file_under_known_run_root(self, client, db_path, mock_cluster):
+        upsert_job(mock_cluster, {
+            "jobid": "12345",
+            "name": "demo_eval_math",
+            "state": "COMPLETED",
+            "log_path": "/runs/demo/eval-logs/worker-12345.out",
+        })
+
+        target = "/runs/demo/eval-results/math/metrics.json"
+        resp = client.get(f"/api/spotlight?q={target}")
+        data = resp.get_json()
+
+        match = next(r for r in data["files"] if r["path"] == target)
+        assert match["job_id"] == "12345"
+        assert match["root_dir"] == "/runs/demo"
+
+
+@pytest.mark.integration
 class TestSpotlightCombined:
     def test_all_sources_returned(self, client, db_path, monkeypatch):
         from server.config import PROJECTS
@@ -124,7 +186,9 @@ class TestSpotlightCombined:
         data = resp.get_json()
         assert "projects" in data
         assert "logbook" in data
+        assert "files" in data
         assert "history" in data
         assert isinstance(data["projects"], list)
         assert isinstance(data["logbook"], list)
+        assert isinstance(data["files"], list)
         assert isinstance(data["history"], list)
