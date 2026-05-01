@@ -11,22 +11,25 @@ from datetime import datetime, timedelta
 
 from .config import DB_PATH, PINNABLE_TERMINAL_STATES, RESULT_DIR_NAMES
 
+RUN_HASH_LEN = 12
+
 
 def get_run_hash(cluster, root_job_id, run_uuid=""):
-    """Return the short user-facing run identity.
+    """Return the user-facing run identity hash.
 
     SQLite run IDs are internal row IDs and can change across databases. The UI
-    should show a stable 8-character hash instead.
+    should show a stable hash instead. Older 8-character links are accepted as
+    unique prefixes by the lookup helpers below.
     """
     uuid_text = str(run_uuid or "").replace("-", "").strip()
     if uuid_text:
-        return uuid_text[:8]
+        return uuid_text[:RUN_HASH_LEN]
     raw = f"{cluster}:{root_job_id}".encode("utf-8", "replace")
-    return hashlib.sha1(raw).hexdigest()[:8]
+    return hashlib.sha1(raw).hexdigest()[:RUN_HASH_LEN]
 
 
 def get_run_by_hash(cluster, run_hash):
-    """Return a run row by its user-facing 8-character hash."""
+    """Return a run row by full hash or unique hash prefix within a cluster."""
     target = str(run_hash or "").strip().lower()
     if not target:
         return None
@@ -39,14 +42,43 @@ def get_run_by_hash(cluster, run_hash):
     matches = []
     for row in rows:
         row_hash = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
-        if row_hash.lower() == target:
-            matches.append(dict(row))
+        if row_hash.lower().startswith(target):
+            item = dict(row)
+            item["run_hash"] = row_hash
+            matches.append(item)
     if len(matches) == 1:
         return matches[0]
-    if matches:
-        matches.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-        return matches[0]
     return None
+
+
+def resolve_run_hash_prefix(run_hash, cluster=""):
+    """Resolve a full hash or unique hash prefix across one or all clusters.
+
+    Returns ``{"status": "ok", "run": row}``, ``{"status": "ambiguous"}``, or
+    ``{"status": "not_found"}``.
+    """
+    target = str(run_hash or "").strip().lower()
+    if not target:
+        return {"status": "not_found", "matches": []}
+    con = get_db()
+    if cluster:
+        rows = con.execute("SELECT * FROM runs WHERE cluster=?", (cluster,)).fetchall()
+    else:
+        rows = con.execute("SELECT * FROM runs").fetchall()
+    con.close()
+    matches = []
+    for row in rows:
+        row_hash = get_run_hash(row["cluster"], row["root_job_id"], row["run_uuid"])
+        if row_hash.lower().startswith(target):
+            item = dict(row)
+            item["run_hash"] = row_hash
+            matches.append(item)
+    if len(matches) == 1:
+        return {"status": "ok", "run": matches[0], "matches": matches}
+    if len(matches) > 1:
+        matches.sort(key=lambda r: (r.get("created_at") or "", r.get("id") or 0), reverse=True)
+        return {"status": "ambiguous", "matches": matches}
+    return {"status": "not_found", "matches": []}
 
 
 def parse_slurm_elapsed_seconds(elapsed):
@@ -1764,6 +1796,67 @@ def get_run_metrics(run_uuid):
         "scalars": scalars,
         "scalar_latest": scalar_latest,
     }
+
+
+def list_metrics_views():
+    con = get_db()
+    rows = con.execute("""
+        SELECT id, title, state_json, pinned, created_at, updated_at
+        FROM metrics_views
+        ORDER BY pinned DESC, updated_at DESC, id DESC
+    """).fetchall()
+    con.close()
+    return [dict(row) for row in rows]
+
+
+def get_metrics_view(view_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT id, title, state_json, pinned, created_at, updated_at FROM metrics_views WHERE id=?",
+        (view_id,),
+    ).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
+def create_metrics_view(title, state_json, pinned=0):
+    with db_write() as con:
+        cur = con.execute(
+            """
+            INSERT INTO metrics_views (title, state_json, pinned, created_at, updated_at)
+            VALUES (?, ?, ?, datetime('now'), datetime('now'))
+            """,
+            (title or "Untitled metrics view", state_json or "{}", 1 if pinned else 0),
+        )
+        view_id = cur.lastrowid
+    return get_metrics_view(view_id)
+
+
+def update_metrics_view(view_id, *, title=None, state_json=None, pinned=None):
+    fields = []
+    values = []
+    if title is not None:
+        fields.append("title=?")
+        values.append(title or "Untitled metrics view")
+    if state_json is not None:
+        fields.append("state_json=?")
+        values.append(state_json or "{}")
+    if pinned is not None:
+        fields.append("pinned=?")
+        values.append(1 if pinned else 0)
+    if not fields:
+        return get_metrics_view(view_id)
+    fields.append("updated_at=datetime('now')")
+    values.append(view_id)
+    with db_write() as con:
+        con.execute(f"UPDATE metrics_views SET {', '.join(fields)} WHERE id=?", values)
+    return get_metrics_view(view_id)
+
+
+def delete_metrics_view(view_id):
+    with db_write() as con:
+        cur = con.execute("DELETE FROM metrics_views WHERE id=?", (view_id,))
+    return cur.rowcount
 
 
 def cancel_sdk_job(synthetic_job_id):

@@ -62,7 +62,12 @@ from .jobs import (
     fetch_team_usage,
 )
 from .poller import get_poller, get_version, touch_demand
-from .db import get_run_by_hash, get_run_hash, get_run_with_jobs, update_run_fields
+from .db import (
+    get_run_by_hash, get_run_hash, get_run_with_jobs, update_run_fields,
+    resolve_run_hash_prefix,
+    list_metrics_views, get_metrics_view, create_metrics_view,
+    update_metrics_view, delete_metrics_view,
+)
 from .board import build_board_snapshot, build_cluster_board_entry, _fill_output_dirs
 
 api = Blueprint("api", __name__)
@@ -1486,6 +1491,107 @@ def api_run_metrics_by_hash(cluster, run_hash):
     from .db import get_run_metrics
     payload = get_run_metrics(run_uuid)
     return jsonify({"status": "ok", **payload})
+
+
+@api.route("/api/resolve_run_hash/<run_hash>")
+def api_resolve_run_hash(run_hash):
+    cluster = request.args.get("cluster", "").strip()
+    if cluster and cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    result = resolve_run_hash_prefix(run_hash, cluster=cluster)
+    if result["status"] == "ok":
+        run = result["run"]
+        return jsonify({
+            "status": "ok",
+            "cluster": run.get("cluster", ""),
+            "root_job_id": run.get("root_job_id", ""),
+            "run_hash": run.get("run_hash", ""),
+            "run_name": run.get("run_name", ""),
+            "project": run.get("project", ""),
+        })
+    matches = [{
+        "cluster": r.get("cluster", ""),
+        "root_job_id": r.get("root_job_id", ""),
+        "run_hash": r.get("run_hash", ""),
+        "run_name": r.get("run_name", ""),
+        "project": r.get("project", ""),
+    } for r in result.get("matches", [])[:20]]
+    if result["status"] == "ambiguous":
+        return jsonify({"status": "error", "error": "Ambiguous run hash prefix", "matches": matches}), 409
+    return jsonify({"status": "error", "error": "Run not found", "matches": []}), 404
+
+
+@api.route("/api/metrics_views")
+def api_metrics_views_list():
+    views = []
+    for view in list_metrics_views():
+        try:
+            state = json.loads(view.get("state_json") or "{}")
+        except Exception:
+            state = {}
+        view = dict(view)
+        view["state"] = state
+        view.pop("state_json", None)
+        views.append(view)
+    return jsonify({"status": "ok", "views": views})
+
+
+@api.route("/api/metrics_views", methods=["POST"])
+def api_metrics_views_create():
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "Untitled metrics view").strip() or "Untitled metrics view"
+    state = data.get("state") if isinstance(data.get("state"), dict) else {}
+    pinned = 1 if data.get("pinned") else 0
+    view = create_metrics_view(title, json.dumps(state, default=str), pinned=pinned)
+    view = dict(view)
+    view["state"] = state
+    view.pop("state_json", None)
+    return jsonify({"status": "ok", "view": view})
+
+
+@api.route("/api/metrics_views/<int:view_id>")
+def api_metrics_views_get(view_id):
+    view = get_metrics_view(view_id)
+    if not view:
+        return jsonify({"status": "error", "error": "Saved metrics view not found"}), 404
+    try:
+        state = json.loads(view.get("state_json") or "{}")
+    except Exception:
+        state = {}
+    view["state"] = state
+    view.pop("state_json", None)
+    return jsonify({"status": "ok", "view": view})
+
+
+@api.route("/api/metrics_views/<int:view_id>", methods=["PATCH"])
+def api_metrics_views_patch(view_id):
+    if not get_metrics_view(view_id):
+        return jsonify({"status": "error", "error": "Saved metrics view not found"}), 404
+    data = request.get_json(silent=True) or {}
+    state_json = None
+    if "state" in data:
+        state_json = json.dumps(data.get("state") if isinstance(data.get("state"), dict) else {}, default=str)
+    view = update_metrics_view(
+        view_id,
+        title=str(data.get("title")).strip() if "title" in data else None,
+        state_json=state_json,
+        pinned=bool(data.get("pinned")) if "pinned" in data else None,
+    )
+    try:
+        state = json.loads(view.get("state_json") or "{}")
+    except Exception:
+        state = {}
+    view["state"] = state
+    view.pop("state_json", None)
+    return jsonify({"status": "ok", "view": view})
+
+
+@api.route("/api/metrics_views/<int:view_id>", methods=["DELETE"])
+def api_metrics_views_delete(view_id):
+    rows = delete_metrics_view(view_id)
+    if not rows:
+        return jsonify({"status": "error", "error": "Saved metrics view not found"}), 404
+    return jsonify({"status": "ok", "deleted": view_id})
 
 
 @api.route("/api/run_info/<cluster>/<root_job_id>/retry_meta", methods=["POST"])
@@ -3068,7 +3174,7 @@ def api_spotlight():
                 }
 
             con = get_db()
-            if re.fullmatch(r"[0-9a-fA-F]{4,8}", q):
+            if re.fullmatch(r"[0-9a-fA-F]{4,12}", q):
                 rows = con.execute(
                     """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
                               r.sdk_status, r.project, r.started_at, COUNT(jh.job_id) AS job_count
@@ -3079,7 +3185,7 @@ def api_spotlight():
                 ).fetchall()
                 direct = [
                     _run_result(r) for r in rows
-                    if get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"]).lower() == ql
+                    if get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"]).lower().startswith(ql)
                 ]
                 if direct:
                     con.close()

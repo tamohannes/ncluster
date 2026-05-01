@@ -154,6 +154,9 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
     metrics = client.get(f"/api/run_metrics/mock-cluster/{root_job_id}")
     assert metrics.status_code == 200, metrics.data
     payload = metrics.get_json()
+    metrics_by_hash = client.get(f"/api/run_metrics_by_hash/mock-cluster/{run_uuid[:8]}")
+    assert metrics_by_hash.status_code == 200, metrics_by_hash.data
+    assert metrics_by_hash.get_json()["series"]["loss"] == payload["series"]["loss"]
     assert payload["metadata"] == {"model": "demo", "lr": 1e-5}
     assert set(payload["series"]) == {"loss"}
     assert payload["series"]["loss"][0]["value"] == 0.5

@@ -283,6 +283,18 @@ CREATE TABLE IF NOT EXISTS run_scalars (
 """
 """Scalar SDK statistics emitted without a step."""
 
+METRICS_VIEWS = """
+CREATE TABLE IF NOT EXISTS metrics_views (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    title       TEXT NOT NULL,
+    state_json  TEXT NOT NULL DEFAULT '{}',
+    pinned      INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+"""Saved multi-run Metrics Explorer workspaces/bookmarks."""
+
 PROJECTS = """
 CREATE TABLE IF NOT EXISTS projects (
     name               TEXT PRIMARY KEY,
@@ -446,6 +458,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_ts ON run_metrics(run_uuid, ts)",
     "CREATE INDEX IF NOT EXISTS idx_run_scalars_uuid_key ON run_scalars(run_uuid, key)",
     "CREATE INDEX IF NOT EXISTS idx_run_scalars_uuid_ts ON run_scalars(run_uuid, ts)",
+    "CREATE INDEX IF NOT EXISTS idx_metrics_views_updated ON metrics_views(updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_metrics_views_pinned ON metrics_views(pinned, updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name)",
     "CREATE INDEX IF NOT EXISTS idx_clusters_position ON clusters(position)",
     "CREATE INDEX IF NOT EXISTS idx_team_members_position ON team_members(position)",
@@ -538,6 +552,7 @@ SCHEMA = [
     SDK_RUN_ALIASES,
     RUN_METRICS,
     RUN_SCALARS,
+    METRICS_VIEWS,
     PROJECTS,
     CLUSTERS,
     TEAM_MEMBERS,
