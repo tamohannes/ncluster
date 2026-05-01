@@ -616,7 +616,7 @@ function renderLogWithHighlights(raw) {
     let cls = 'log-line';
     if (!isBenignLogLine(l)) {
       if (l.includes('traceback')) cls += ' trace';
-      if (l.includes('error') || l.includes('exception') || l.includes('fatal')) cls += ' error';
+      if (isErrorLogLine(line)) cls += ' error';
       else if (l.includes('warning') || l.includes('warn')) cls += ' warn';
     }
     return `<div class="${cls}">${escapeHtml(line)}</div>`;

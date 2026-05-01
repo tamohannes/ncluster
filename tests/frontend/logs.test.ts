@@ -83,9 +83,31 @@ describe('renderLogWithHighlights', () => {
     expect(result).toContain('log-line');
     expect(result).toContain('line1');
   });
-  it('adds error class for error lines', () => {
-    const result = renderLogWithHighlights('Error: something broke');
+  it('adds error class for typed exception lines', () => {
+    const result = renderLogWithHighlights('ValueError: something broke');
     expect(result).toContain('error');
+  });
+  it('adds error class for traceback header', () => {
+    const result = renderLogWithHighlights('Traceback (most recent call last):');
+    expect(result).toContain('error');
+  });
+  it('adds error class for CUDA error', () => {
+    const result = renderLogWithHighlights('CUDA out of memory');
+    expect(result).toContain('error');
+  });
+  it('adds error class for srun error', () => {
+    const result = renderLogWithHighlights('srun: error: task failed');
+    expect(result).toContain('error');
+  });
+  it('does NOT add error class for bare word "error" in text', () => {
+    const result = renderLogWithHighlights('Several errors have been corrected');
+    expect(result).not.toContain('class="log-line error"');
+    expect(result).not.toContain('class="log-line trace error"');
+  });
+  it('does NOT add error class for "error" in prose context', () => {
+    const result = renderLogWithHighlights('the mathematical notation has been updated. Several errors have been corrected and the tables have been recomputed.');
+    expect(result).not.toContain('class="log-line error"');
+    expect(result).not.toContain('class="log-line trace error"');
   });
   it('adds warn class for warning lines', () => {
     const result = renderLogWithHighlights('Warning: heads up');
