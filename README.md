@@ -165,6 +165,7 @@ All runtime configuration lives in the SQLite database (`data/history.db`). The 
 - Lifecycle: `SUBMITTING` -> `PENDING` (Slurm accepts) -> `RUNNING`/`COMPLETED`/`FAILED`
 - Submit command, git commit, hostname, and working directory captured automatically
 - Aim-style manual tracking: import `Run`, attach to an existing SDK run, store static metadata, and track metric time series
+- The run metrics explorer is inspired by [Aim](https://github.com/aimhubio/aim)'s Metrics Explorer: metric selection, Python-like search, modifiers, and context tables are adapted for Clausius' single-run workflow.
 - Ingest endpoint: `POST /api/sdk/events` with optional bearer-token auth (`sdk_ingest_token` setting)
 - If submission fails, the run is auto-marked `FAILED` with "submission interrupted"
 - Run popup shows provenance, SDK metadata, latest metric values, metric charts, and recent metric points
