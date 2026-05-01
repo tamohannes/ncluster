@@ -26,6 +26,7 @@ _EXPECTED_TABLES = {
     "cluster_state",
     "cache_store",
     "sdk_events",
+    "sdk_run_aliases",
     "projects",
     "clusters",
     "team_members",

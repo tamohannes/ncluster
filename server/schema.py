@@ -242,6 +242,16 @@ CREATE TABLE IF NOT EXISTS sdk_events (
 """
 """Append-only event log from the NeMo-Skills SDK ingest endpoint."""
 
+SDK_RUN_ALIASES = """
+CREATE TABLE IF NOT EXISTS sdk_run_aliases (
+    alias_uuid     TEXT PRIMARY KEY,
+    canonical_uuid TEXT NOT NULL,
+    created_at     TEXT DEFAULT (datetime('now')),
+    reason         TEXT DEFAULT ''
+)
+"""
+"""Maps resume/resubmission SDK UUIDs back to the original logical run."""
+
 RUN_METRICS = """
 CREATE TABLE IF NOT EXISTS run_metrics (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -431,6 +441,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_wds_cluster ON wds_history(cluster, account, ts)",
     "CREATE INDEX IF NOT EXISTS idx_cache_expires ON cache_store(expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_sdk_events_uuid ON sdk_events(run_uuid)",
+    "CREATE INDEX IF NOT EXISTS idx_sdk_aliases_canonical ON sdk_run_aliases(canonical_uuid)",
     "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_key_step ON run_metrics(run_uuid, key, step)",
     "CREATE INDEX IF NOT EXISTS idx_run_metrics_uuid_ts ON run_metrics(run_uuid, ts)",
     "CREATE INDEX IF NOT EXISTS idx_run_scalars_uuid_key ON run_scalars(run_uuid, key)",
@@ -524,6 +535,7 @@ SCHEMA = [
     CLUSTER_STATE,
     CACHE_STORE,
     SDK_EVENTS,
+    SDK_RUN_ALIASES,
     RUN_METRICS,
     RUN_SCALARS,
     PROJECTS,

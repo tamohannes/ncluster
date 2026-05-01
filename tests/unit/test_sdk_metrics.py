@@ -173,3 +173,105 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
     assert sdk_events == len(events)
     assert run_metrics == 1
     assert run_scalars == 2
+
+
+def test_sdk_resume_reuses_existing_run_by_output_dir(client, db_path):
+    first_uuid = uuid.uuid4().hex
+    resume_uuid = uuid.uuid4().hex
+    first_started = _run_started_event(first_uuid)
+    resume_started = _run_started_event(resume_uuid)
+
+    events = [
+        first_started,
+        {
+            "run_uuid": first_uuid,
+            "event_type": "metric_logged",
+            "event_seq": 2,
+            "ts": 1.0,
+            "payload": {"key": "loss", "value": 0.7, "step": 1},
+        },
+        {
+            "run_uuid": first_uuid,
+            "event_type": "run_failed",
+            "event_seq": 3,
+            "ts": 2.0,
+            "payload": {"status": "failed"},
+        },
+        resume_started,
+        {
+            "run_uuid": resume_uuid,
+            "event_type": "metric_logged",
+            "event_seq": 2,
+            "ts": 3.0,
+            "payload": {"key": "loss", "value": 0.4, "step": 2},
+        },
+    ]
+
+    res = client.post("/api/sdk/events", data=json.dumps(events), content_type="application/json")
+    assert res.status_code == 200, res.data
+    assert res.get_json()["accepted"] == len(events)
+
+    from server.db import get_db
+    con = get_db()
+    runs = con.execute(
+        "SELECT id, root_job_id, run_uuid, sdk_status, ended_at FROM runs WHERE run_name=?",
+        ("hle_sdk_metrics",),
+    ).fetchall()
+    aliases = con.execute(
+        "SELECT alias_uuid, canonical_uuid FROM sdk_run_aliases"
+    ).fetchall()
+    con.close()
+
+    assert len(runs) == 1
+    assert runs[0]["run_uuid"] == first_uuid
+    assert runs[0]["sdk_status"] == "submitting"
+    assert runs[0]["ended_at"] is None
+    assert [(r["alias_uuid"], r["canonical_uuid"]) for r in aliases] == [
+        (resume_uuid, first_uuid)
+    ]
+
+    metrics = client.get(f"/api/run_metrics/mock-cluster/{runs[0]['root_job_id']}")
+    assert metrics.status_code == 200, metrics.data
+    loss_points = metrics.get_json()["series"]["loss"]
+    assert [p["value"] for p in loss_points] == [0.7, 0.4]
+
+
+def test_init_db_collapses_existing_resume_duplicates(_isolate_db):
+    from server.db import get_db, init_db
+
+    init_db()
+    con = get_db()
+    con.execute(
+        """INSERT INTO runs
+              (cluster, root_job_id, run_name, run_uuid, source, primary_output_dir, sdk_status)
+           VALUES (?, ?, ?, ?, 'sdk', ?, ?)""",
+        ("mock-cluster", "sdk-first", "hle_sdk_metrics", "uuid-first", "/tmp/out", "failed"),
+    )
+    first_id = con.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    con.execute(
+        """INSERT INTO runs
+              (cluster, root_job_id, run_name, run_uuid, source, primary_output_dir, sdk_status)
+           VALUES (?, ?, ?, ?, 'sdk', ?, ?)""",
+        ("mock-cluster", "sdk-second", "hle_sdk_metrics", "uuid-second", "/tmp/out/", "active"),
+    )
+    second_id = con.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+    con.execute(
+        """INSERT INTO job_history (cluster, job_id, job_name, run_id)
+           VALUES (?, ?, ?, ?)""",
+        ("mock-cluster", "123", "hle_sdk_metrics", second_id),
+    )
+    con.commit()
+
+    init_db()
+
+    rows = con.execute("SELECT id, run_uuid, sdk_status FROM runs WHERE run_name=?", ("hle_sdk_metrics",)).fetchall()
+    alias = con.execute("SELECT alias_uuid, canonical_uuid FROM sdk_run_aliases").fetchone()
+    job = con.execute("SELECT run_id FROM job_history WHERE cluster=? AND job_id=?", ("mock-cluster", "123")).fetchone()
+    con.close()
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == first_id
+    assert rows[0]["run_uuid"] == "uuid-first"
+    assert rows[0]["sdk_status"] == "active"
+    assert (alias["alias_uuid"], alias["canonical_uuid"]) == ("uuid-second", "uuid-first")
+    assert job["run_id"] == first_id

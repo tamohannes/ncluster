@@ -351,9 +351,84 @@ def init_db():
 
     # SDK synthetic jobs should never be pinned on the live board.
     con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")
+    _collapse_duplicate_sdk_resume_runs(con)
 
     con.commit()
     con.close()
+
+
+def _collapse_duplicate_sdk_resume_runs(con):
+    """Merge already-created SDK rows that are resume submissions.
+
+    A fresh run should have a unique expname/output_dir pair.  When multiple
+    SDK rows share the exact same cluster, run_name, and non-empty output_dir,
+    they represent resubmissions of the same logical run, so keep the oldest
+    row and alias later UUIDs to it.
+    """
+    groups = con.execute(
+        """SELECT cluster, run_name, rtrim(primary_output_dir, '/') AS output_dir
+           FROM runs
+           WHERE source='sdk'
+             AND COALESCE(run_name, '') != ''
+             AND COALESCE(primary_output_dir, '') != ''
+           GROUP BY cluster, run_name, output_dir
+           HAVING COUNT(*) > 1"""
+    ).fetchall()
+
+    for group in groups:
+        rows = con.execute(
+            """SELECT *
+               FROM runs
+               WHERE source='sdk'
+                 AND cluster=?
+                 AND run_name=?
+                 AND rtrim(primary_output_dir, '/')=?
+               ORDER BY id ASC""",
+            (group["cluster"], group["run_name"], group["output_dir"]),
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        canonical = rows[0]
+        canonical_uuid = canonical["run_uuid"] or ""
+        if not canonical_uuid:
+            continue
+
+        for dup in rows[1:]:
+            dup_uuid = dup["run_uuid"] or ""
+            if dup_uuid and dup_uuid != canonical_uuid:
+                con.execute(
+                    """INSERT OR IGNORE INTO sdk_run_aliases
+                           (alias_uuid, canonical_uuid, reason)
+                       VALUES (?, ?, ?)""",
+                    (dup_uuid, canonical_uuid, "resume-cleanup"),
+                )
+            con.execute(
+                "UPDATE job_history SET run_id=? WHERE run_id=?",
+                (canonical["id"], dup["id"]),
+            )
+            con.execute(
+                """UPDATE runs SET
+                       starred = MAX(starred, ?),
+                       notes = CASE WHEN COALESCE(notes, '') = '' THEN COALESCE(?, '') ELSE notes END,
+                       sdk_status = CASE
+                           WHEN ? IN ('submitting', 'active') THEN ?
+                           ELSE sdk_status
+                       END,
+                       ended_at = CASE
+                           WHEN ? IN ('submitting', 'active') THEN NULL
+                           ELSE ended_at
+                       END
+                   WHERE id=?""",
+                (
+                    dup["starred"] or 0,
+                    dup["notes"] or "",
+                    dup["sdk_status"] or "",
+                    dup["sdk_status"] or "",
+                    dup["sdk_status"] or "",
+                    canonical["id"],
+                ),
+            )
+            con.execute("DELETE FROM runs WHERE id=?", (dup["id"],))
 
 
 def _resolve_board_visible(cluster, state, current_visible, terminal=False, set_board_visible=None):
@@ -1291,7 +1366,8 @@ def get_run(cluster, root_job_id):
 def get_run_by_uuid(run_uuid):
     """Return run record dict by SDK run_uuid, or None."""
     con = get_db()
-    row = con.execute("SELECT * FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()
+    canonical_uuid = resolve_run_uuid(run_uuid, con=con)
+    row = con.execute("SELECT * FROM runs WHERE run_uuid=?", (canonical_uuid,)).fetchone()
     con.close()
     return dict(row) if row else None
 
@@ -1328,6 +1404,70 @@ def _build_full_submit_command(provenance):
     return "\n".join(lines)
 
 
+def _norm_output_dir(path):
+    return str(path or "").rstrip("/")
+
+
+def resolve_run_uuid(run_uuid, con=None):
+    """Return the canonical SDK UUID for a possible resume alias."""
+    if not run_uuid:
+        return run_uuid
+    if con is None:
+        db = get_db()
+        row = db.execute(
+            "SELECT canonical_uuid FROM sdk_run_aliases WHERE alias_uuid=?",
+            (run_uuid,),
+        ).fetchone()
+        db.close()
+    else:
+        row = con.execute(
+            "SELECT canonical_uuid FROM sdk_run_aliases WHERE alias_uuid=?",
+            (run_uuid,),
+        ).fetchone()
+    return row["canonical_uuid"] if row else run_uuid
+
+
+def _find_resume_canonical_run(con, run_uuid, cluster, expname, output_dir):
+    """Find an existing SDK run that this SDK start event is resuming.
+
+    Fresh reruns are expected to use a new run id in both ``expname`` and
+    ``output_dir``.  Therefore we only collapse runs when both the cluster and
+    expname match and the output directory is the same non-empty path.
+    """
+    output_dir = _norm_output_dir(output_dir)
+    if not cluster or not expname or not output_dir:
+        return None
+
+    return con.execute(
+        """SELECT id, run_uuid FROM runs
+           WHERE cluster=?
+             AND source='sdk'
+             AND run_uuid != ''
+             AND run_uuid != ?
+             AND run_name=?
+             AND rtrim(primary_output_dir, '/')=?
+           ORDER BY id ASC
+           LIMIT 1""",
+        (cluster, run_uuid, expname, output_dir),
+    ).fetchone()
+
+
+def get_run_uuid_family(run_uuid):
+    """Return canonical UUID plus aliases for metric aggregation."""
+    if not run_uuid:
+        return []
+    con = get_db()
+    canonical = resolve_run_uuid(run_uuid, con=con)
+    rows = con.execute(
+        "SELECT alias_uuid FROM sdk_run_aliases WHERE canonical_uuid=?",
+        (canonical,),
+    ).fetchall()
+    con.close()
+    vals = [canonical] + [r["alias_uuid"] for r in rows]
+    seen = set()
+    return [v for v in vals if v and not (v in seen or seen.add(v))]
+
+
 def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
     """Create or update a run from SDK run_started event. Returns run_id."""
     from datetime import datetime
@@ -1338,7 +1478,26 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
     params_json = _json.dumps(params_obj) if params_obj else ""
 
     with db_write() as con:
-        row = con.execute("SELECT id FROM runs WHERE run_uuid=?", (run_uuid,)).fetchone()
+        canonical_uuid = resolve_run_uuid(run_uuid, con=con)
+        row = con.execute("SELECT id FROM runs WHERE run_uuid=?", (canonical_uuid,)).fetchone()
+        if not row and canonical_uuid == run_uuid:
+            resume_row = _find_resume_canonical_run(
+                con,
+                run_uuid,
+                cluster,
+                expname,
+                provenance.get("output_dir", ""),
+            )
+            if resume_row:
+                canonical_uuid = resume_row["run_uuid"]
+                con.execute(
+                    """INSERT OR IGNORE INTO sdk_run_aliases
+                           (alias_uuid, canonical_uuid, reason)
+                       VALUES (?, ?, ?)""",
+                    (run_uuid, canonical_uuid, "resume"),
+                )
+                row = resume_row
+
         if row:
             run_id = row["id"]
             con.execute("""
@@ -1351,7 +1510,8 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                     launcher_hostname = COALESCE(NULLIF(?, ''), launcher_hostname),
                     primary_output_dir = COALESCE(NULLIF(?, ''), primary_output_dir),
                     params_json    = COALESCE(NULLIF(?, ''), params_json),
-                    sdk_status     = CASE WHEN sdk_status IN ('', 'submitting') THEN 'submitting' ELSE sdk_status END
+                    sdk_status     = 'submitting',
+                    ended_at       = NULL
                 WHERE id = ?
             """, (
                 expname, project,
@@ -1359,7 +1519,7 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 provenance.get("cwd", ""),
                 provenance.get("git_commit", ""),
                 provenance.get("hostname", ""),
-                provenance.get("output_dir", ""),
+                _norm_output_dir(provenance.get("output_dir", "")),
                 params_json,
                 run_id,
             ))
@@ -1373,12 +1533,12 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                      started_at, created_at, meta_fetched)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
-                cluster, synthetic_job_id, expname, project, run_uuid, "sdk",
+                cluster, synthetic_job_id, expname, project, canonical_uuid, "sdk",
                 command,
                 provenance.get("cwd", ""),
                 provenance.get("git_commit", ""),
                 provenance.get("hostname", ""),
-                provenance.get("output_dir", ""),
+                _norm_output_dir(provenance.get("output_dir", "")),
                 params_json,
                 "submitting", now, now, 1,
             ))
@@ -1497,9 +1657,10 @@ def merge_run_metadata(run_uuid, metadata):
     if not isinstance(metadata, dict):
         return
     with db_write() as con:
+        canonical_uuid = resolve_run_uuid(run_uuid, con=con)
         row = con.execute(
             "SELECT metadata_json FROM runs WHERE run_uuid=?",
-            (run_uuid,),
+            (canonical_uuid,),
         ).fetchone()
         current = {}
         if row and row["metadata_json"]:
@@ -1512,29 +1673,36 @@ def merge_run_metadata(run_uuid, metadata):
         current.update(metadata)
         con.execute(
             "UPDATE runs SET metadata_json=? WHERE run_uuid=?",
-            (_json.dumps(current, default=str), run_uuid),
+            (_json.dumps(current, default=str), canonical_uuid),
         )
 
 
 def get_run_metrics(run_uuid):
     """Return stored series metrics and scalar stats for a run."""
     con = get_db()
+    canonical_uuid = resolve_run_uuid(run_uuid, con=con)
+    alias_rows = con.execute(
+        "SELECT alias_uuid FROM sdk_run_aliases WHERE canonical_uuid=?",
+        (canonical_uuid,),
+    ).fetchall()
+    uuids = [canonical_uuid] + [r["alias_uuid"] for r in alias_rows]
+    ph = ",".join("?" for _ in uuids)
     metric_rows = con.execute("""
         SELECT key, step, ts, value_num, value_json, context_json
         FROM run_metrics
-        WHERE run_uuid=?
+        WHERE run_uuid IN ({})
           AND step IS NOT NULL
         ORDER BY key, COALESCE(step, event_seq), event_seq
-    """, (run_uuid,)).fetchall()
+    """.format(ph), uuids).fetchall()
     scalar_rows = con.execute("""
         SELECT key, ts, value_num, value_json, context_json
         FROM run_scalars
-        WHERE run_uuid=?
+        WHERE run_uuid IN ({})
         ORDER BY key, event_seq
-    """, (run_uuid,)).fetchall()
+    """.format(ph), uuids).fetchall()
     run_row = con.execute(
         "SELECT metadata_json FROM runs WHERE run_uuid=?",
-        (run_uuid,),
+        (canonical_uuid,),
     ).fetchone()
     con.close()
 
@@ -1629,14 +1797,15 @@ def finalize_sdk_run(run_uuid, status, ended_at=None):
     synthetic_job_id = f"sdk-{run_uuid[:12]}"
     if status == "submitted":
         with db_write() as con:
+            canonical_uuid = resolve_run_uuid(run_uuid, con=con)
             con.execute(
                 "UPDATE runs SET sdk_status='active' WHERE run_uuid=? AND sdk_status IN ('submitting', '')",
-                (run_uuid,),
+                (canonical_uuid,),
             )
             con.execute(
                 """UPDATE job_history SET state = CASE WHEN state = 'SUBMITTING' THEN 'PENDING' ELSE state END
                    WHERE job_id = ? AND cluster = (SELECT cluster FROM runs WHERE run_uuid = ?)""",
-                (synthetic_job_id, run_uuid),
+                (synthetic_job_id, canonical_uuid),
             )
         return
     if status in ("failed", "submit_failed"):
@@ -1644,11 +1813,12 @@ def finalize_sdk_run(run_uuid, status, ended_at=None):
     else:
         final_state = "COMPLETED"
     with db_write() as con:
+        canonical_uuid = resolve_run_uuid(run_uuid, con=con)
         con.execute("""
             UPDATE runs SET sdk_status = ?, ended_at = COALESCE(ended_at, ?) WHERE run_uuid = ?
-        """, (status, ts, run_uuid))
+        """, (status, ts, canonical_uuid))
 
-        run_row = con.execute("SELECT cluster FROM runs WHERE run_uuid = ?", (run_uuid,)).fetchone()
+        run_row = con.execute("SELECT cluster FROM runs WHERE run_uuid = ?", (canonical_uuid,)).fetchone()
         if run_row:
             con.execute("""
                 UPDATE job_history SET state = ?, ended_at = COALESCE(ended_at, ?)

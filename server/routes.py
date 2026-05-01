@@ -3271,7 +3271,7 @@ def _ingest_job_state(run_uuid, payload):
             sdk_status = "completed" if state == "COMPLETED" else "failed"
             con.execute(
                 "UPDATE runs SET sdk_status = ?, ended_at = COALESCE(ended_at, ?) WHERE run_uuid = ? AND sdk_status NOT IN ('completed', 'failed')",
-                (sdk_status, now, run_uuid),
+                (sdk_status, now, run.get("run_uuid") or run_uuid),
             )
 
         invalidate_pinned_cache(cluster)
