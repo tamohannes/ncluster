@@ -369,7 +369,7 @@ function _renderAppTabs() {
     const kind = _tabEsc(meta.kind);
     const title = _tabEsc(meta.title);
     const tooltip = _tabEsc(`${meta.kind} — ${meta.title}`);
-    return `<div class="topbar-tab${active}" onclick="switchAppTab(${t.id})" title="${tooltip}">
+    return `<div class="topbar-tab${active}" draggable="true" data-tab-id="${t.id}" onclick="switchAppTab(${t.id})" title="${tooltip}">
       <span class="topbar-tab-icon">${icon}</span>
       <div class="topbar-tab-text">
         <span class="topbar-tab-kind">${kind}</span>
@@ -378,6 +378,75 @@ function _renderAppTabs() {
       ${closable}
     </div>`;
   }).join('');
+  _bindTabDragEvents(el);
+}
+
+// ── Tab drag-and-drop reordering ────────────────────────────────────────────
+
+let _tabDragId = null;
+
+function _bindTabDragEvents(container) {
+  container.querySelectorAll('.topbar-tab').forEach(tab => {
+    tab.addEventListener('dragstart', _onTabDragStart);
+    tab.addEventListener('dragend', _onTabDragEnd);
+  });
+  container.addEventListener('dragover', _onTabDragOver);
+  container.addEventListener('drop', _onTabDrop);
+}
+
+function _onTabDragStart(e) {
+  _tabDragId = parseInt(this.dataset.tabId, 10);
+  this.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', String(_tabDragId));
+}
+
+function _onTabDragEnd() {
+  this.classList.remove('dragging');
+  _tabDragId = null;
+  document.querySelectorAll('.topbar-tab.drag-over-left, .topbar-tab.drag-over-right').forEach(
+    el => el.classList.remove('drag-over-left', 'drag-over-right')
+  );
+}
+
+function _onTabDragOver(e) {
+  if (_tabDragId == null) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const target = e.target.closest('.topbar-tab');
+  if (!target || parseInt(target.dataset.tabId, 10) === _tabDragId) return;
+  document.querySelectorAll('.topbar-tab.drag-over-left, .topbar-tab.drag-over-right').forEach(
+    el => el.classList.remove('drag-over-left', 'drag-over-right')
+  );
+  const rect = target.getBoundingClientRect();
+  const midX = rect.left + rect.width / 2;
+  target.classList.add(e.clientX < midX ? 'drag-over-left' : 'drag-over-right');
+}
+
+function _onTabDrop(e) {
+  e.preventDefault();
+  if (_tabDragId == null) return;
+  const target = e.target.closest('.topbar-tab');
+  if (!target) return;
+  const targetId = parseInt(target.dataset.tabId, 10);
+  if (targetId === _tabDragId) return;
+
+  const fromIdx = _appTabs.findIndex(t => t.id === _tabDragId);
+  const toIdx = _appTabs.findIndex(t => t.id === targetId);
+  if (fromIdx < 0 || toIdx < 0) return;
+
+  const rect = target.getBoundingClientRect();
+  const midX = rect.left + rect.width / 2;
+  const insertBefore = e.clientX < midX;
+
+  const [moved] = _appTabs.splice(fromIdx, 1);
+  let newIdx = _appTabs.findIndex(t => t.id === targetId);
+  if (!insertBefore) newIdx += 1;
+  _appTabs.splice(newIdx, 0, moved);
+
+  _tabDragId = null;
+  _renderAppTabs();
+  _persistTabs();
 }
 
 function _persistTabs() {

@@ -301,6 +301,14 @@ body {
   cursor: pointer; font-size: 13px; line-height: 1;
   flex-shrink: 0; padding: 0;
 }
+.topbar-tab.dragging { opacity: 0.3; }
+.topbar-tab.drag-over-left::before,
+.topbar-tab.drag-over-right::after {
+  content: ''; position: absolute; top: 6px; bottom: 6px;
+  width: 2px; background: var(--accent); border-radius: 1px;
+}
+.topbar-tab.drag-over-left::before { left: -3px; }
+.topbar-tab.drag-over-right::after { right: -3px; }
 .topbar-tab:hover .topbar-tab-close { color: var(--muted); }
 .topbar-tab-close:hover { background: var(--border); color: var(--text); }
 .topbar-title {
