@@ -62,7 +62,7 @@ from .jobs import (
     fetch_team_jobs,
     fetch_team_usage,
 )
-from .poller import get_poller, get_version, touch_demand
+from .poller import get_poller, get_version, bump_version, touch_demand
 from .db import (
     get_run_by_hash, get_run_hash, get_run_with_jobs, update_run_fields,
     resolve_run_hash_prefix,
@@ -387,7 +387,17 @@ def _log_slow(response):
 
 
 @api.route("/")
-def index():
+@api.route("/live")
+@api.route("/runs")
+@api.route("/history")
+@api.route("/metrics")
+@api.route("/compute")
+@api.route("/project/<path:_subpath>")
+@api.route("/logbook")
+@api.route("/logbook/<path:_subpath>")
+@api.route("/run/<path:_subpath>")
+@api.route("/explorer/<path:_subpath>")
+def index(_subpath=None):
     from .settings import get_team_name
     resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=get_team_name()))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -463,6 +473,7 @@ def api_clear_failed(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     dismiss_by_state_prefix(cluster, list(TERMINAL_STATES))
+    bump_version()
     return jsonify({"status": "ok"})
 
 
@@ -471,6 +482,7 @@ def api_clear_cancelled(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     dismiss_by_state_prefix(cluster, ["CANCELLED", "COMPLETING"])
+    bump_version()
     return jsonify({"status": "ok"})
 
 
@@ -479,6 +491,7 @@ def api_clear_completed(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     dismiss_by_state_prefix(cluster, ["COMPLETED"])
+    bump_version()
     return jsonify({"status": "ok"})
 
 
@@ -487,6 +500,7 @@ def api_clear_failed_job(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     dismiss_job(cluster, job_id)
+    bump_version()
     return jsonify({"status": "ok"})
 
 
@@ -994,15 +1008,16 @@ def api_cancel(cluster, job_id):
     if str(job_id).startswith("sdk-"):
         from .db import cancel_sdk_job
         cancel_sdk_job(str(job_id))
-        from .poller import bump_version
         bump_version()
         return jsonify({"status": "ok", "note": "SDK run cancelled"})
     try:
         if cluster == "local":
             os.kill(int(job_id), 15)
+            bump_version()
             return jsonify({"status": "ok"})
         result = cancel_jobs_with_report(cluster, [job_id], timeout_sec=10, chunk_size=1)
         if result["cancelled_ids"]:
+            bump_version()
             return jsonify({"status": "ok"})
         error = result["errors"][0]["error"] if result["errors"] else "Cancel failed"
         return jsonify({"status": "error", "error": error})
@@ -1027,11 +1042,10 @@ def api_cancel_jobs(cluster):
     sdk_cancelled = 0
     if sdk_ids:
         from .db import cancel_sdk_job
-        from .poller import bump_version as _bv
         for sid in sdk_ids:
             cancel_sdk_job(sid)
             sdk_cancelled += 1
-        _bv()
+        bump_version()
 
     if not slurm_ids and not sdk_ids:
         return jsonify({"status": "error", "error": "No valid job IDs"}), 400
@@ -1047,12 +1061,15 @@ def api_cancel_jobs(cluster):
                     os.kill(int(jid), 15)
                 except Exception as e:
                     errors.append(f"{jid}: {e}")
+            bump_version()
             if errors:
                 return jsonify({"status": "partial", "cancelled": len(sanitized) + sdk_cancelled - len(errors), "errors": errors})
             return jsonify({"status": "ok", "cancelled": len(sanitized) + sdk_cancelled})
 
         result = cancel_jobs_with_report(cluster, sanitized, timeout_sec=20, chunk_size=25)
         cancelled = len(result["cancelled_ids"]) + sdk_cancelled
+        if result["cancelled_ids"]:
+            bump_version()
         errors = [
             f'{err["job_id"]}: {err["error"]}'
             for err in result["errors"]
@@ -1673,12 +1690,31 @@ def api_history():
 
 @api.route("/api/projects")
 def api_projects():
+    """Activity-based project list for the sidebar (and similar UIs).
+
+    By default only projects with ``status='active'`` are returned —
+    backlogged projects keep their prefix/color/emoji wiring but disappear
+    from the sidebar until the user reactivates them in Settings. Pass
+    ``?include=all`` to opt in to the full list, or ``?status=backlog`` to
+    list only hidden projects.
+    """
     from .config import get_project_color as _color, get_project_emoji as _emoji, PROJECTS
+    include = (request.args.get("include") or "").strip().lower()
+    status_filter = (request.args.get("status") or "").strip().lower()
+    if status_filter not in ("active", "backlog"):
+        status_filter = "" if include == "all" else "active"
     # Only registered settings projects — history may still list removed keys.
-    projects = [p for p in get_projects() if p.get("project") in PROJECTS]
-    for p in projects:
+    projects = []
+    for p in get_projects():
+        cfg = PROJECTS.get(p.get("project"))
+        if not cfg:
+            continue
+        if status_filter and (cfg.get("status") or "active") != status_filter:
+            continue
         p["color"] = _color(p["project"])
         p["emoji"] = _emoji(p["project"])
+        p["status"] = cfg.get("status") or "active"
+        projects.append(p)
     return jsonify(projects)
 
 
@@ -1707,6 +1743,7 @@ def api_project_create():
         default_campaign=payload.get("default_campaign"),
         campaign_delimiter=payload.get("campaign_delimiter") or "_",
         description=payload.get("description") or "",
+        status=payload.get("status") or "active",
     )
     if result.get("status") == "error":
         return jsonify(result), 400
@@ -1720,7 +1757,7 @@ def api_project_update(name):
     payload = request.get_json(silent=True) or {}
     fields = {k: payload.get(k) for k in (
         "color", "emoji", "prefixes", "default_campaign",
-        "campaign_delimiter", "description",
+        "campaign_delimiter", "description", "status",
     ) if k in payload}
     result = db_update_project(name, **fields)
     if result.get("status") == "error":
@@ -3140,7 +3177,11 @@ def api_spotlight():
             {"project": p["project"], "emoji": get_project_emoji(p["project"]),
              "color": get_project_color(p["project"]), "job_count": p["job_count"]}
             for p in get_projects()
-            if p.get("project") in PROJECTS and ql in p["project"].lower()
+            if (
+                p.get("project") in PROJECTS
+                and (PROJECTS[p["project"]].get("status") or "active") == "active"
+                and ql in p["project"].lower()
+            )
         ][:8]
 
     def _search_logbook():
@@ -3292,7 +3333,6 @@ def api_sdk_ingest():
         get_run_by_uuid,
         invalidate_pinned_cache,
     )
-    from .poller import bump_version
 
     sdk_token = get_sdk_ingest_token()
     if sdk_token:
