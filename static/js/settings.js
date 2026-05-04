@@ -1226,23 +1226,44 @@ function _stringToPrefixes(text, originalPrefixes) {
 
 function renderProjectEditor(projects) {
   const el = document.getElementById('project-editor');
-  el.innerHTML = projects.map(p => {
+  // Sort active projects first, backlogged at the bottom (still grouped by name within each tier).
+  const sorted = [...(projects || [])].sort((a, b) => {
+    const sa = (a.status || 'active') === 'backlog' ? 1 : 0;
+    const sb = (b.status || 'active') === 'backlog' ? 1 : 0;
+    if (sa !== sb) return sa - sb;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  el.innerHTML = sorted.map(p => {
     const name = p.name || '';
     const color = p.color || '#e8f4fd';
     const emoji = p.emoji || '📁';
     const prefixesText = _prefixesToString(p.prefixes);
     const description = p.description || '';
+    const status = (p.status || 'active') === 'backlog' ? 'backlog' : 'active';
+    const isBacklog = status === 'backlog';
     const originalJson = JSON.stringify({
-      color, emoji, prefixes: p.prefixes || [], description,
+      color, emoji, prefixes: p.prefixes || [], description, status,
     }).replace(/"/g, '&quot;');
+    const backlogCls = isBacklog ? ' ce-backlog' : '';
+    const statusBadge = isBacklog
+      ? `<span class="ce-status-badge ce-status-backlog" title="Hidden from the sidebar">backlog</span>`
+      : `<span class="ce-status-badge ce-status-active" title="Visible in the sidebar">active</span>`;
+    const toggleLabel = isBacklog ? 'activate' : 'backlog';
+    const toggleTitle = isBacklog
+      ? 'Show this project in the sidebar again'
+      : 'Hide this project from the sidebar (kept here for re-activation)';
     return `
-    <div class="cluster-edit-card" data-project="${name}" data-original-name="${name}" data-original="${originalJson}">
+    <div class="cluster-edit-card${backlogCls}" data-project="${name}" data-original-name="${name}" data-original="${originalJson}">
       <div class="ce-head">
         <span class="ce-name" style="display:flex;align-items:center;gap:6px">
           <span style="font-size:16px">${emoji}</span>
           <span class="project-color-dot" style="background:${color}"></span>${name}
+          ${statusBadge}
         </span>
-        <button class="ce-remove" data-action="delete-project" title="delete">✕</button>
+        <span class="ce-actions" style="display:flex;align-items:center;gap:4px">
+          <button class="ce-status-btn" data-action="toggle-status" title="${toggleTitle}">${toggleLabel}</button>
+          <button class="ce-remove" data-action="delete-project" title="delete">✕</button>
+        </span>
       </div>
       <div class="ce-fields">
         <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
@@ -1251,6 +1272,7 @@ function renderProjectEditor(projects) {
         <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="${color}" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="${color}" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
         <div class="ce-field"><span>Description</span><input data-f="description" value="${description.replace(/"/g, '&quot;')}" placeholder="optional"></div>
       </div>
+      <input type="hidden" data-f="status" value="${status}">
     </div>
   `;
   }).join('');
@@ -1279,6 +1301,37 @@ function renderProjectEditor(projects) {
       if (typeof loadProjectButtons === 'function') loadProjectButtons();
     });
   });
+
+  el.querySelectorAll('[data-action="toggle-status"]').forEach(btn => {
+    btn.addEventListener('click', async (ev) => {
+      const card = ev.target.closest('.cluster-edit-card');
+      const origName = card.dataset.originalName || '';
+      if (!origName) return;
+      const current = (card.querySelector('[data-f="status"]').value || 'active');
+      const next = current === 'backlog' ? 'active' : 'backlog';
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(origName)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: next }),
+        });
+        const d = await res.json();
+        if (d.status !== 'ok') {
+          toast(d.error || 'Status change failed', 'error');
+          return;
+        }
+        toast(next === 'backlog' ? `${origName} moved to backlog` : `${origName} reactivated`);
+        // Refresh the sidebar FIRST (and fire-and-forget) so the project
+        // disappears immediately even if the settings re-render below
+        // throws or is slow.
+        _projectColors = null;
+        if (typeof loadProjectButtons === 'function') loadProjectButtons();
+        await loadProjectEditor();
+      } catch (e) {
+        toast('Status change failed', 'error');
+      }
+    });
+  });
 }
 
 function addProjectRow() {
@@ -1299,6 +1352,7 @@ function addProjectRow() {
       <div class="ce-field"><span>Color</span><span class="color-pair"><input data-f="color" type="color" value="#e8f4fd" style="width:28px;height:28px;padding:0;border:none;cursor:pointer" oninput="this.nextElementSibling.value=this.value"><input data-f="color-hex" type="text" value="#e8f4fd" style="width:70px" placeholder="#e8f4fd" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value"></span></div>
       <div class="ce-field"><span>Description</span><input data-f="description" value="" placeholder="optional"></div>
     </div>
+    <input type="hidden" data-f="status" value="active">
   `;
   div.querySelector('[data-action="delete-project"]').addEventListener('click', () => div.remove());
   el.appendChild(div);
@@ -1326,15 +1380,17 @@ function _readProjectCard(card) {
   const emoji = card.querySelector('[data-f="emoji"]').value.trim();
   const prefixesText = card.querySelector('[data-f="prefixes"]').value.trim();
   const description = card.querySelector('[data-f="description"]').value.trim();
+  const statusInput = card.querySelector('[data-f="status"]');
+  const status = statusInput ? (statusInput.value || 'active') : 'active';
   let original = {};
   try { original = JSON.parse(card.dataset.original || '{}'); } catch (e) { original = {}; }
   const prefixes = _stringToPrefixes(prefixesText, original.prefixes || []);
-  return { name, color, emoji, prefixesText, prefixes, description, original };
+  return { name, color, emoji, prefixesText, prefixes, description, status, original };
 }
 
 async function _saveProjectCard(card) {
   const originalName = card.dataset.originalName || '';
-  const { name, color, emoji, prefixesText, prefixes, description, original } = _readProjectCard(card);
+  const { name, color, emoji, prefixesText, prefixes, description, status, original } = _readProjectCard(card);
   if (!name) return;
 
   try {
@@ -1345,7 +1401,7 @@ async function _saveProjectCard(card) {
       res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, color, emoji, prefixes, description }),
+        body: JSON.stringify({ name, color, emoji, prefixes, description, status }),
       });
       const d = await res.json();
       if (d.status === 'ok') {
@@ -1368,6 +1424,7 @@ async function _saveProjectCard(card) {
       if (emoji !== original.emoji) patch.emoji = emoji;
       if (description !== (original.description || '')) patch.description = description;
       if (prefixesText !== _prefixesToString(original.prefixes)) patch.prefixes = prefixes;
+      if (status !== (original.status || 'active')) patch.status = status;
       if (Object.keys(patch).length === 0) return;
       res = await fetch(`/api/projects/${encodeURIComponent(originalName)}`, {
         method: 'PUT',
@@ -1380,6 +1437,7 @@ async function _saveProjectCard(card) {
         card.dataset.original = JSON.stringify({
           color: d.project.color, emoji: d.project.emoji,
           prefixes: d.project.prefixes, description: d.project.description,
+          status: d.project.status || 'active',
         });
         _projectColors = null;
         if (typeof loadProjectButtons === 'function') loadProjectButtons();
@@ -1549,12 +1607,12 @@ loadBgSuffixes();
 fetchAll();
 loadProjectButtons();
 
-// Restore tabs across refreshes, prefer hash over localStorage
+// Restore tabs across refreshes, prefer the real URL route over localStorage.
 (function restoreTab() {
-  const hash = location.hash.replace(/^#\/?/, '');
-  if (hash) {
+  const hasRoute = (location.hash && location.hash.startsWith('#/'))
+    || !['/', ''].includes(location.pathname);
+  if (hasRoute) {
     if (!_restoreTabs()) _renderAppTabs();
-    _hashNavigating = false;
     _onHashChange();
   } else if (!_restoreTabs()) {
     _renderAppTabs();

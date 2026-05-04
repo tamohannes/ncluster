@@ -57,7 +57,11 @@ async function loadProjectButtons() {
   const el = document.getElementById('nav-project-grid');
   if (!el) return;
   try {
-    const res = await fetch('/api/projects');
+    // ``cache: 'no-store'`` so a status toggle (active <-> backlog) is reflected
+    // immediately. /api/projects has no Cache-Control header, so the default
+    // fetch cache mode would otherwise let the browser serve a stale list
+    // captured at page load.
+    const res = await fetch('/api/projects', { cache: 'no-store' });
     const projects = await res.json();
     if (!projects.length) {
       el.innerHTML = '<div style="font-family:var(--mono);font-size:10px;color:var(--muted);padding:4px 0">no projects</div>';
@@ -92,7 +96,7 @@ async function openProject(projectName, fromTab) {
     _renderAppTabs();
     _persistTabs();
   }
-  if (typeof _setHash === 'function') _setHash(`#/project/${encodeURIComponent(projectName)}`);
+  if (typeof _setHash === 'function') _setHash(`/project/${encodeURIComponent(projectName)}`);
   _highlightProjectBtn(projectName);
   const projCfg = await fetch('/api/settings').then(r => r.json()).then(c => (c.projects || {})[projectName] || {}).catch(() => ({}));
   const emoji = projCfg.emoji || '';
