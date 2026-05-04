@@ -2823,7 +2823,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .lb-campaign-filters:empty { display: none; }
 .lb-campaign-chip {
   font-family: var(--mono); font-size: 10px; padding: 4px 10px;
-  border-radius: 4px; border: 1px solid var(--border);
+  border-radius: 6px; border: 1px solid var(--border);
   background: var(--bg); color: var(--muted); cursor: pointer;
   border-left: 2px solid var(--chip-tint, var(--border));
   transition: color .12s, background .12s, border-color .12s;
@@ -6344,10 +6344,12 @@ tr.group-bg-3 td {
 .run-ref,
 .proj-cluster-tag,
 .hist-state-btn,
-.lb-campaign-chip,
 .theme-option,
 .spotlight-kbd {
   border-radius: 999px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 58%, transparent);
+}
+.lb-campaign-chip {
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 58%, transparent);
 }
 
@@ -6815,7 +6817,6 @@ main,
 :root:not([data-appearance="glass"]) .run-ref,
 :root:not([data-appearance="glass"]) .proj-cluster-tag,
 :root:not([data-appearance="glass"]) .hist-state-btn,
-:root:not([data-appearance="glass"]) .lb-campaign-chip,
 :root:not([data-appearance="glass"]) .theme-option,
 :root:not([data-appearance="glass"]) .topbar-tab,
 :root:not([data-appearance="glass"]) .spotlight-kbd {
