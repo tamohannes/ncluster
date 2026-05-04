@@ -36,7 +36,7 @@ function openMetricsPage(fromTab = false) {
     }
     if (typeof _renderAppTabs === 'function') _renderAppTabs();
     if (typeof _persistTabs === 'function') _persistTabs();
-    if (typeof _setHash === 'function') _setHash(`#/metrics${_metricsPageCurrentQuery()}`);
+    if (typeof _setHash === 'function') _setHash(`/metrics${_metricsPageCurrentQuery()}`);
   }
   _metricsPageRenderShell();
   _metricsPageLoadSavedViews();
@@ -66,12 +66,14 @@ function _metricsPageCurrentQuery() {
 }
 
 function _metricsPageReplaceUrlState() {
-  const next = `#/metrics${_metricsPageCurrentQuery()}`;
-  if (location.hash !== next) history.replaceState(null, '', next);
+  const next = `/metrics${_metricsPageCurrentQuery()}`;
+  if (`${location.pathname}${location.search}` !== next) history.replaceState(null, '', next);
 }
 
 function _metricsPageReadUrlState() {
-  const raw = location.hash.split('?')[1] || '';
+  const raw = location.hash.startsWith('#/')
+    ? (location.hash.split('?')[1] || '')
+    : location.search.replace(/^\?/, '');
   const params = new URLSearchParams(raw);
   _metricsPageState.runs = parseMetricsRunRefs(params.get('runs') || '');
   _metricsPageState.selectedMetrics = (params.get('metrics') || '')

@@ -35,7 +35,7 @@ function openExplorer(cluster, jobId, path, filename, options) {
 
   if (typeof _setHash === 'function') {
     const rootPart = _exDirRoot ? `?root=${encodeURIComponent(_exDirRoot)}` : '';
-    _setHash(`#/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(jobId)}/${encodeURIComponent(path)}${rootPart}`);
+    _setHash(`/explorer/${encodeURIComponent(cluster)}/${encodeURIComponent(jobId)}/${encodeURIComponent(path)}${rootPart}`);
   }
 
   const isJsonl = /\.jsonl(?:-async)?$/i.test(path);
@@ -62,7 +62,7 @@ async function _loadExplorerTree() {
     document.getElementById('exp-filename').textContent = path;
     if (typeof _setHash === 'function') {
       const rootPart = _exDirRoot ? `?root=${encodeURIComponent(_exDirRoot)}` : '';
-      _setHash(`#/explorer/${encodeURIComponent(_expCluster)}/${encodeURIComponent(_expJobId)}/${encodeURIComponent(path)}${rootPart}`);
+      _setHash(`/explorer/${encodeURIComponent(_expCluster)}/${encodeURIComponent(_expJobId)}/${encodeURIComponent(path)}${rootPart}`);
     }
     setExpView('formatted');
   };
@@ -167,7 +167,7 @@ function expNavigateUp() {
   _loadExplorerTree();
 }
 
-// Explorer state is now persisted via URL hash (#/explorer/cluster/jobId/path)
+// Explorer state is persisted via real URLs (/explorer/cluster/jobId/path)
 
 function setExpView(mode) {
   _expView = mode;

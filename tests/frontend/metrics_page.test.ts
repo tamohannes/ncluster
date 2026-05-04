@@ -56,7 +56,7 @@ beforeEach(() => {
     <div id="topbar-tabs"></div>
   `;
   localStorage.clear();
-  history.replaceState(null, '', '#/metrics');
+  history.replaceState(null, '', '/metrics');
 });
 
 describe('parseMetricsRunRefs', () => {
@@ -113,7 +113,7 @@ describe('metrics page normalization and query', () => {
 
 describe('metrics page URL and chart settings', () => {
   it('serializes selected runs and metrics into URL state', () => {
-    history.replaceState(null, '', '#/metrics?runs=aws-cmh/abc12345&metrics=eval%2Faccuracy&q=accuracy');
+    history.replaceState(null, '', '/metrics?runs=aws-cmh/abc12345&metrics=eval%2Faccuracy&q=accuracy');
     _metricsPageReadUrlState();
 
     const query = _metricsPageCurrentQuery();

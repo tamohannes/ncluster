@@ -53,19 +53,19 @@ beforeEach(() => {
     <div id="topbar-tabs"></div>
   `;
   localStorage.clear();
-  history.replaceState(null, '', '#/live');
+  history.replaceState(null, '', '/live');
 });
 
 describe('run page routing', () => {
   it('builds stable hash URLs for run tabs', () => {
-    expect(_hashForView('run', { cluster: 'eos', runHash: 'deadbeef' })).toBe('#/run/eos/deadbeef');
-    expect(runPageUrl('eos', 'deadbeef')).toBe('#/run/eos/deadbeef');
+    expect(_hashForView('run', { cluster: 'eos', runHash: 'deadbeef' })).toBe('/run/eos/deadbeef');
+    expect(runPageUrl('eos', 'deadbeef')).toBe('/run/eos/deadbeef');
   });
 
-  it('routes #/run/<cluster>/<run_hash> to openRunPage', () => {
+  it('routes /run/<cluster>/<run_hash> to openRunPage', () => {
     const spy = vi.fn();
     (globalThis as any).openRunPage = spy;
-    history.replaceState(null, '', '#/run/eos/deadbeef?series=loss');
+    history.replaceState(null, '', '/run/eos/deadbeef?series=loss');
 
     _onHashChange();
 

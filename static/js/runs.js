@@ -27,8 +27,8 @@ async function openRunInfoByHash(cluster, runHash, runName = '') {
 }
 
 function runPageUrl(cluster, runHash) {
-  if (!cluster || !runHash) return '#/history';
-  return `#/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`;
+  if (!cluster || !runHash) return '/runs';
+  return `/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`;
 }
 
 function openRunPageFromRun(cluster, runHash) {
@@ -38,7 +38,7 @@ function openRunPageFromRun(cluster, runHash) {
   } else if (typeof _setHash === 'function') {
     _setHash(runPageUrl(cluster, runHash));
   } else {
-    location.hash = runPageUrl(cluster, runHash);
+    location.href = runPageUrl(cluster, runHash);
   }
 }
 

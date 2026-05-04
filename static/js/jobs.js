@@ -46,48 +46,81 @@ let _appTabs = [{ id: 1, type: 'live', label: 'Live', project: null }];
 let _activeTabId = 1;
 let _nextTabId = 2;
 
-// ── Hash-based URL routing ──────────────────────────────────────────
+// ── URL routing ─────────────────────────────────────────────────────
+// The app is still a light SPA for fast in-page navigation, but routes are now
+// real paths (/logbook/foo/entry/123) so browser tabs/windows isolate state
+// naturally. Old #/... links are still parsed as a compatibility fallback.
 let _hashNavigating = false;
+let _routeApplying = false;
 
-function _setHash(h) {
-  _hashNavigating = true;
-  location.hash = h;
-  setTimeout(() => { _hashNavigating = false; }, 0);
+function _normaliseAppUrl(url) {
+  const raw = String(url || '/live');
+  if (raw.startsWith('#/')) return `/${raw.slice(2)}`;
+  if (raw.startsWith('/')) return raw;
+  return `/${raw.replace(/^\/+/, '')}`;
+}
+
+function _setHash(url, replace) {
+  if (_routeApplying) return;
+  const next = _normaliseAppUrl(url);
+  const current = `${location.pathname}${location.search}`;
+  if (next === current && !location.hash) return;
+  const method = replace ? 'replaceState' : 'pushState';
+  history[method]({ clausius: true }, '', next);
 }
 
 function _hashForView(type, extra) {
-  if (type === 'live') return '#/live';
-  if (type === 'history') return '#/history';
+  if (type === 'live') return '/live';
+  if (type === 'history') return '/runs';
   if (type === 'metrics') {
-    if (typeof _metricsPageCurrentQuery === 'function') return `#/metrics${_metricsPageCurrentQuery()}`;
-    return '#/metrics';
+    if (typeof _metricsPageCurrentQuery === 'function') return `/metrics${_metricsPageCurrentQuery()}`;
+    return '/metrics';
   }
-  if (type === 'clusters') return '#/compute';
+  if (type === 'clusters') return '/compute';
   if (type === 'run') {
     const info = extra || {};
     const cluster = info.cluster || info.runCluster || '';
     const runHash = info.runHash || info.hash || '';
-    return (cluster && runHash) ? `#/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}` : '#/history';
+    return (cluster && runHash) ? `/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}` : '/runs';
   }
   if (type === 'logbook') {
-    const proj = extra || (typeof _lbProject !== 'undefined' ? _lbProject : '');
-    return proj ? `#/logbook/${proj}` : '#/logbook';
+    const info = (extra && typeof extra === 'object') ? extra : { lbProject: extra };
+    const proj = info.lbProject || info.project || (typeof _lbProject !== 'undefined' ? _lbProject : '');
+    const entryId = info.lbEntryId || info.entryId || '';
+    if (proj && entryId) return `/logbook/${encodeURIComponent(proj)}/entry/${encodeURIComponent(entryId)}`;
+    return proj ? `/logbook/${encodeURIComponent(proj)}` : '/logbook';
   }
-  if (type === 'project' && extra) return `#/project/${extra}`;
-  return '#/live';
+  if (type === 'project' && extra) return `/project/${encodeURIComponent(extra)}`;
+  return '/live';
+}
+
+function _routePartsFromLocation() {
+  if (location.hash && location.hash.startsWith('#/')) {
+    const rawHash = location.hash.replace(/^#\/?/, '');
+    const [route, query = ''] = rawHash.split('?');
+    return {
+      parts: route.split('/').filter(Boolean),
+      params: new URLSearchParams(query),
+      legacyHash: true,
+    };
+  }
+  const route = location.pathname.replace(/^\/+|\/+$/g, '') || 'live';
+  return {
+    parts: route.split('/').filter(Boolean),
+    params: new URLSearchParams(location.search.replace(/^\?/, '')),
+    legacyHash: false,
+  };
 }
 
 function _onHashChange() {
-  if (_hashNavigating) return;
-  const raw = location.hash.replace(/^#\/?/, '');
-  if (!raw) return;
-  const [route, query = ''] = raw.split('?');
-  const params = new URLSearchParams(query);
-  const parts = route.split('/');
+  const { parts, params, legacyHash } = _routePartsFromLocation();
+  if (!parts.length) return;
   const view = parts[0];
+  _routeApplying = true;
 
+  try {
   if (view === 'live') showTab('live');
-  else if (view === 'history') showTab('history');
+  else if (view === 'history' || view === 'runs') showTab('history');
   else if (view === 'metrics') {
     if (typeof openMetricsPage === 'function') openMetricsPage();
   }
@@ -95,6 +128,14 @@ function _onHashChange() {
   else if (view === 'logbook') {
     if (parts[1] && typeof _lbProject !== 'undefined') _lbProject = decodeURIComponent(parts[1]);
     showTab('logbook');
+    if (parts[2] === 'entry' && parts[3] && typeof openLogbookEntry === 'function') {
+      setTimeout(() => openLogbookEntry(decodeURIComponent(parts[3])), 300);
+    } else {
+      if (typeof _updateActiveTabExtra === 'function') {
+        _updateActiveTabExtra({ lbProject: (typeof _lbProject !== 'undefined' ? _lbProject : ''), lbEntryId: null, lbEntryTitle: null });
+      }
+      if (typeof _showMainEmpty === 'function') _showMainEmpty();
+    }
   }
   else if (view === 'project' && parts[1]) openProject(decodeURIComponent(parts[1]));
   else if (view === 'run' && parts.length >= 3) {
@@ -109,8 +150,13 @@ function _onHashChange() {
     const rootDir = params.get('root') || '';
     openExplorer(cluster, jobId, path, path.split('/').pop(), rootDir ? { rootDir } : undefined);
   }
+  } finally {
+    _routeApplying = false;
+  }
+  if (legacyHash) _setHash(`/${parts.map(encodeURIComponent).join('/')}${params.toString() ? `?${params.toString()}` : ''}`, true);
 }
 
+window.addEventListener('popstate', _onHashChange);
 window.addEventListener('hashchange', _onHashChange);
 
 function _activateView(tab) {
@@ -143,6 +189,7 @@ function _activateView(tab) {
 }
 
 function showTab(tab) {
+  _captureActiveTabState();
   _activateView(tab);
   const at = _appTabs.find(t => t.id === _activeTabId);
   if (at) {
@@ -161,9 +208,10 @@ function showTab(tab) {
   }
 }
 
-function switchAppTab(id) {
+function switchAppTab(id, opts = {}) {
   const t = _appTabs.find(t => t.id === id);
   if (!t) return;
+  if (!opts.skipCapture) _captureActiveTabState();
   _activeTabId = id;
   if (t.type === 'project' && t.project) {
     _activateView('project');
@@ -174,7 +222,8 @@ function switchAppTab(id) {
   } else if (t.type === 'logbook') {
     if (t.lbProject) _lbProject = t.lbProject;
     _activateView('logbook');
-    if (t.lbEntryId) setTimeout(() => openLogbookEntry(t.lbEntryId), 300);
+    const restored = (typeof _restoreLogbookTabState === 'function') ? _restoreLogbookTabState(t.lbState || null, t) : false;
+    if (!restored && t.lbEntryId) setTimeout(() => openLogbookEntry(t.lbEntryId, { pushHistory: false }), 300);
   } else if (t.type === 'run' && t.runCluster && t.runHash) {
     _activateView('run');
     if (typeof openRunPage === 'function') openRunPage(t.runCluster, t.runHash, true);
@@ -183,7 +232,16 @@ function switchAppTab(id) {
   }
   _renderAppTabs();
   _persistTabs();
-  _setHash(_hashForView(t.type, t.type === 'run' ? t : (t.project || t.lbProject)));
+  _setHash(_hashForView(t.type, (t.type === 'run' || t.type === 'logbook') ? t : (t.project || t.lbProject)));
+}
+
+function _captureActiveTabState() {
+  const at = _appTabs.find(t => t.id === _activeTabId);
+  if (!at) return;
+  if (at.type === 'logbook' && typeof _captureLogbookTabState === 'function') {
+    Object.assign(at, _captureLogbookTabState());
+  }
+  _persistTabs();
 }
 
 function _updateActiveTabExtra(fields) {
@@ -193,6 +251,7 @@ function _updateActiveTabExtra(fields) {
 }
 
 function addAppTab(type, label, project) {
+  _captureActiveTabState();
   const t = {
     id: _nextTabId++,
     type: type || 'live',
@@ -215,6 +274,7 @@ function openRunAppTab(cluster, runHash, label) {
   const c = String(cluster || '');
   const h = String(runHash || '');
   if (!c || !h) return;
+  _captureActiveTabState();
   const existing = _appTabs.find(t => t.type === 'run' && t.runCluster === c && t.runHash === h);
   if (existing) {
     _activeTabId = existing.id;
@@ -243,8 +303,7 @@ function closeAppTab(id) {
   _appTabs.splice(idx, 1);
   if (_activeTabId === id) {
     const next = _appTabs[Math.min(idx, _appTabs.length - 1)];
-    _activeTabId = next.id;
-    switchAppTab(next.id);
+    switchAppTab(next.id, { skipCapture: true });
   }
   _renderAppTabs();
   _persistTabs();
@@ -257,18 +316,65 @@ function cycleAppTab(dir) {
   switchAppTab(_appTabs[next].id);
 }
 
+function _tabMeta(t) {
+  switch (t.type) {
+    case 'live':
+      return { kind: 'Live', title: 'Cluster board' };
+    case 'history':
+      return { kind: 'Runs', title: 'All runs' };
+    case 'metrics':
+      return { kind: 'Metrics', title: 'Workbench' };
+    case 'clusters':
+      return { kind: 'Compute', title: 'Clusters' };
+    case 'logbook': {
+      const proj = t.lbProject || '';
+      if (t.lbEntryId) {
+        const title = t.lbEntryTitle || `Entry`;
+        return {
+          kind: proj ? `Logbook · ${proj}` : 'Logbook',
+          title: `#${t.lbEntryId} ${title}`,
+        };
+      }
+      return { kind: 'Logbook', title: proj || 'select project' };
+    }
+    case 'project':
+      return { kind: 'Project', title: t.project || t.label || 'project' };
+    case 'run': {
+      const cluster = t.runCluster || '';
+      const name = t.label || (t.runHash ? `Run ${t.runHash}` : 'Run');
+      return { kind: cluster ? `Run · ${cluster}` : 'Run', title: name };
+    }
+    default:
+      return { kind: t.type || 'tab', title: t.label || '' };
+  }
+}
+
+function _tabEsc(s) {
+  if (typeof escapeHtml === 'function') return escapeHtml(s);
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
 function _renderAppTabs() {
   const el = document.getElementById('topbar-tabs');
   if (!el) return;
   el.innerHTML = _appTabs.map(t => {
-    const icon = _tabIcons[t.type] || '📄';
+    const icon = _tabEsc(_tabIcons[t.type] || '📄');
     const active = t.id === _activeTabId ? ' active' : '';
     const closable = _appTabs.length > 1
       ? `<button class="topbar-tab-close" onclick="event.stopPropagation();closeAppTab(${t.id})" title="Close tab">×</button>`
       : '';
-    return `<div class="topbar-tab${active}" onclick="switchAppTab(${t.id})" title="${t.label}">
+    const meta = _tabMeta(t);
+    const kind = _tabEsc(meta.kind);
+    const title = _tabEsc(meta.title);
+    const tooltip = _tabEsc(`${meta.kind} — ${meta.title}`);
+    return `<div class="topbar-tab${active}" onclick="switchAppTab(${t.id})" title="${tooltip}">
       <span class="topbar-tab-icon">${icon}</span>
-      <span class="topbar-tab-label">${t.label}</span>
+      <div class="topbar-tab-text">
+        <span class="topbar-tab-kind">${kind}</span>
+        <span class="topbar-tab-title">${title}</span>
+      </div>
       ${closable}
     </div>`;
   }).join('');
@@ -276,7 +382,13 @@ function _renderAppTabs() {
 
 function _persistTabs() {
   try {
-    localStorage.setItem('clausius.appTabs', JSON.stringify(_appTabs));
+    const tabs = _appTabs.map(t => {
+      // Rendered per-tab page snapshots can be large. Keep them in memory only;
+      // localStorage stores just enough to re-open the tab by URL after refresh.
+      const { lbState, ...persistable } = t;
+      return persistable;
+    });
+    localStorage.setItem('clausius.appTabs', JSON.stringify(tabs));
     localStorage.setItem('clausius.activeTabId', String(_activeTabId));
     localStorage.setItem('clausius.nextTabId', String(_nextTabId));
   } catch (_) {}
@@ -415,7 +527,7 @@ function setupSidebarResizer() {
 
 // ── Summary ──
 function updateSummary(data) {
-  let running = 0, pending = 0, dependent = 0, backup = 0, failed = 0, completed = 0, reach = 0, totalGpus = 0, mounted = 0;
+  let running = 0, pending = 0, failed = 0, completed = 0, reach = 0, totalGpus = 0, mounted = 0;
   for (const [name, d] of Object.entries(data)) {
     if (d.status === 'ok') reach++;
     if (d.mount && d.mount.mounted) mounted++;
@@ -429,9 +541,7 @@ function updateSummary(data) {
         totalGpus += jobGpuCount(j.nodes, j.gres);
       }
       else if (s === 'PENDING') {
-        if (_isBackupDep(j, byId)) backup++;
-        else if (_isDependentJob(j)) dependent++;
-        else pending++;
+        if (!_isBackupDep(j, byId) && !_isDependentJob(j)) pending++;
       }
       else if (s.includes('FAIL')) {
         if (isUnneededBackup(j, allJobs)) completed++;
@@ -447,16 +557,6 @@ function updateSummary(data) {
   document.getElementById('s-gpus').textContent = totalGpus;
   document.getElementById('s-clusters').textContent = `${reach}/${Object.keys(CLUSTERS).length}`;
   document.getElementById('s-mounted').textContent = `${mounted}/${reach > 0 ? reach - (data.local ? 1 : 0) : 0}`;
-  const ts = document.getElementById('topbar-stat');
-  if (ts) {
-    const parts = [];
-    if (running) parts.push(`${running} running (<span class="gpu-num">${totalGpus}</span>&thinsp;GPU)`);
-    if (pending) parts.push(`${pending} pending`);
-    if (dependent) parts.push(`${dependent} dep`);
-    if (backup) parts.push(`${backup} backup`);
-    if (failed) parts.push(`${failed} failed`);
-    ts.innerHTML = parts.join(' · ') || '—';
-  }
 }
 
 function renderMountPanel(data) {
@@ -1306,12 +1406,15 @@ window._clausiusFanoutFails = {
 async function _forceRefreshAll() {
   const grid = document.getElementById('grid');
   grid.classList.add('grid-loading');
-  const promises = Object.keys(CLUSTERS).map(name =>
-    fetch(`/api/force_poll/${name}`, { method: 'POST' }).catch(() => {})
-  );
-  await Promise.allSettled(promises);
+  await Promise.allSettled(Object.keys(CLUSTERS).map(async (name) => {
+    try {
+      const res = await fetchWithTimeout(`/api/jobs/${name}?force=1`, {}, 12000);
+      if (res.ok) allData[name] = await res.json();
+    } catch (_) {}
+  }));
   _lastEtag = null;
-  await _doFetchAll();
+  _fillMissing();
+  _renderAll();
   grid.classList.remove('grid-loading');
 }
 
@@ -1360,7 +1463,6 @@ function _attachPendingTooltips() {
 
 async function refreshCluster(name, force) {
   const grid = document.getElementById('grid');
-  const debugRunId = `refresh-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const card = document.getElementById(`card-${name}`);
   if (card) {
     const si = card.querySelector('.status-indicator');
@@ -1368,21 +1470,15 @@ async function refreshCluster(name, force) {
   }
   grid.classList.add('grid-loading');
   try {
-    if (force) {
-      await fetch(`/api/force_poll/${name}`, { method: 'POST', headers: { 'X-Debug-Run-Id': debugRunId } });
-    }
-    _lastEtag = null;
-    const res = await fetchWithTimeout('/api/jobs', { headers: { 'X-Debug-Run-Id': debugRunId } });
+    const url = force ? `/api/jobs/${name}?force=1` : `/api/jobs/${name}`;
+    const res = await fetchWithTimeout(url, {}, 12000);
     if (res.ok) {
-      _lastEtag = res.headers.get('ETag');
-      _lastBoardVersion = (_lastEtag || '').replace(/"/g, '');
-      const fresh = await res.json();
-      if (Object.values(fresh).some(d => d.updated)) {
-        allData = fresh;
-        _fillMissing();
-      }
+      const data = await res.json();
+      allData[name] = data;
+      _lastEtag = null;
     }
-    _scheduleRender();
+    _fillMissing();
+    _renderAll();
   } catch (e) {
     toast(`Failed to refresh ${name}`, 'error');
   } finally {

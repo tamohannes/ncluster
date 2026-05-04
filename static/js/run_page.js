@@ -114,11 +114,13 @@ async function openRunPage(cluster, runHash, fromTab = false) {
 }
 
 function _runPageBaseHash(cluster, runHash) {
-  return `#/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`;
+  return `/run/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`;
 }
 
 function _runPageReadUrlState() {
-  const raw = location.hash.split('?')[1] || '';
+  const raw = location.hash.startsWith('#/')
+    ? (location.hash.split('?')[1] || '')
+    : location.search.replace(/^\?/, '');
   const params = new URLSearchParams(raw);
   const series = params.get('series') || params.get('metrics') || '';
   const scalars = params.get('scalars') || '';
@@ -157,7 +159,7 @@ function _runPageCurrentQuery() {
 function _runPageReplaceUrlState() {
   if (!_runPageState.cluster || !_runPageState.runHash) return;
   const next = _runPageBaseHash(_runPageState.cluster, _runPageState.runHash) + _runPageCurrentQuery();
-  if (location.hash !== next) history.replaceState(null, '', next);
+  if (`${location.pathname}${location.search}` !== next) history.replaceState(null, '', next);
 }
 
 function _runPageSyncTabLabel(run) {
