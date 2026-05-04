@@ -1039,17 +1039,21 @@ function _isTableSep(line) {
 }
 
 const _MD_TABLE_COLOR_TOKENS = {
-  green: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  good: { bg: 'var(--green-bg)', fg: 'var(--green)' },
-  amber: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-  yellow: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-  warn: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
-  red: { bg: 'var(--red-bg)', fg: 'var(--red)' },
-  bad: { bg: 'var(--red-bg)', fg: 'var(--red)' },
-  accent: { bg: 'var(--accent-bg)', fg: 'var(--accent)' },
-  blue: { bg: 'var(--accent-bg)', fg: 'var(--accent)' },
-  gray: { bg: 'var(--surface2)', fg: 'var(--muted)' },
-  grey: { bg: 'var(--surface2)', fg: 'var(--muted)' },
+  green: { bg: 'var(--tbl-mint)', fg: 'var(--tbl-mint-fg)' },
+  good: { bg: 'var(--tbl-mint)', fg: 'var(--tbl-mint-fg)' },
+  mint: { bg: 'var(--tbl-mint)', fg: 'var(--tbl-mint-fg)' },
+  amber: { bg: 'var(--tbl-amber)', fg: 'var(--tbl-amber-fg)' },
+  yellow: { bg: 'var(--tbl-amber)', fg: 'var(--tbl-amber-fg)' },
+  warn: { bg: 'var(--tbl-amber)', fg: 'var(--tbl-amber-fg)' },
+  red: { bg: 'var(--tbl-rose)', fg: 'var(--tbl-rose-fg)' },
+  bad: { bg: 'var(--tbl-rose)', fg: 'var(--tbl-rose-fg)' },
+  rose: { bg: 'var(--tbl-rose)', fg: 'var(--tbl-rose-fg)' },
+  accent: { bg: 'var(--tbl-sky)', fg: 'var(--tbl-sky-fg)' },
+  blue: { bg: 'var(--tbl-sky)', fg: 'var(--tbl-sky-fg)' },
+  sky: { bg: 'var(--tbl-sky)', fg: 'var(--tbl-sky-fg)' },
+  gray: { bg: 'var(--surface)', fg: 'var(--muted)' },
+  grey: { bg: 'var(--surface)', fg: 'var(--muted)' },
+  muted: { bg: 'var(--surface)', fg: 'var(--muted)' },
 };
 
 function _mdTableColor(value, role = 'bg') {
