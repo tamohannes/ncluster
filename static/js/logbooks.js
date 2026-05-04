@@ -817,6 +817,11 @@ table {
 }
 th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
 th { background: var(--surface); font-weight: 600; }
+tr.md-row-colored td { background: var(--md-row-bg) !important; color: var(--md-row-fg, var(--text)); }
+td.md-cell-colored, th.md-cell-colored { background: var(--md-cell-bg) !important; color: var(--md-cell-fg, var(--text)); }
+tr.md-row-border-thick td, tr.md-row-border-thick th { border-top-width: 2px; border-bottom-width: 2px; }
+td.md-cell-border-thick, th.md-cell-border-thick { border-width: 2px; }
+.md-table-row-gap td { height: 8px; padding: 0 !important; border: none !important; background: transparent !important; }
 figure { margin: 20px 0; text-align: center; }
 figure img { max-width: 100%; border-radius: 8px; }
 figcaption {

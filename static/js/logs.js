@@ -1038,17 +1038,100 @@ function _isTableSep(line) {
   return /^\|[\s:|-]+\|$/.test(line.trim());
 }
 
+const _MD_TABLE_COLOR_TOKENS = {
+  green: { bg: 'var(--green-bg)', fg: 'var(--green)' },
+  good: { bg: 'var(--green-bg)', fg: 'var(--green)' },
+  amber: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  yellow: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  warn: { bg: 'var(--amber-bg)', fg: 'var(--amber)' },
+  red: { bg: 'var(--red-bg)', fg: 'var(--red)' },
+  bad: { bg: 'var(--red-bg)', fg: 'var(--red)' },
+  accent: { bg: 'var(--accent-bg)', fg: 'var(--accent)' },
+  blue: { bg: 'var(--accent-bg)', fg: 'var(--accent)' },
+  gray: { bg: 'var(--surface2)', fg: 'var(--muted)' },
+  grey: { bg: 'var(--surface2)', fg: 'var(--muted)' },
+};
+
+function _mdTableColor(value, role = 'bg') {
+  const v = String(value || '').trim().toLowerCase();
+  if (!v) return '';
+  if (/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(v)) return v;
+  const token = _MD_TABLE_COLOR_TOKENS[v];
+  return token ? token[role] : '';
+}
+
+function _mdTableAttr(attrs) {
+  const cls = attrs.classes && attrs.classes.length ? ` class="${attrs.classes.join(' ')}"` : '';
+  const style = attrs.styles && attrs.styles.length ? ` style="${attrs.styles.join(';')}"` : '';
+  return `${cls}${style}`;
+}
+
+function _extractMdTableMarkers(rawCell) {
+  const row = { gapBefore: false, classes: [], styles: [] };
+  const cell = { classes: [], styles: [] };
+  const text = String(rawCell || '').replace(/\{(row|row-bg|row-text|row-border|row-gap|gap|cell|cell-bg|cell-text|cell-border)(?:=([^}]+))?\}/gi, (match, rawKey, rawValue) => {
+    const key = rawKey.toLowerCase();
+    const value = String(rawValue || '').trim();
+    if (key === 'row-gap' || key === 'gap') {
+      row.gapBefore = true;
+    } else if (key === 'row-border' && (!value || value === 'thick')) {
+      row.classes.push('md-row-border-thick');
+    } else if (key === 'cell-border' && (!value || value === 'thick')) {
+      cell.classes.push('md-cell-border-thick');
+    } else if (key === 'row' || key === 'row-bg') {
+      const color = _mdTableColor(value, 'bg');
+      if (color) {
+        row.classes.push('md-row-colored');
+        row.styles.push(`--md-row-bg:${color}`);
+      }
+    } else if (key === 'row-text') {
+      const color = _mdTableColor(value, 'fg');
+      if (color) row.styles.push(`--md-row-fg:${color}`);
+    } else if (key === 'cell' || key === 'cell-bg') {
+      const color = _mdTableColor(value, 'bg');
+      if (color) {
+        cell.classes.push('md-cell-colored');
+        cell.styles.push(`--md-cell-bg:${color}`);
+      }
+    } else if (key === 'cell-text') {
+      const color = _mdTableColor(value, 'fg');
+      if (color) cell.styles.push(`--md-cell-fg:${color}`);
+    }
+    return '';
+  }).trim();
+  return { text, row, cell };
+}
+
 function _renderTableRows(tableLines, tblNum) {
   if (tableLines.length < 2) return tableLines.map(l => `<p>${_mdInline(l)}</p>`).join('');
   const parseRow = (line, tag) => {
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
-    return `<tr>${cells.map(c => `<${tag}>${_mdInline(c)}</${tag}>`).join('')}</tr>`;
+    const rowAttrs = { gapBefore: false, classes: [], styles: [] };
+    const renderedCells = cells.map(rawCell => {
+      const parsed = _extractMdTableMarkers(rawCell);
+      rowAttrs.gapBefore = rowAttrs.gapBefore || parsed.row.gapBefore;
+      rowAttrs.classes.push(...parsed.row.classes);
+      rowAttrs.styles.push(...parsed.row.styles);
+      return `<${tag}${_mdTableAttr(parsed.cell)}>${_mdInline(parsed.text)}</${tag}>`;
+    });
+    rowAttrs.classes = Array.from(new Set(rowAttrs.classes));
+    rowAttrs.styles = Array.from(new Set(rowAttrs.styles));
+    return {
+      html: `<tr${_mdTableAttr(rowAttrs)}>${renderedCells.join('')}</tr>`,
+      gapBefore: rowAttrs.gapBefore,
+      colspan: cells.length,
+    };
   };
   const tblId = tblNum ? ` id="tbl-${tblNum}"` : '';
-  let html = `<table class="md-table"${tblId}><thead>` + parseRow(tableLines[0], 'th') + '</thead><tbody>';
+  const header = parseRow(tableLines[0], 'th');
+  let html = `<table class="md-table"${tblId}><thead>` + header.html + '</thead><tbody>';
   const start = _isTableSep(tableLines[1]) ? 2 : 1;
   for (let i = start; i < tableLines.length; i++) {
-    html += parseRow(tableLines[i], 'td');
+    const row = parseRow(tableLines[i], 'td');
+    if (row.gapBefore) {
+      html += `<tr class="md-table-row-gap"><td colspan="${Math.max(header.colspan, row.colspan)}"></td></tr>`;
+    }
+    html += row.html;
   }
   html += '</tbody></table>';
   return `<div class="md-table-wrap"><button class="md-table-expand" onclick="event.stopPropagation();toggleExpandedTable(this)" title="Fit table to page width">wide</button>${html}</div>`;

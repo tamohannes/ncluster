@@ -3300,6 +3300,30 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .md-table th { background: var(--surface); font-weight: 600; }
 .md-table tr:nth-child(even) td { background: var(--surface2); }
+.md-table tr.md-row-colored td {
+  background: var(--md-row-bg) !important;
+  color: var(--md-row-fg, var(--text));
+}
+.md-table td.md-cell-colored,
+.md-table th.md-cell-colored {
+  background: var(--md-cell-bg) !important;
+  color: var(--md-cell-fg, var(--text));
+}
+.md-table tr.md-row-border-thick td,
+.md-table tr.md-row-border-thick th {
+  border-top-width: 2px;
+  border-bottom-width: 2px;
+}
+.md-table td.md-cell-border-thick,
+.md-table th.md-cell-border-thick {
+  border-width: 2px;
+}
+.md-table .md-table-row-gap td {
+  height: 8px;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
 .logbook-entry-actions {
   display: flex; gap: 4px; margin-top: 4px;
 }
