@@ -844,6 +844,7 @@ async def create_project(
     default_campaign: Optional[str] = None,
     campaign_delimiter: str = "_",
     description: str = "",
+    status: str = "active",
 ) -> dict:
     """Create a new project so jobs whose names start with one of its prefixes
     are auto-assigned to it.
@@ -861,12 +862,17 @@ async def create_project(
       campaign_delimiter: char used to split the run-details remainder when
         deriving the campaign (default ``"_"``).
       description: free-form note about the project.
+      status: ``"active"`` (default, shown in the sidebar) or
+        ``"backlog"`` to create the project pre-hidden from the sidebar.
+        Backlogged projects still auto-tag jobs by prefix and keep their
+        color/emoji; they're just demoted to Settings until reactivated.
     """
     payload = {
         "name": name,
         "prefixes": prefixes if prefixes is not None else [],
         "campaign_delimiter": campaign_delimiter or "_",
         "description": description or "",
+        "status": status or "active",
     }
     if color:
         payload["color"] = color
@@ -886,13 +892,19 @@ async def update_project(
     default_campaign: Optional[str] = None,
     campaign_delimiter: Optional[str] = None,
     description: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> dict:
     """Update a registered project's metadata. Pass only the fields you want
     to change; ``None`` is treated as "leave unchanged".
 
-    Note: replacing ``prefixes`` does not retroactively re-extract the
-    ``project`` field on existing job rows. Run a manual SQL update or call
-    a future re-extract helper if you need that.
+    ``status`` accepts ``"active"`` or ``"backlog"`` and controls whether
+    the project shows up in the sidebar. Use it to declutter the UI when a
+    project is paused without losing its prefix/color/emoji wiring or its
+    job history.
+
+    Replacing ``prefixes`` re-extracts derived project assignments for
+    existing jobs/runs that now match a registered prefix, so adding a more
+    specific prefix can move rows out from under a broader legacy prefix.
     """
     payload = {}
     if color is not None:
@@ -907,6 +919,8 @@ async def update_project(
         payload["campaign_delimiter"] = campaign_delimiter
     if description is not None:
         payload["description"] = description
+    if status is not None:
+        payload["status"] = status
     return await _api_async("PUT", f"/api/projects/{name}", json=payload)
 
 

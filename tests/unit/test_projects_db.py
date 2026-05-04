@@ -19,6 +19,7 @@ from server.db import (
     get_db,
     init_db,
     re_extract_unmatched_projects,
+    upsert_run,
 )
 
 
@@ -236,6 +237,75 @@ class TestDeleteProject:
 
 
 @pytest.mark.unit
+class TestProjectStatus:
+    """Status field controls sidebar visibility without affecting prefix routing."""
+
+    def test_default_status_is_active(self):
+        result = db_create_project("alpha", prefixes=["alpha_"])
+        assert result["status"] == "ok"
+        assert result["project"]["status"] == "active"
+
+    def test_create_with_explicit_backlog(self):
+        result = db_create_project("alpha", prefixes=["alpha_"], status="backlog")
+        assert result["project"]["status"] == "backlog"
+
+    def test_create_normalizes_unknown_status_to_active(self):
+        result = db_create_project("alpha", prefixes=["alpha_"], status="garbage")
+        assert result["project"]["status"] == "active"
+
+    def test_update_to_backlog_round_trip(self):
+        db_create_project("alpha", prefixes=["alpha_"])
+        result = db_update_project("alpha", status="backlog")
+        assert result["status"] == "ok"
+        assert result["project"]["status"] == "backlog"
+        assert db_get_project("alpha")["status"] == "backlog"
+
+    def test_update_back_to_active(self):
+        db_create_project("alpha", prefixes=["alpha_"], status="backlog")
+        result = db_update_project("alpha", status="active")
+        assert result["project"]["status"] == "active"
+
+    def test_update_rejects_invalid_status(self):
+        db_create_project("alpha", prefixes=["alpha_"])
+        result = db_update_project("alpha", status="archived")
+        assert result["status"] == "error"
+        assert "status" in result["error"].lower()
+
+    def test_list_filter_active_only(self):
+        db_create_project("a", prefixes=["a_"])
+        db_create_project("b", prefixes=["b_"], status="backlog")
+        names = [p["name"] for p in db_list_projects(status="active")]
+        assert names == ["a"]
+
+    def test_list_filter_backlog_only(self):
+        db_create_project("a", prefixes=["a_"])
+        db_create_project("b", prefixes=["b_"], status="backlog")
+        names = [p["name"] for p in db_list_projects(status="backlog")]
+        assert names == ["b"]
+
+    def test_list_no_filter_returns_both(self):
+        db_create_project("a", prefixes=["a_"])
+        db_create_project("b", prefixes=["b_"], status="backlog")
+        names = [p["name"] for p in db_list_projects()]
+        assert names == ["a", "b"]
+
+    def test_status_propagates_to_cache(self):
+        from server import config as cfg
+        db_create_project("alpha", prefixes=["alpha_"], status="backlog")
+        assert cfg.PROJECTS["alpha"]["status"] == "backlog"
+        db_update_project("alpha", status="active")
+        assert cfg.PROJECTS["alpha"]["status"] == "active"
+
+    def test_backlog_project_still_extracts(self):
+        """Backlog is purely visual — prefix routing must keep working so
+        new jobs land in the right bucket and reactivation just lights it
+        back up in the sidebar."""
+        from server.config import extract_project
+        db_create_project("alpha", prefixes=["alpha_"], status="backlog")
+        assert extract_project("alpha_run-1") == "alpha"
+
+
+@pytest.mark.unit
 class TestRoundTripWithExtractProject:
     """Verify the cache + extract_project pipeline picks up new projects."""
 
@@ -303,6 +373,35 @@ class TestReExtractUnmatchedProjects:
                 con.execute("SELECT job_id, project FROM job_history").fetchall()}
         assert rows["j1"] == "alpha"
         assert rows["j2"] == "alpha"
+
+    def test_reassigns_rows_when_more_specific_prefix_is_added(self):
+        self._seed_jobs([
+            ("j1", "hle_mcpablation_qwen35-r1", "hle"),
+            ("j2", "hle_text_qwen35-r1", "hle"),
+        ])
+        upsert_run("c", "j1", "hle_mcpablation_qwen35-r1", "hle")
+        upsert_run("c", "j2", "hle_text_qwen35-r1", "hle")
+
+        db_create_project("hle", prefixes=["hle_"])
+        db_create_project(
+            "mcp",
+            prefixes=[
+                {"prefix": "hle_mcpablation_", "default_campaign": "mcpablation"},
+                "mcp_",
+            ],
+        )
+        result = re_extract_unmatched_projects()
+
+        assert result == {"jobs_updated": 1, "runs_updated": 1}
+        con = get_db()
+        jobs = {r["job_id"]: r["project"] for r in
+                con.execute("SELECT job_id, project FROM job_history").fetchall()}
+        runs = {r["root_job_id"]: r["project"] for r in
+                con.execute("SELECT root_job_id, project FROM runs").fetchall()}
+        assert jobs["j1"] == "mcp"
+        assert jobs["j2"] == "hle"
+        assert runs["j1"] == "mcp"
+        assert runs["j2"] == "hle"
 
     def test_returns_zero_when_no_matches(self):
         self._seed_jobs([("j1", "ghost_run", "")])

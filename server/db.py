@@ -1025,6 +1025,19 @@ def _normalize_prefixes(prefixes):
     return out
 
 
+_PROJECT_STATUSES = ("active", "backlog")
+
+
+def _normalize_project_status(value):
+    """Coerce a status value into one of the canonical strings.
+
+    Anything outside :data:`_PROJECT_STATUSES` falls back to ``'active'``
+    so legacy rows / typos can never accidentally hide a project.
+    """
+    s = str(value or "").strip().lower()
+    return s if s in _PROJECT_STATUSES else "active"
+
+
 def _project_row_to_dict(row):
     if row is None:
         return None
@@ -1034,6 +1047,7 @@ def _project_row_to_dict(row):
     except Exception:
         prefixes = []
     d["prefixes"] = prefixes if isinstance(prefixes, list) else []
+    d["status"] = _normalize_project_status(d.get("status"))
     return d
 
 
@@ -1048,14 +1062,28 @@ def _validate_project_name(name):
     return bool(_re_proj.match(r"^[a-z][a-z0-9-]*$", name or ""))
 
 
-def db_list_projects():
-    """Return all registered projects ordered by name."""
+def db_list_projects(status=None):
+    """Return registered projects ordered by name.
+
+    ``status``: if given, restrict the list to projects whose ``status``
+    column matches (e.g. ``'active'`` to skip backlogged projects, or
+    ``'backlog'`` to list only hidden ones). ``None`` returns every row,
+    which is the right default for management UIs / the in-process cache.
+    """
     con = get_db()
-    rows = con.execute(
-        "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
-        "description, created_at, updated_at "
-        "FROM projects ORDER BY name"
-    ).fetchall()
+    if status is None:
+        rows = con.execute(
+            "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
+            "description, status, created_at, updated_at "
+            "FROM projects ORDER BY name"
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
+            "description, status, created_at, updated_at "
+            "FROM projects WHERE status=? ORDER BY name",
+            (status,),
+        ).fetchall()
     return [_project_row_to_dict(r) for r in rows]
 
 
@@ -1066,7 +1094,7 @@ def db_get_project(name):
     con = get_db()
     row = con.execute(
         "SELECT name, color, emoji, prefixes_json, campaign_delimiter, "
-        "description, created_at, updated_at "
+        "description, status, created_at, updated_at "
         "FROM projects WHERE name=?",
         (name,),
     ).fetchone()
@@ -1081,8 +1109,13 @@ def db_create_project(
     default_campaign=None,
     campaign_delimiter="_",
     description="",
+    status="active",
 ):
     """Insert a new project. Auto-picks color/emoji from the palettes when missing.
+
+    ``status`` defaults to ``'active'``; pass ``'backlog'`` to create the
+    project pre-hidden from the sidebar (useful when restoring archives
+    or staging projects you don't want cluttering the UI yet).
 
     Returns ``{"status": "ok", "project": {...}}`` on success or
     ``{"status": "error", "error": "..."}`` on validation / duplicate-name failure.
@@ -1113,12 +1146,16 @@ def db_create_project(
             emoji = _pick_unused_palette(used_emojis, _PROJECT_EMOJIS, len(existing))
 
     prefixes_json = _json.dumps(prefixes_list, ensure_ascii=False)
+    status_val = _normalize_project_status(status)
     try:
         with db_write() as con:
             con.execute(
                 "INSERT INTO projects (name, color, emoji, prefixes_json, "
-                "campaign_delimiter, description) VALUES (?,?,?,?,?,?)",
-                (name, color, emoji, prefixes_json, campaign_delimiter or "_", description or ""),
+                "campaign_delimiter, description, status) VALUES (?,?,?,?,?,?,?)",
+                (
+                    name, color, emoji, prefixes_json,
+                    campaign_delimiter or "_", description or "", status_val,
+                ),
             )
     except sqlite3.IntegrityError:
         return {"status": "error", "error": f"project '{name}' already exists"}
@@ -1132,8 +1169,9 @@ def db_update_project(name, **fields):
     """Update an existing project. Returns ``{"status": "ok", "project": ...}``.
 
     Accepted fields: ``color``, ``emoji``, ``prefixes`` (list/str), ``default_campaign``,
-    ``campaign_delimiter``, ``description``. Unknown / ``None`` fields are ignored.
-    Returns ``{"status": "error", ...}`` on validation failure or missing project.
+    ``campaign_delimiter``, ``description``, ``status`` (``'active'`` or
+    ``'backlog'``). Unknown / ``None`` fields are ignored. Returns
+    ``{"status": "error", ...}`` on validation failure or missing project.
     """
     name = (name or "").strip().lower()
     if not name:
@@ -1156,6 +1194,15 @@ def db_update_project(name, **fields):
     if fields.get("description") is not None:
         cols.append("description=?")
         vals.append(fields["description"])
+    if fields.get("status") is not None:
+        raw = str(fields["status"]).strip().lower()
+        if raw not in _PROJECT_STATUSES:
+            return {
+                "status": "error",
+                "error": f"status must be one of {', '.join(_PROJECT_STATUSES)}",
+            }
+        cols.append("status=?")
+        vals.append(raw)
 
     if fields.get("prefixes") is not None:
         try:
@@ -1203,11 +1250,13 @@ def db_delete_project(name):
 
 
 def re_extract_unmatched_projects():
-    """Re-extract ``project`` for ``job_history`` and ``runs`` rows whose project is empty.
+    """Re-extract derived ``project`` assignments after prefix changes.
 
-    Cheap to run: only touches rows where ``project IS NULL`` or ``project=''``.
-    Called after every project CRUD so newly-registered prefixes immediately
-    light up matching jobs in the UI without waiting for the next poller cycle.
+    The project column is derived from registered prefixes, not user-authored
+    metadata. Recompute rows that now match a registered prefix so adding a
+    more-specific project prefix can move history out from under a broader
+    legacy prefix. Rows that no longer match any prefix are left untouched so
+    deleting a project does not erase historical attribution.
 
     Returns ``{"jobs_updated": int, "runs_updated": int}``.
     """
@@ -1216,21 +1265,21 @@ def re_extract_unmatched_projects():
 
     con = get_db()
     rows = con.execute(
-        "SELECT id, job_name FROM job_history WHERE project IS NULL OR project=''"
+        "SELECT id, job_name, project FROM job_history"
     ).fetchall()
     job_updates = []
     for r in rows:
         proj = extract_project(r["job_name"] or "")
-        if proj:
+        if proj and proj != (r["project"] or ""):
             job_updates.append((proj, r["id"]))
 
     run_rows = con.execute(
-        "SELECT id, run_name FROM runs WHERE project IS NULL OR project=''"
+        "SELECT id, run_name, project FROM runs"
     ).fetchall()
     run_updates = []
     for r in run_rows:
         proj = extract_project(r["run_name"] or "")
-        if proj:
+        if proj and proj != (r["project"] or ""):
             run_updates.append((proj, r["id"]))
 
     if job_updates or run_updates:

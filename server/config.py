@@ -507,6 +507,7 @@ def reload_projects_cache() -> None:
             "prefixes": row.get("prefixes") or [],
             "campaign_delimiter": row.get("campaign_delimiter") or "_",
             "description": row.get("description") or "",
+            "status": row.get("status") or "active",
         }
 
 

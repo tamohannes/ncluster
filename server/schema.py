@@ -303,6 +303,7 @@ CREATE TABLE IF NOT EXISTS projects (
     prefixes_json      TEXT NOT NULL DEFAULT '[]',
     campaign_delimiter TEXT NOT NULL DEFAULT '_',
     description        TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'active',
     created_at         TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 )
@@ -310,6 +311,12 @@ CREATE TABLE IF NOT EXISTS projects (
 """Project registry. ``prefixes_json`` is a JSON array of
 ``{prefix, default_campaign?}`` objects; the longest matching prefix
 across all projects wins for ``extract_project()``.
+
+``status`` is ``'active'`` (default) for projects shown in the sidebar,
+or ``'backlog'`` for projects hidden from the sidebar but still
+preserved in the registry — their prefixes still auto-tag jobs and
+their colors/emojis still apply, they're just demoted to Settings only
+until the user reactivates them.
 """
 
 
@@ -532,6 +539,8 @@ MIGRATIONS = [
     ("logbook_entries", "campaign", "TEXT NOT NULL DEFAULT ''"),
     # wds_history column added later in v3
     ("wds_history", "occupancy_factor", "REAL"),
+    # projects column added in v4 for sidebar visibility (active vs backlog)
+    ("projects", "status", "TEXT NOT NULL DEFAULT 'active'"),
 ]
 
 

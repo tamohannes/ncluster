@@ -84,6 +84,18 @@ class TestCreateProject:
         body = mock.call_args.kwargs["json"]
         assert body["prefixes"] == []
 
+    async def test_default_status_is_active(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            await create_project("alpha", prefixes=["a_"])
+        body = mock.call_args.kwargs["json"]
+        assert body["status"] == "active"
+
+    async def test_passes_explicit_backlog_status(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            await create_project("alpha", prefixes=["a_"], status="backlog")
+        body = mock.call_args.kwargs["json"]
+        assert body["status"] == "backlog"
+
 
 @pytest.mark.mcp
 class TestUpdateProject:
@@ -113,6 +125,18 @@ class TestUpdateProject:
             )
         body = mock.call_args.kwargs["json"]
         assert body["prefixes"] == [{"prefix": "x_", "default_campaign": "forced"}]
+
+    async def test_passes_status_backlog(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            await update_project("alpha", status="backlog")
+        body = mock.call_args.kwargs["json"]
+        assert body == {"status": "backlog"}
+
+    async def test_status_omitted_when_none(self):
+        with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
+            await update_project("alpha", color="#abcdef")
+        body = mock.call_args.kwargs["json"]
+        assert "status" not in body
 
 
 @pytest.mark.mcp
