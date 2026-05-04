@@ -4,6 +4,8 @@ let _lbProject = '';
 let _lbEditingId = null;
 let _lbTypeFilter = '';
 let _lbCampaignFilter = '';
+let _lbInitReady = false;
+let _lbPendingEntryId = null;
 let _lbHistory = [];
 let _lbRunNames = [];
 let _lbSuggestTarget = null;
@@ -151,6 +153,7 @@ function _isEntryPinned(entryId) {
 function initLogbookPage() {
   const sel = document.getElementById('lb-project-select');
   if (!sel) return;
+  _lbInitReady = false;
   _fetchProjectColors();
 
   Promise.allSettled([
@@ -195,8 +198,16 @@ function initLogbookPage() {
       }
       if (typeof _renderAppTabs === 'function') _renderAppTabs();
     }
+
+    _lbInitReady = true;
+    if (_lbPendingEntryId) {
+      const eid = _lbPendingEntryId;
+      _lbPendingEntryId = null;
+      openLogbookEntry(eid);
+    }
   }).catch(() => {
     sel.innerHTML = '<option value="">failed to load</option>';
+    _lbInitReady = true;
   });
 }
 

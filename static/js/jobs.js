@@ -126,14 +126,28 @@ function _onHashChange() {
   }
   else if (view === 'compute') showTab('clusters');
   else if (view === 'logbook') {
-    if (parts[1] && typeof _lbProject !== 'undefined') _lbProject = decodeURIComponent(parts[1]);
-    showTab('logbook');
-    if (parts[2] === 'entry' && parts[3] && typeof openLogbookEntry === 'function') {
-      setTimeout(() => openLogbookEntry(decodeURIComponent(parts[3])), 300);
+    const urlProject = parts[1] ? decodeURIComponent(parts[1]) : '';
+    const urlEntryId = (parts[2] === 'entry' && parts[3]) ? decodeURIComponent(parts[3]) : '';
+
+    if (urlProject && typeof _lbProject !== 'undefined') _lbProject = urlProject;
+
+    const at = _appTabs.find(t => t.id === _activeTabId);
+    if (at && at.type === 'logbook' && (!urlProject || at.lbProject === urlProject)) {
+      _activateView('logbook');
     } else {
-      if (typeof _updateActiveTabExtra === 'function') {
-        _updateActiveTabExtra({ lbProject: (typeof _lbProject !== 'undefined' ? _lbProject : ''), lbEntryId: null, lbEntryTitle: null });
+      showTab('logbook');
+    }
+
+    if (urlProject) {
+      _updateActiveTabExtra({ lbProject: urlProject, lbEntryId: urlEntryId || null, lbEntryTitle: null });
+    }
+    if (urlEntryId && typeof openLogbookEntry === 'function') {
+      _lbPendingEntryId = urlEntryId;
+      if (typeof _lbInitReady !== 'undefined' && _lbInitReady) {
+        _lbPendingEntryId = null;
+        openLogbookEntry(urlEntryId);
       }
+    } else {
       if (typeof _showMainEmpty === 'function') _showMainEmpty();
     }
   }
@@ -463,7 +477,7 @@ function _persistTabs() {
   } catch (_) {}
 }
 
-function _restoreTabs() {
+function _restoreTabArray() {
   const validTypes = new Set(['live', 'history', 'metrics', 'logbook', 'project', 'clusters', 'run']);
   try {
     const raw = localStorage.getItem('clausius.appTabs');
@@ -476,14 +490,19 @@ function _restoreTabs() {
         _activeTabId = parseInt(localStorage.getItem('clausius.activeTabId') || '1', 10);
         _nextTabId = parseInt(localStorage.getItem('clausius.nextTabId') || '2', 10);
         if (!_appTabs.find(t => t.id === _activeTabId)) _activeTabId = _appTabs[0].id;
-        const at = _appTabs.find(t => t.id === _activeTabId) || _appTabs[0];
-        _activeTabId = at.id;
-        switchAppTab(at.id);
         return true;
       }
     }
   } catch (_) {}
   return false;
+}
+
+function _restoreTabs() {
+  if (!_restoreTabArray()) return false;
+  const at = _appTabs.find(t => t.id === _activeTabId) || _appTabs[0];
+  _activeTabId = at.id;
+  switchAppTab(at.id);
+  return true;
 }
 
 function applySidebarState() {

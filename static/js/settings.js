@@ -1612,7 +1612,8 @@ loadProjectButtons();
   const hasRoute = (location.hash && location.hash.startsWith('#/'))
     || !['/', ''].includes(location.pathname);
   if (hasRoute) {
-    if (!_restoreTabs()) _renderAppTabs();
+    _restoreTabArray();
+    _renderAppTabs();
     _onHashChange();
   } else if (!_restoreTabs()) {
     _renderAppTabs();
