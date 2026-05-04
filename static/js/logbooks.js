@@ -17,6 +17,85 @@ const LB_SIDEBAR_MAX = 600;
 const LB_MAP_VIEW_KEY = 'clausius.lbMapView';
 let _pinnedEntryIds = new Set();
 
+function _cloneLbHistory(history) {
+  try {
+    return JSON.parse(JSON.stringify(history || []));
+  } catch (_) {
+    return [];
+  }
+}
+
+function _captureLogbookTabState() {
+  const main = document.getElementById('lb-main');
+  const list = document.getElementById('lb-sidebar-list');
+  const campaigns = document.getElementById('lb-campaign-filters');
+  const search = document.getElementById('lb-search');
+  const select = document.getElementById('lb-project-select');
+  const entryId = (_lbCurrentEntry && _lbCurrentEntry.id) || null;
+  const entryTitle = (_lbCurrentEntry && _lbCurrentEntry.title) || '';
+  return {
+    lbProject: _lbProject || null,
+    lbEntryId: entryId,
+    lbEntryTitle: entryTitle,
+    lbState: {
+      project: _lbProject || '',
+      entryId,
+      entryTitle,
+      currentEntry: _lbCurrentEntry || null,
+      editingId: _lbEditingId || null,
+      typeFilter: _lbTypeFilter || '',
+      campaignFilter: _lbCampaignFilter || '',
+      history: _cloneLbHistory(_lbHistory),
+      mainHtml: main ? main.innerHTML : '',
+      mainPlan: main ? main.classList.contains('lb-main-plan') : false,
+      mainScrollTop: main ? main.scrollTop : 0,
+      sidebarHtml: list ? list.innerHTML : '',
+      sidebarScrollTop: list ? list.scrollTop : 0,
+      campaignHtml: campaigns ? campaigns.innerHTML : '',
+      searchValue: search ? search.value : '',
+      selectValue: select ? select.value : '',
+    },
+  };
+}
+
+function _restoreLogbookTabState(state, tab) {
+  const s = state || (tab && tab.lbState) || null;
+  if (!s) return false;
+
+  _lbProject = s.project || (tab && tab.lbProject) || _lbProject || '';
+  _lbCurrentEntry = s.currentEntry || null;
+  _lbEditingId = s.editingId || null;
+  _lbTypeFilter = s.typeFilter || '';
+  _lbCampaignFilter = s.campaignFilter || '';
+  _lbHistory = _cloneLbHistory(s.history);
+
+  const select = document.getElementById('lb-project-select');
+  if (select && _lbProject) select.value = _lbProject;
+  const search = document.getElementById('lb-search');
+  if (search) search.value = s.searchValue || '';
+
+  const main = document.getElementById('lb-main');
+  if (main && s.mainHtml) {
+    main.innerHTML = s.mainHtml;
+    main.classList.toggle('lb-main-plan', !!s.mainPlan);
+    main.scrollTop = s.mainScrollTop || 0;
+  }
+
+  const list = document.getElementById('lb-sidebar-list');
+  if (list && s.sidebarHtml) {
+    list.innerHTML = s.sidebarHtml;
+    list.scrollTop = s.sidebarScrollTop || 0;
+  }
+
+  const campaigns = document.getElementById('lb-campaign-filters');
+  if (campaigns && s.campaignHtml) campaigns.innerHTML = s.campaignHtml;
+
+  if (s.entryId) _highlightSidebarItem(s.entryId);
+  if (typeof _resolveEntryRefs === 'function') _resolveEntryRefs();
+  _syncLogbookPresentMode();
+  return !!(s.mainHtml || s.sidebarHtml || s.campaignHtml);
+}
+
 function _restoreLogbookSidebarState() {
   try {
     const saved = parseInt(localStorage.getItem(LB_SIDEBAR_WIDTH_KEY) || '', 10);
@@ -116,6 +195,10 @@ function initLogbookPage() {
       _loadEntries(_lbProject);
       _loadRunNames(_lbProject);
       _loadCampaignChips();
+      if (typeof _updateActiveTabExtra === 'function') {
+        _updateActiveTabExtra({ lbProject: _lbProject });
+      }
+      if (typeof _renderAppTabs === 'function') _renderAppTabs();
     }
   }).catch(() => {
     sel.innerHTML = '<option value="">failed to load</option>';
@@ -145,8 +228,10 @@ function onLogbookProjectChange() {
   _loadRunNames(_lbProject);
   _loadCampaignChips();
   if (typeof _updateActiveTabExtra === 'function') {
-    _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: null });
+    _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: null, lbEntryTitle: null });
   }
+  if (typeof _renderAppTabs === 'function') _renderAppTabs();
+  if (typeof _setHash === 'function') _setHash(_hashForView('logbook', { lbProject: _lbProject }));
 }
 
 
@@ -417,6 +502,13 @@ async function openLogbookEntry(entryId, opts = {}) {
     const entry = await res.json();
     if (entry.status === 'error') { toast(entry.error, 'error'); return; }
     _lbCurrentEntry = entry;
+    if (typeof _updateActiveTabExtra === 'function') {
+      _updateActiveTabExtra({ lbEntryTitle: entry.title || '' });
+    }
+    if (typeof _renderAppTabs === 'function') _renderAppTabs();
+    if (typeof _setHash === 'function') {
+      _setHash(_hashForView('logbook', { lbProject: _lbProject, lbEntryId: entry.id }));
+    }
     const title = (entry.title || '').replace(/</g, '&lt;');
     const bodyHtml = _renderLogbookMarkdown(entry.body || '');
     const created = _formatDate(entry.created_at);
