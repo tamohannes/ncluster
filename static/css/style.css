@@ -2796,14 +2796,6 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text);
 }
-.lb-sidebar-search {
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
-}
-.lb-sidebar-search input {
-  width: 100%; font-family: var(--mono); font-size: 11px;
-  padding: 5px 8px; border-radius: 5px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text); box-sizing: border-box;
-}
 .lb-type-filters {
   display: flex; gap: 2px; padding: 6px 12px;
   border-bottom: 1px solid var(--border);
@@ -2818,25 +2810,22 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .lb-type-btn:hover { color: var(--text); }
 .lb-campaign-filters {
-  display: flex; gap: 3px; padding: 4px 12px; flex-wrap: wrap;
+  display: flex; gap: 4px; padding: 8px 12px; flex-wrap: wrap;
 }
 .lb-campaign-filters:empty { display: none; }
 .lb-campaign-chip {
-  font-family: var(--mono); font-size: 9px; padding: 2px 7px;
-  border-radius: 3px; border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 10px; padding: 4px 10px;
+  border-radius: 4px; border: 1px solid var(--border);
   background: var(--bg); color: var(--muted); cursor: pointer;
   border-left: 2px solid var(--chip-tint, var(--border));
+  transition: color .12s, background .12s, border-color .12s;
 }
 .lb-campaign-chip.active {
   background: var(--surface); color: var(--text); border-color: var(--chip-tint, var(--accent));
 }
 .lb-campaign-chip:hover { color: var(--text); }
 .lb-campaign-chip-count {
-  font-size: 8px; opacity: 0.6;
-}
-.lb-campaign-sep {
-  display: inline-block; width: 1px; height: 14px;
-  background: var(--border); margin: 0 2px; align-self: center;
+  font-size: 9px; opacity: 0.55; margin-left: 3px;
 }
 .lb-type-chip {
   border-left-color: var(--border) !important;
@@ -6245,7 +6234,6 @@ textarea,
 .history-filter select,
 .history-filter input,
 .lb-sidebar-head select,
-.lb-sidebar-search input,
 .lb-editor-title,
 .lb-editor-body,
 .lb-editor-type-select,
@@ -6839,7 +6827,6 @@ main,
 :root:not([data-appearance="glass"]) .history-filter select,
 :root:not([data-appearance="glass"]) .history-filter input,
 :root:not([data-appearance="glass"]) .lb-sidebar-head select,
-:root:not([data-appearance="glass"]) .lb-sidebar-search input,
 :root:not([data-appearance="glass"]) .lb-editor-title,
 :root:not([data-appearance="glass"]) .lb-editor-body,
 :root:not([data-appearance="glass"]) .lb-editor-type-select,

@@ -2,7 +2,6 @@
 
 let _lbProject = '';
 let _lbEditingId = null;
-let _lbSearchTimer = null;
 let _lbTypeFilter = '';
 let _lbCampaignFilter = '';
 let _lbHistory = [];
@@ -29,7 +28,6 @@ function _captureLogbookTabState() {
   const main = document.getElementById('lb-main');
   const list = document.getElementById('lb-sidebar-list');
   const campaigns = document.getElementById('lb-campaign-filters');
-  const search = document.getElementById('lb-search');
   const select = document.getElementById('lb-project-select');
   const entryId = (_lbCurrentEntry && _lbCurrentEntry.id) || null;
   const entryTitle = (_lbCurrentEntry && _lbCurrentEntry.title) || '';
@@ -52,7 +50,6 @@ function _captureLogbookTabState() {
       sidebarHtml: list ? list.innerHTML : '',
       sidebarScrollTop: list ? list.scrollTop : 0,
       campaignHtml: campaigns ? campaigns.innerHTML : '',
-      searchValue: search ? search.value : '',
       selectValue: select ? select.value : '',
     },
   };
@@ -71,8 +68,6 @@ function _restoreLogbookTabState(state, tab) {
 
   const select = document.getElementById('lb-project-select');
   if (select && _lbProject) select.value = _lbProject;
-  const search = document.getElementById('lb-search');
-  if (search) search.value = s.searchValue || '';
 
   const main = document.getElementById('lb-main');
   if (main && s.mainHtml) {
@@ -221,8 +216,6 @@ function onLogbookProjectChange() {
   _mapEdgeDir = 'both';
   _lbHistory = [];
   _invalidateMapCache();
-  const search = document.getElementById('lb-search');
-  if (search) search.value = '';
   _showMainEmpty();
   _loadEntries(_lbProject);
   _loadRunNames(_lbProject);
@@ -363,20 +356,13 @@ document.addEventListener('fullscreenchange', () => {
 
 // ── Search & filter ─────────────────────────────────────────────────────────
 
-function onLogbookSearch() {
-  clearTimeout(_lbSearchTimer);
-  _lbSearchTimer = setTimeout(() => {
-    const q = (document.getElementById('lb-search') || {}).value || '';
-    if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
-  }, 300);
-}
+function onLogbookSearch() {}
 
 function filterLogbookType(btn) {
   _lbTypeFilter = (btn && btn.dataset && btn.dataset.type) || '';
   _lbCampaignFilter = '';
   _loadCampaignChips();
-  const q = (document.getElementById('lb-search') || {}).value || '';
-  if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
+  if (_lbProject) _loadEntries(_lbProject);
 }
 
 async function _loadCampaignChips() {
@@ -393,7 +379,7 @@ async function _loadCampaignChips() {
         const active = _lbCampaignFilter === c.name ? ' active' : '';
         const tint = projColor ? campaignShade(projColor, c.name) : '';
         const style = tint ? `style="--chip-tint:${tint}"` : '';
-        return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name} <span class="lb-campaign-chip-count">${c.count}</span></button>`;
+        return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name}<span class="lb-campaign-chip-count">${c.count}</span></button>`;
       }).join('');
     }
     el.innerHTML = html;
@@ -412,8 +398,7 @@ function toggleCampaignFilter(btn) {
     const isAll = !b.dataset.campaign;
     b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
   });
-  const q = (document.getElementById('lb-search') || {}).value || '';
-  if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
+  if (_lbProject) _loadEntries(_lbProject);
 }
 
 function _toggleTypeChip(btn) {
@@ -425,8 +410,7 @@ function _toggleTypeChip(btn) {
     b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
   });
   document.querySelectorAll('.lb-type-chip').forEach(b => b.classList.toggle('active', b.dataset.type === _lbTypeFilter));
-  const q = (document.getElementById('lb-search') || {}).value || '';
-  if (_lbProject) _loadEntries(_lbProject, q.trim() || undefined);
+  if (_lbProject) _loadEntries(_lbProject);
 }
 
 
@@ -1468,8 +1452,7 @@ function toggleLogbookMap() {
     _lbTypeFilter = '';
     _lbCampaignFilter = '';
     _loadCampaignChips();
-    const _q = (document.getElementById('lb-search') || {}).value || '';
-    if (_lbProject) _loadEntries(_lbProject, _q.trim() || undefined);
+    if (_lbProject) _loadEntries(_lbProject);
   }
 }
 
