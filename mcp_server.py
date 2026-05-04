@@ -267,6 +267,11 @@ _DEFAULT_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_TOOL_TIMEOUT_SEC", "25
 # so they need more headroom than the default tool budget.
 _UPLOAD_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_UPLOAD_TIMEOUT_SEC", "60"))
 
+# SSHFS mount/unmount operations can take up to 3 minutes (the subprocess
+# timeout inside run_mount_script is 180s).  Give enough headroom so MCP
+# doesn't time out before the underlying operation finishes.
+_MOUNT_TIMEOUT_SEC = float(os.environ.get("CLAUSIUS_MCP_MOUNT_TIMEOUT_SEC", "200"))
+
 # anyio's default thread limiter (40 tokens) is left untouched — the real
 # cap on inflight cluster work is the per-cluster SSH semaphore inside
 # ``server.ssh`` (max 2 per cluster, 8 globally). Non-SSH calls are fast
@@ -572,6 +577,14 @@ async def mcp_self_check() -> dict:
     with _activity_lock:
         idle_sec = time.monotonic() - _last_activity_ts
 
+    try:
+        leader_reachable = await asyncio.wait_for(
+            anyio.to_thread.run_sync(_probe_leader),
+            timeout=3.0,
+        )
+    except (asyncio.TimeoutError, Exception):
+        leader_reachable = False
+
     return {
         "pid": os.getpid(),
         "transport": _MCP_TRANSPORT,
@@ -580,7 +593,7 @@ async def mcp_self_check() -> dict:
         "last_activity_sec_ago": round(idle_sec, 1),
         "follower_active": poller_running(),
         "leader_url": _FOLLOWER_URL,
-        "leader_reachable": _probe_leader(),
+        "leader_reachable": leader_reachable,
         "tool_stats": snapshot,
     }
 
@@ -803,7 +816,7 @@ async def mount_cluster(cluster: str, action: str = "mount") -> dict:
     """Mount or unmount a cluster's remote filesystem via SSHFS."""
     if action not in ("mount", "unmount"):
         return {"status": "error", "error": "action must be 'mount' or 'unmount'"}
-    return await _api_async("POST", f"/api/mount/{action}/{cluster}")
+    return await _api_async("POST", f"/api/mount/{action}/{cluster}", timeout=_MOUNT_TIMEOUT_SEC)
 
 
 @mcp.tool()
@@ -1087,14 +1100,17 @@ async def list_path_bases(kind: Optional[str] = None) -> list[dict]:
     """
     if kind:
         data = await _api_async("GET", f"/api/paths/{kind}")
-    else:
-        results = []
-        for k in ("log_search", "nemo_run", "mount_lustre_prefix"):
-            d = await _api_async("GET", f"/api/paths/{k}")
-            if isinstance(d, list):
-                results.extend(d)
-        return results
-    return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else []
+
+    responses = await asyncio.gather(*(
+        _api_async("GET", f"/api/paths/{k}")
+        for k in ("log_search", "nemo_run", "mount_lustre_prefix")
+    ))
+    results = []
+    for d in responses:
+        if isinstance(d, list):
+            results.extend(d)
+    return results
 
 
 @mcp.tool()
@@ -1120,14 +1136,17 @@ async def list_process_filters(mode: Optional[str] = None) -> list[dict]:
     """
     if mode:
         data = await _api_async("GET", f"/api/process_filters/{mode}")
-    else:
-        results = []
-        for m in ("include", "exclude"):
-            d = await _api_async("GET", f"/api/process_filters/{m}")
-            if isinstance(d, list):
-                results.extend(d)
-        return results
-    return data if isinstance(data, list) else []
+        return data if isinstance(data, list) else []
+
+    responses = await asyncio.gather(*(
+        _api_async("GET", f"/api/process_filters/{m}")
+        for m in ("include", "exclude")
+    ))
+    results = []
+    for d in responses:
+        if isinstance(d, list):
+            results.extend(d)
+    return results
 
 
 @mcp.tool()
