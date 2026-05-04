@@ -41,7 +41,8 @@ from .db import (
 )
 from .ssh import (
     ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout,
-    get_circuit_breaker_status, cancel_jobs_with_report, enable_standalone_ssh,
+    get_circuit_breaker_status, reset_circuit_breaker, cancel_jobs_with_report,
+    enable_standalone_ssh,
 )
 from .mounts import (
     resolve_mounted_path, resolve_file_path,
@@ -2051,6 +2052,7 @@ def api_force_poll(cluster):
     """Queue one explicit live poll now without tying up the request thread."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    reset_circuit_breaker(cluster)
     poller = get_poller()
     poller_state = poller.get_status().get(cluster, {})
     touch_demand()

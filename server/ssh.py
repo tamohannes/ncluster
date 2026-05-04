@@ -71,6 +71,15 @@ def _cb_record_success(cluster):
         log.warning("circuit breaker CLOSED: %s recovered", cluster)
 
 
+def reset_circuit_breaker(cluster):
+    """Manually reset the circuit breaker so the next SSH attempt goes through."""
+    with _cb_lock:
+        was_open = cluster in _cb_failures
+        _cb_failures.pop(cluster, None)
+    if was_open:
+        log.warning("circuit breaker RESET (manual): %s", cluster)
+
+
 def _cb_is_open(cluster):
     """True if the circuit breaker is open (cluster should be skipped)."""
     with _cb_lock:
