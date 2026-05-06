@@ -287,9 +287,18 @@ function _renderSidebarList(entries) {
 
 function _renderSnippet(snippet) {
   if (!snippet) return '';
-  let s = snippet.replace(/</g, '&lt;').replace(/\n/g, ' ');
+  let s = _cleanSidebarPreview(snippet).replace(/</g, '&lt;');
   s = s.replace(/\x02/g, '<mark class="lb-search-hl">').replace(/\x03/g, '</mark>');
   return s;
+}
+
+function _cleanSidebarPreview(text) {
+  return String(text || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/(^|\s)(\x02)?#{1,6}\s+/g, '$1$2')
+    .replace(/(^|\s)(\x02)?(?:[-*+]\s+|>\s+)/g, '$1$2')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function _renderSidebarItems(items, showPinIcon) {
@@ -298,18 +307,18 @@ function _renderSidebarItems(items, showPinIcon) {
     const date = _formatDate(e.created_at);
     const title = (e.title || '').replace(/</g, '&lt;');
     const rawPreview = e.snippet || e.body_preview || '';
-    const preview = e.snippet ? _renderSnippet(rawPreview) : rawPreview.replace(/</g, '&lt;').replace(/\n/g, ' ');
+    const preview = e.snippet ? _renderSnippet(rawPreview) : _cleanSidebarPreview(rawPreview).replace(/</g, '&lt;');
     const isPlan = e.entry_type === 'plan';
     const typeCls = isPlan ? ' lb-type-plan' : '';
     const pinned = _isEntryPinned(e.id);
     const pinCls = pinned ? ' lb-pinned' : '';
     const pinBtn = `<span class="lb-pin-btn${pinned ? ' active' : ''}" onclick="event.stopPropagation();togglePinEntry(${e.id})" title="${pinned ? 'Unpin' : 'Pin'}">📌</span>`;
     const camp = e.campaign || '';
-    const tint = camp && projColor ? campaignShade(projColor, camp) : (projColor || '');
+    const tint = camp && projColor ? campaignShade(projColor, camp) : '';
     const tintStyle = tint ? `style="--lb-tint:${tint}"` : '';
     const campChip = camp ? `<span class="lb-sidebar-item-campaign">${camp}</span>` : '';
-    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" data-campaign="${camp}" ${tintStyle} onclick="openLogbookEntry(${e.id})">
-      <div class="lb-sidebar-item-title">${pinBtn}${title} <span class="lb-sidebar-item-id">#${e.id}</span> <span class="lb-sidebar-item-date">${date}</span></div>
+    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" data-campaign="${camp}" data-entry-meta="#${e.id} · ${date}" ${tintStyle} onclick="openLogbookEntry(${e.id})">
+      <div class="lb-sidebar-item-title"><span class="lb-sidebar-item-name">${title}</span>${pinBtn}</div>
       ${campChip}
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
@@ -790,6 +799,12 @@ code {
   background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
 }
 pre code { background: none; padding: 0; }
+.md-small-caps {
+  font-family: 'Inter', sans-serif;
+  font-variant-caps: small-caps;
+  letter-spacing: 0.045em;
+  font-weight: 650;
+}
 .lb-html-embed {
   margin: 16px 0; border-radius: 8px; overflow: hidden;
   border: 1px solid var(--border); background: #fff;
