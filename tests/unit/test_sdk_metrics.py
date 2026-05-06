@@ -1,40 +1,19 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
-import types
 import uuid
 from pathlib import Path
 
 
 def _load_sdk_run(monkeypatch):
-    sdk_dir = Path(__file__).resolve().parents[2] / "sdk"
     for name in list(sys.modules):
-        if name == "nemo_skills" or name.startswith("nemo_skills."):
+        if name == "clausius_sdk" or name.startswith("clausius_sdk."):
             monkeypatch.delitem(sys.modules, name, raising=False)
-
-    nemo_pkg = types.ModuleType("nemo_skills")
-    nemo_pkg.__path__ = []
-    clausius_pkg = types.ModuleType("nemo_skills.clausius_sdk")
-    clausius_pkg.__path__ = [str(sdk_dir)]
-    transports_pkg = types.ModuleType("nemo_skills.clausius_sdk.transports")
-    transports_pkg.__path__ = [str(sdk_dir / "transports")]
-    monkeypatch.setitem(sys.modules, "nemo_skills", nemo_pkg)
-    monkeypatch.setitem(sys.modules, "nemo_skills.clausius_sdk", clausius_pkg)
-    monkeypatch.setitem(sys.modules, "nemo_skills.clausius_sdk.transports", transports_pkg)
-
-    def load(mod_name, path):
-        spec = importlib.util.spec_from_file_location(mod_name, path)
-        module = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, mod_name, module)
-        spec.loader.exec_module(module)
-        return module
-
-    load("nemo_skills.clausius_sdk.events", sdk_dir / "events.py")
-    load("nemo_skills.clausius_sdk.transports.base", sdk_dir / "transports" / "base.py")
-    load("nemo_skills.clausius_sdk.session", sdk_dir / "session.py")
-    run_mod = load("nemo_skills.clausius_sdk.run", sdk_dir / "run.py")
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if repo_root not in sys.path:
+        monkeypatch.syspath_prepend(repo_root)
+    import clausius_sdk.run as run_mod
     return run_mod.Run
 
 

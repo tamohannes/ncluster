@@ -30,13 +30,13 @@ import time
 import uuid
 from typing import Any
 
-from nemo_skills.clausius_sdk.events import (
+from clausius_sdk.events import (
     Event,
     EventType,
     JobInfo,
     RunProvenance,
 )
-from nemo_skills.clausius_sdk.transports.base import Transport
+from clausius_sdk.transports.base import Transport
 
 LOG = logging.getLogger(__name__)
 
@@ -622,7 +622,7 @@ def _build_transports(output_dir: str = "") -> list[Transport]:
     url = os.environ.get("CLAUSIUS_URL", "")
     token = os.environ.get("CLAUSIUS_TOKEN", "")
     if url:
-        from nemo_skills.clausius_sdk.transports.http import HttpTransport
+        from clausius_sdk.transports.http import HttpTransport
 
         transports.append(HttpTransport(url=url, token=token))
 
@@ -631,7 +631,7 @@ def _build_transports(output_dir: str = "") -> list[Transport]:
         spool_dir = os.path.join(output_dir, ".clausius")
     if spool_dir:
         try:
-            from nemo_skills.clausius_sdk.transports.file_spool import FileSpoolTransport
+            from clausius_sdk.transports.file_spool import FileSpoolTransport
 
             transports.append(FileSpoolTransport(os.path.join(spool_dir, "events.jsonl")))
         except OSError:

@@ -22,8 +22,8 @@ import sys
 import time
 from typing import Any
 
-from nemo_skills.clausius_sdk.events import RunProvenance
-from nemo_skills.clausius_sdk.session import (
+from clausius_sdk.events import RunProvenance
+from clausius_sdk.session import (
     ClausiusSession,
     _build_transports,
     _detect_conda_env,

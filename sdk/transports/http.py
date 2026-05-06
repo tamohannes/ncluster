@@ -21,8 +21,8 @@ import logging
 import urllib.error
 import urllib.request
 
-from nemo_skills.clausius_sdk.events import Event
-from nemo_skills.clausius_sdk.transports.base import Transport
+from clausius_sdk.events import Event
+from clausius_sdk.transports.base import Transport
 
 LOG = logging.getLogger(__name__)
 

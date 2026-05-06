@@ -18,7 +18,7 @@ These are safe to call even when no session is active: they silently no-op.
 
 Usage from evaluation / training code:
 
-    from nemo_skills.clausius_sdk.metrics import log_metric, log_artifact
+    from clausius_sdk.metrics import log_metric, log_artifact
 
     log_metric("accuracy", 0.84, step=100)
     log_artifact("metrics.json", "/path/to/metrics.json")
@@ -30,7 +30,7 @@ from typing import Any
 
 
 def log_metric(key: str, value: Any, step: int | None = None, **context) -> None:
-    from nemo_skills.clausius_sdk.session import ClausiusSession
+    from clausius_sdk.session import ClausiusSession
 
     s = ClausiusSession.get()
     if s:
@@ -41,7 +41,7 @@ def log_metric(key: str, value: Any, step: int | None = None, **context) -> None
 
 
 def log_scalar(key: str, value: Any, **context) -> None:
-    from nemo_skills.clausius_sdk.session import ClausiusSession
+    from clausius_sdk.session import ClausiusSession
 
     s = ClausiusSession.get()
     if s:
@@ -49,7 +49,7 @@ def log_scalar(key: str, value: Any, **context) -> None:
 
 
 def log_params(params: dict[str, Any]) -> None:
-    from nemo_skills.clausius_sdk.session import ClausiusSession
+    from clausius_sdk.session import ClausiusSession
 
     s = ClausiusSession.get()
     if s:
@@ -57,7 +57,7 @@ def log_params(params: dict[str, Any]) -> None:
 
 
 def log_artifact(name: str, path: str, **metadata) -> None:
-    from nemo_skills.clausius_sdk.session import ClausiusSession
+    from clausius_sdk.session import ClausiusSession
 
     s = ClausiusSession.get()
     if s:

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from nemo_skills.clausius_sdk.events import Event
+from clausius_sdk.events import Event
 
 
 class Transport(ABC):

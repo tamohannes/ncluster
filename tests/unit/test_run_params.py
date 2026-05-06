@@ -228,7 +228,7 @@ def test_api_run_info_handles_corrupt_params_json(client, db_path):
 
 # ---------------------------------------------------------------------------
 # 3. SDK-level sanitizer (loaded directly from the source file, outside the
-# `nemo_skills.clausius_sdk` namespace — clausius's own Python env doesn't
+# `clausius_sdk` package import path — clausius's own Python env doesn't
 # have NeMo-Skills installed but the sanitizer is pure stdlib).
 # ---------------------------------------------------------------------------
 

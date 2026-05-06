@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Clausius SDK — structured experiment telemetry for NeMo-Skills.
+"""Clausius SDK — structured experiment telemetry for research jobs.
 
 Quick start (automatic — no user code needed):
     Set CLAUSIUS_URL and/or CLAUSIUS_SPOOL_DIR env vars before running
@@ -20,13 +20,13 @@ Quick start (automatic — no user code needed):
     and emits run/job/metric events automatically.
 
 Manual metric logging from eval/training code:
-    from nemo_skills.clausius_sdk import Run
+    from clausius_sdk import Run
     run = Run(run_name="my_eval", cluster="eos")
     run.track("accuracy", 0.84, step=100)
     run.close()
 """
 
-from nemo_skills.clausius_sdk.run import Run
-from nemo_skills.clausius_sdk.session import ClausiusSession
+from clausius_sdk.run import Run
+from clausius_sdk.session import ClausiusSession
 
 __all__ = ["ClausiusSession", "Run"]

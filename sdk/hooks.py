@@ -24,8 +24,8 @@ from __future__ import annotations
 import logging
 import os
 
-from nemo_skills.clausius_sdk.events import JobInfo
-from nemo_skills.clausius_sdk.session import ClausiusSession
+from clausius_sdk.events import JobInfo
+from clausius_sdk.session import ClausiusSession
 
 LOG = logging.getLogger(__name__)
 
