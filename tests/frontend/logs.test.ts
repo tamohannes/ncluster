@@ -170,6 +170,17 @@ describe('markdownToHtml', () => {
     const result = markdownToHtml('```\ncode\n```');
     expect(result).toContain('<pre><code>');
   });
+  it('renders markdown and LaTeX bold inside tables', () => {
+    const result = markdownToHtml('| Metric | Value |\n|---|---:|\n| A | **52.2** |\n| B | \\textbf{54.0} |');
+    expect(result).toContain('<strong>52.2</strong>');
+    expect(result).toContain('<strong>54.0</strong>');
+    expect(result).not.toContain('\\textbf');
+  });
+  it('renders LaTeX small caps inside tables', () => {
+    const result = markdownToHtml('| Setup |\n|---|\n| All \\textsc{Artsiv} findings |');
+    expect(result).toContain('<span class="md-small-caps">Artsiv</span>');
+    expect(result).not.toContain('\\textsc');
+  });
 });
 
 describe('_popupShouldLoadFully', () => {

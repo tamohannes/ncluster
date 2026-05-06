@@ -869,6 +869,8 @@ async function copyJsonlRecord(ev, btn) {
 
 function _mdInline(text) {
   let s = escapeHtml(text);
+  s = s.replace(/\\textbf\{([^{}]+)\}/g, '<strong>$1</strong>');
+  s = s.replace(/\\textsc\{([^{}]+)\}/g, '<span class="md-small-caps">$1</span>');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
   s = s.replace(/`(.+?)`/g, '<code class="md-inline-code">$1</code>');

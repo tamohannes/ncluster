@@ -182,6 +182,8 @@ def _set_cell_borders(cell, color_hex="E4E4EC"):
 
 _INLINE_PATTERNS = [
     ("bold", re.compile(r"\*\*(.+?)\*\*")),
+    ("latex_bold", re.compile(r"\\textbf\{([^{}]+)\}")),
+    ("small_caps", re.compile(r"\\textsc\{([^{}]+)\}")),
     ("italic", re.compile(r"\*(.+?)\*")),
     ("code", re.compile(r"`(.+?)`")),
     ("strike", re.compile(r"~~(.+?)~~")),
@@ -201,7 +203,10 @@ def _add_inline_runs(paragraph, text, project=None, default_bold=False):
         run.font.name = _FONT_SANS
         if default_bold:
             run.font.bold = True
-        if kind == "bold":
+        if kind in ("bold", "latex_bold"):
+            run.font.bold = True
+        elif kind == "small_caps":
+            run.font.small_caps = True
             run.font.bold = True
         elif kind == "italic":
             run.font.italic = True
@@ -223,6 +228,8 @@ def _split_inline(text):
 
     combined = re.compile(
         r"(?P<image>!\[(?P<ialt>[^\]]*)\]\((?P<isrc>(?:https?://|/|\.{0,2}/)[^)]+)\))"
+        r"|(?P<latex_bold>\\textbf\{(?P<lbcont>[^{}]+)\})"
+        r"|(?P<small_caps>\\textsc\{(?P<sccont>[^{}]+)\})"
         r"|(?P<bold>\*\*(?P<bcont>.+?)\*\*)"
         r"|(?P<italic>\*(?P<icont>.+?)\*)"
         r"|(?P<code>`(?P<ccont>.+?)`)"
@@ -236,6 +243,10 @@ def _split_inline(text):
 
         if m.group("image"):
             segments.append(("image", m.group("ialt"), m.group("isrc")))
+        elif m.group("latex_bold"):
+            segments.append(("latex_bold", m.group("lbcont"), None))
+        elif m.group("small_caps"):
+            segments.append(("small_caps", m.group("sccont"), None))
         elif m.group("bold"):
             segments.append(("bold", m.group("bcont"), None))
         elif m.group("italic"):
