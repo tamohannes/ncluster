@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -1513,19 +1514,200 @@ def api_run_metrics_by_hash(cluster, run_hash):
 
 _RUN_RESULTS_MAX_METRICS_FILES = 12
 _RUN_RESULTS_MAX_BYTES = 2 * 1024 * 1024
+_RUN_RESULTS_STDOUT_RE = re.compile(r"(?:^|\s)StdOut=(\S+)", re.MULTILINE)
 
 
-def _run_result_roots(run):
+def _normalize_output_root(path, cwd=""):
+    path = str(path or "").strip().rstrip("/")
+    if not path:
+        return ""
+    if not path.startswith("/") and cwd:
+        path = os.path.normpath(os.path.join(cwd, path))
+    return path.rstrip("/")
+
+
+def _run_result_root_from_log_path(log_path):
+    log_path = str(log_path or "").strip().rstrip("/")
+    if not log_path:
+        return ""
+    marker = "/eval-results/"
+    if marker in log_path:
+        return log_path.split(marker, 1)[0].rstrip("/")
+    log_dir = os.path.dirname(log_path)
+    root = os.path.dirname(log_dir)
+    return root.rstrip("/") if root and root != log_dir else ""
+
+
+def _shell_tokens(text):
+    try:
+        return shlex.split(str(text or ""))
+    except ValueError:
+        return str(text or "").split()
+
+
+def _submit_command_cwd(command):
+    for line in str(command or "").splitlines():
+        tokens = _shell_tokens(line)
+        if len(tokens) >= 2 and tokens[0] == "cd":
+            return tokens[1]
+    return ""
+
+
+def _normalized_output_dir_key(key):
+    return str(key or "").lstrip("-+").replace("-", "_").lower()
+
+
+def _output_roots_from_command(command, cwd=""):
+    command = str(command or "")
+    effective_cwd = cwd or _submit_command_cwd(command)
+    roots = []
+    tokens = _shell_tokens(command)
+    for idx, token in enumerate(tokens):
+        if "=" in token:
+            key, value = token.split("=", 1)
+            if _normalized_output_dir_key(key) == "output_dir":
+                roots.append(_normalize_output_root(value, effective_cwd))
+            continue
+        if _normalized_output_dir_key(token) != "output_dir":
+            continue
+        if idx + 1 >= len(tokens):
+            continue
+        value = tokens[idx + 1]
+        if value.startswith("-"):
+            continue
+        roots.append(_normalize_output_root(value, effective_cwd))
+    return [root for root in roots if root]
+
+
+def _output_roots_from_params(value, cwd=""):
+    roots = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if _normalized_output_dir_key(key) == "output_dir":
+                if isinstance(child, str):
+                    roots.append(_normalize_output_root(child, cwd))
+                elif isinstance(child, (list, tuple)):
+                    for item in child:
+                        if isinstance(item, str):
+                            roots.append(_normalize_output_root(item, cwd))
+            if isinstance(child, (dict, list, tuple)):
+                roots.extend(_output_roots_from_params(child, cwd=cwd))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            if isinstance(child, (dict, list, tuple)):
+                roots.extend(_output_roots_from_params(child, cwd=cwd))
+    return [root for root in roots if root]
+
+
+def _output_roots_from_scontrol(raw):
+    roots = []
+    for match in _RUN_RESULTS_STDOUT_RE.finditer(str(raw or "").replace("\n", " ")):
+        root = _run_result_root_from_log_path(match.group(1))
+        if root:
+            roots.append(root)
+    return roots
+
+
+def _sdk_event_output_roots(run):
+    run_uuid = run.get("run_uuid") or ""
+    if not run_uuid:
+        return []
+    try:
+        from .db import get_run_uuid_family
+        uuids = get_run_uuid_family(run_uuid) or [run_uuid]
+        placeholders = ",".join("?" for _ in uuids)
+        con = get_db()
+        rows = con.execute(
+            f"""SELECT payload_json FROM sdk_events
+                WHERE run_uuid IN ({placeholders}) AND event_type='run_started'
+                ORDER BY id DESC
+                LIMIT 8""",
+            uuids,
+        ).fetchall()
+        con.close()
+    except Exception:
+        return []
+
+    roots = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        cwd = payload.get("cwd") or run.get("submit_cwd") or ""
+        roots.append(_normalize_output_root(payload.get("output_dir", ""), cwd=cwd))
+        roots.extend(_output_roots_from_command(payload.get("command", ""), cwd=cwd))
+        roots.extend(_output_roots_from_params(payload.get("params", {}), cwd=cwd))
+    return [root for root in roots if root]
+
+
+def _job_history_output_roots(cluster, run):
+    clauses = []
+    params = [cluster]
+    run_id = run.get("id")
+    if run_id:
+        clauses.append("run_id=?")
+        params.append(run_id)
+    run_name = str(run.get("run_name") or "").strip()
+    if len(run_name) >= 3:
+        clauses.append("instr(COALESCE(job_name, ''), ?) > 0")
+        params.append(run_name)
+    if not cluster or not clauses:
+        return []
+    try:
+        con = get_db()
+        rows = con.execute(
+            f"""SELECT log_path FROM job_history
+                WHERE cluster=?
+                  AND ({' OR '.join(clauses)})
+                  AND COALESCE(log_path, '') != ''
+                ORDER BY id DESC
+                LIMIT 20""",
+            params,
+        ).fetchall()
+        con.close()
+    except Exception:
+        return []
+    roots = []
+    for row in rows:
+        root = _run_result_root_from_log_path(row["log_path"])
+        if root:
+            roots.append(root)
+    return roots
+
+
+def _run_result_roots(run, cluster=""):
     roots = []
 
-    def add(path):
-        path = str(path or "").strip().rstrip("/")
+    def add(path, cwd=""):
+        path = _normalize_output_root(path, cwd=cwd)
         if path and path not in roots:
             roots.append(path)
 
     add(run.get("primary_output_dir", ""))
+    add(run.get("output_dir", ""))
+    add(run.get("submit_output_dir", ""))
+    submit_cwd = run.get("submit_cwd", "")
+    for root in _output_roots_from_command(run.get("submit_command", ""), cwd=submit_cwd):
+        add(root)
+    raw_params = run.get("params_json", "") or ""
+    if raw_params:
+        try:
+            for root in _output_roots_from_params(json.loads(raw_params), cwd=submit_cwd):
+                add(root)
+        except (TypeError, ValueError):
+            pass
     for job in run.get("jobs", []) or []:
         add(job.get("output_dir", ""))
+        add(_run_result_root_from_log_path(job.get("log_path", "")))
+        for root in _output_roots_from_scontrol(job.get("scontrol_raw", "")):
+            add(root)
+    for root in _output_roots_from_scontrol(run.get("scontrol_raw", "")):
+        add(root)
+    for root in _sdk_event_output_roots(run):
+        add(root)
+    for root in _job_history_output_roots(cluster, run):
+        add(root)
 
     expanded = []
     for root in roots:
@@ -1673,7 +1855,7 @@ def api_run_results_by_hash(cluster, run_hash):
     if not run:
         return jsonify({"status": "error", "error": "Run not found"}), 404
 
-    roots = _run_result_roots(run)
+    roots = _run_result_roots(run, cluster=cluster)
     files = _find_run_metrics_files(cluster, roots, benchmark=benchmark)
     if not files:
         return jsonify({
