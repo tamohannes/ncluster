@@ -1511,6 +1511,227 @@ def api_run_metrics_by_hash(cluster, run_hash):
     return jsonify({"status": "ok", **payload})
 
 
+_RUN_RESULTS_MAX_METRICS_FILES = 12
+_RUN_RESULTS_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _run_result_roots(run):
+    roots = []
+
+    def add(path):
+        path = str(path or "").strip().rstrip("/")
+        if path and path not in roots:
+            roots.append(path)
+
+    add(run.get("primary_output_dir", ""))
+    for job in run.get("jobs", []) or []:
+        add(job.get("output_dir", ""))
+
+    expanded = []
+    for root in roots:
+        expanded.append(root)
+        marker = "/eval-results/"
+        if marker in root:
+            expanded.append(root.split(marker, 1)[0])
+    deduped = []
+    for root in expanded:
+        if root and root not in deduped:
+            deduped.append(root)
+    return deduped
+
+
+def _append_existing_metrics_file(matches, path):
+    if os.path.isfile(path):
+        matches.append({"path": path, "size_bytes": os.path.getsize(path)})
+
+
+def _local_metrics_files(root, benchmark=""):
+    matches = []
+    root = root.rstrip("/")
+    if not root or not os.path.isdir(root):
+        return matches
+
+    # NeMo-Skills writes final benchmark metrics only after summarize_results:
+    #   <output_dir>/eval-results/<benchmark>/metrics.json
+    # Some job records already point directly at eval-results/<benchmark>, in
+    # which case metrics.json is directly under the recorded output_dir.
+    _append_existing_metrics_file(matches, os.path.join(root, "metrics.json"))
+    eval_root = root if os.path.basename(root) == "eval-results" else os.path.join(root, "eval-results")
+    if benchmark:
+        _append_existing_metrics_file(matches, os.path.join(eval_root, benchmark, "metrics.json"))
+        return matches
+
+    if os.path.isdir(eval_root):
+        for name in sorted(os.listdir(eval_root)):
+            _append_existing_metrics_file(matches, os.path.join(eval_root, name, "metrics.json"))
+            if len(matches) >= _RUN_RESULTS_MAX_METRICS_FILES:
+                break
+    return matches
+
+
+def _find_run_metrics_files(cluster, roots, benchmark=""):
+    seen = set()
+    matches = []
+    remote_roots = []
+    for root in roots:
+        mounted = root if cluster == "local" else resolve_mounted_path(cluster, root, want_dir=True)
+        if mounted:
+            for item in _local_metrics_files(mounted, benchmark):
+                rel_path = item["path"]
+                if cluster != "local" and item["path"].startswith(mounted.rstrip("/") + "/"):
+                    rel_path = root.rstrip("/") + item["path"][len(mounted.rstrip("/")):]
+                if rel_path not in seen:
+                    seen.add(rel_path)
+                    matches.append({**item, "path": rel_path, "source": "mount" if cluster != "local" else "local"})
+        else:
+            remote_roots.append(root)
+        if len(matches) >= _RUN_RESULTS_MAX_METRICS_FILES:
+            return matches[:_RUN_RESULTS_MAX_METRICS_FILES]
+
+    if remote_roots and cluster != "local":
+        script = f"""python3 - <<'PY'
+import json, os
+roots = {json.dumps(remote_roots)}
+benchmark = {json.dumps(benchmark or "")}
+limit = {_RUN_RESULTS_MAX_METRICS_FILES}
+matches = []
+seen = set()
+
+def add(path):
+    if path in seen or not os.path.isfile(path):
+        return
+    seen.add(path)
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = None
+    matches.append({{"path": path, "size_bytes": size, "source": "ssh"}})
+
+for root in roots:
+    root = root.rstrip("/")
+    if not root or not os.path.isdir(root):
+        continue
+    add(os.path.join(root, "metrics.json"))
+    eval_root = root if os.path.basename(root) == "eval-results" else os.path.join(root, "eval-results")
+    if benchmark:
+        add(os.path.join(eval_root, benchmark, "metrics.json"))
+    elif os.path.isdir(eval_root):
+        for name in sorted(os.listdir(eval_root)):
+            add(os.path.join(eval_root, name, "metrics.json"))
+            if len(matches) >= limit:
+                break
+    if len(matches) >= limit:
+        break
+print(json.dumps(matches))
+PY"""
+        out, _ = ssh_run_data_with_timeout(cluster, script, timeout_sec=30)
+        try:
+            for item in json.loads(out or "[]"):
+                path = item.get("path", "")
+                if path and path not in seen:
+                    seen.add(path)
+                    matches.append(item)
+        except Exception:
+            _log.warning("failed to parse remote metrics discovery for %s", cluster)
+    return matches[:_RUN_RESULTS_MAX_METRICS_FILES]
+
+
+def _read_run_metrics_file(cluster, path):
+    local_path = path if cluster == "local" and os.path.isfile(path) else None
+    source = "local"
+    if cluster != "local":
+        mounted = resolve_mounted_path(cluster, path, want_dir=False)
+        if mounted:
+            local_path = mounted
+            source = "mount"
+        else:
+            source = "ssh"
+    if local_path:
+        with open(local_path, "rb") as fh:
+            data = fh.read(_RUN_RESULTS_MAX_BYTES + 1)
+        truncated = len(data) > _RUN_RESULTS_MAX_BYTES
+        return data[:_RUN_RESULTS_MAX_BYTES].decode("utf-8", errors="replace"), source, truncated
+
+    script = f"""python3 - <<'PY'
+import pathlib
+path = {json.dumps(path)}
+limit = {_RUN_RESULTS_MAX_BYTES}
+data = pathlib.Path(path).read_bytes()
+print(data[:limit].decode("utf-8", errors="replace"), end="")
+PY"""
+    out, _ = ssh_run_data_with_timeout(cluster, script, timeout_sec=15)
+    return out, source, False
+
+
+@api.route("/api/run_results_by_hash/<cluster>/<run_hash>")
+def api_run_results_by_hash(cluster, run_hash):
+    """Return metrics.json file path(s) and content for a logical run."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    benchmark = request.args.get("benchmark", "").strip()
+    run = _load_run_by_ref(cluster, run_hash, allow_on_demand=False)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+
+    roots = _run_result_roots(run)
+    files = _find_run_metrics_files(cluster, roots, benchmark=benchmark)
+    if not files:
+        return jsonify({
+            "status": "incomplete",
+            "complete": False,
+            "error": "No metrics.json found; NeMo-Skills run is not complete until summarize_results writes it",
+            "cluster": cluster,
+            "run_hash": run_hash,
+            "run_name": run.get("run_name", ""),
+            "searched_roots": roots,
+            "benchmark": benchmark,
+            "metrics_path": "",
+            "metrics_json_content": "",
+            "metrics": None,
+            "metrics_files": [],
+        })
+
+    metrics_files = []
+    for item in files:
+        path = item.get("path", "")
+        try:
+            content, source, truncated = _read_run_metrics_file(cluster, path)
+            parsed = json.loads(content) if content and not truncated else None
+            metrics_files.append({
+                "path": path,
+                "content": content,
+                "json": parsed,
+                "source": source,
+                "size_bytes": item.get("size_bytes"),
+                "truncated": truncated,
+            })
+        except Exception as exc:
+            metrics_files.append({
+                "path": path,
+                "content": "",
+                "json": None,
+                "source": item.get("source", ""),
+                "size_bytes": item.get("size_bytes"),
+                "truncated": False,
+                "error": str(exc),
+            })
+
+    primary = metrics_files[0]
+    return jsonify({
+        "status": "ok",
+        "complete": True,
+        "cluster": cluster,
+        "run_hash": run.get("run_hash") or get_run_hash(cluster, run.get("root_job_id", ""), run.get("run_uuid", "")),
+        "run_name": run.get("run_name", ""),
+        "benchmark": benchmark,
+        "metrics_path": primary.get("path", ""),
+        "metrics_json_content": primary.get("content", ""),
+        "metrics": primary.get("json"),
+        "metrics_files": metrics_files,
+        "searched_roots": roots,
+    })
+
+
 @api.route("/api/resolve_run_hash/<run_hash>")
 def api_resolve_run_hash(run_hash):
     cluster = request.args.get("cluster", "").strip()

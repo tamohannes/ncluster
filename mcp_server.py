@@ -684,6 +684,20 @@ async def get_run_metrics(cluster: str, run_hash: str) -> dict:
 
 
 @mcp.tool()
+async def get_run_results(cluster: str, run_hash: str, benchmark: Optional[str] = None) -> dict:
+    """Return a run's official NeMo-Skills metrics.json content and path.
+
+    Looks under the run's recorded output directories for metrics.json files
+    (optionally filtered by benchmark) and returns the file path plus raw JSON
+    content so agents can inspect the canonical pipeline result directly.
+    """
+    params = {}
+    if benchmark:
+        params["benchmark"] = benchmark
+    return await _api_async("GET", f"/api/run_results_by_hash/{cluster}/{run_hash}", query_string=params)
+
+
+@mcp.tool()
 async def get_history(
     cluster: Optional[str] = None,
     project: Optional[str] = None,

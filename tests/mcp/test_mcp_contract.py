@@ -12,7 +12,7 @@ from unittest.mock import patch
 from mcp_server import (
     health_check,
     list_jobs, list_log_files, get_job_log,
-    get_job_stats, get_history, cancel_job, cancel_jobs,
+    get_job_stats, get_run_results, get_history, cancel_job, cancel_jobs,
     jobs_summary, _slim_job,
     get_mounts, mount_cluster, clear_failed, clear_completed,
     run_script,
@@ -164,6 +164,26 @@ class TestGetJobStats:
             result = await get_job_stats("c1", "1")
         assert isinstance(result, dict)
         assert result["status"] == "ok"
+
+
+# ── get_run_results ──────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestGetRunResults:
+    async def test_passes_run_hash_and_benchmark(self):
+        resp = {
+            "status": "ok",
+            "metrics_path": "/run/eval-results/gpqa/metrics.json",
+            "metrics_json_content": '{"accuracy": 1.0}',
+        }
+        with patch("mcp_server._api", return_value=resp) as mock:
+            result = await get_run_results("c1", "abc123", benchmark="gpqa")
+        assert result["metrics_path"].endswith("metrics.json")
+        mock.assert_called_once()
+        method, path = mock.call_args.args[:2]
+        assert method == "GET"
+        assert path == "/api/run_results_by_hash/c1/abc123"
+        assert mock.call_args.kwargs["query_string"]["benchmark"] == "gpqa"
 
 
 # ── get_history ──────────────────────────────────────────────────────────────
