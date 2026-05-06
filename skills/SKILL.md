@@ -226,6 +226,14 @@ Only fall back to SSH if debugging the clausius app itself or the user explicitl
 
 ## SDK-Tracked Submissions
 
+Before first use in a NeMo-Skills checkout, run:
+
+```bash
+~/clausius/tools/integrate-sdk.sh <path-to-nemo-skills-checkout>
+```
+
+This vendors the standalone `clausius_sdk` package into `<checkout>/clausius_sdk/`, injects no-op hooks that activate only when `CLAUSIUS_URL` is set, and removes any legacy `<checkout>/nemo_skills/clausius_sdk/` copy.
+
 To enable Clausius experiment tracking, add two env vars to any NeMo-Skills submission:
 
 ```bash
@@ -235,6 +243,13 @@ ns eval --cluster <cluster> --expname "<project>_<campaign>_<run-details>" ...
 ```
 
 Works with `ns`, `python -m nemo_skills.pipeline.cli`, experiment scripts, or programmatic `eval()` calls.
+
+Manual metrics should import from the standalone package:
+
+```python
+from clausius_sdk import Run
+from clausius_sdk.metrics import log_scalar
+```
 
 ### What it does
 - Runs appear on the board in **SUBMITTING** state immediately

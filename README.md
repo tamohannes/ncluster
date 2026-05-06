@@ -173,7 +173,7 @@ All runtime configuration lives in the SQLite database (`data/history.db`). The 
 Manual metric tracking from code:
 
 ```python
-from nemo_skills.clausius_sdk import Run
+from clausius_sdk import Run
 
 run = Run(
     run_name="hle_debug_manual",
@@ -194,7 +194,7 @@ run.close()
 Attach to an existing run created by the NeMo-Skills hooks when you already know its `run_uuid`:
 
 ```python
-from nemo_skills.clausius_sdk import Run
+from clausius_sdk import Run
 
 run = Run(run_uuid="abc123...", connect=True)
 run.set_metadata({"judge_model": "gpt-oss-120b"})
@@ -207,7 +207,7 @@ Instruction for agents modifying NeMo-Skills:
 ```text
 Instrument this NeMo-Skills code with Clausius SDK tracking.
 
-Use `from nemo_skills.clausius_sdk import Run`. If an active Clausius SDK
+Use `from clausius_sdk import Run`. If an active Clausius SDK
 run UUID is available, attach with `Run(run_uuid=<uuid>, connect=True)`;
 otherwise create a new `Run(run_name=<expname>, cluster=<cluster>)`.
 
