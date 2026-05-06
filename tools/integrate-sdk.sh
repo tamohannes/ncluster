@@ -6,13 +6,15 @@
 #   ~/clausius/tools/integrate-sdk.sh ~/workspace/artsiv/hovo/NeMo-Skills
 #
 # What it does:
-#   1. Copies the clausius_sdk package from the reference checkout
+#   1. Vendors the standalone clausius_sdk package into the checkout root
 #   2. Injects SDK hooks into pipeline entrypoints (idempotent — safe to run multiple times)
 #   3. Patches exp.py with monitor wrapper and env var injection
 
 set -euo pipefail
 
 TARGET="${1:?Usage: $0 <path-to-nemo-skills-checkout>}"
+CLAUSIUS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SDK_SOURCE="$CLAUSIUS_ROOT/sdk"
 REFERENCE="$HOME/workspace/profiling/NeMo-Skills"
 
 if [ ! -d "$TARGET/nemo_skills/pipeline" ]; then
@@ -22,16 +24,17 @@ fi
 
 echo "=== Clausius SDK Integration ==="
 echo "  Target:    $TARGET"
-echo "  Reference: $REFERENCE"
+echo "  SDK source: $SDK_SOURCE"
 echo ""
 
-# ── Step 1: Copy SDK package ─────────────────────────────────────────
-echo "[1/3] Copying clausius_sdk package..."
+# ── Step 1: Vendor SDK package ───────────────────────────────────────
+echo "[1/3] Vendoring standalone clausius_sdk package..."
+rm -rf "$TARGET/clausius_sdk"
+cp -r "$SDK_SOURCE" "$TARGET/clausius_sdk"
 rm -rf "$TARGET/nemo_skills/clausius_sdk"
-cp -r "$REFERENCE/nemo_skills/clausius_sdk" "$TARGET/nemo_skills/clausius_sdk"
 # Remove __pycache__ from copied package
-find "$TARGET/nemo_skills/clausius_sdk" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-echo "  Copied $(find "$TARGET/nemo_skills/clausius_sdk" -name "*.py" | wc -l) Python files."
+find "$TARGET/clausius_sdk" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+echo "  Copied $(find "$TARGET/clausius_sdk" -name "*.py" | wc -l) Python files."
 
 # ── Step 2: Inject hooks into CLI entrypoints ─────────────────────────
 echo "[2/3] Injecting SDK hooks into pipeline entrypoints..."
@@ -46,7 +49,7 @@ HOOK_END_SENTINEL='# CLAUSIUS_SDK_HOOK_END'
 HOOK_BLOCK='
     # CLAUSIUS_SDK_HOOK_START
     try:
-        from nemo_skills.clausius_sdk.hooks import maybe_start_session
+        from clausius_sdk.hooks import maybe_start_session
         _cl_local = locals()
         _cl_keys = (
             "model", "server_type", "server_gpus", "server_nodes", "server_args",
@@ -153,12 +156,12 @@ else
 ref = open('$REFERENCE/nemo_skills/pipeline/utils/exp.py').read()
 tgt = open('$EXP_FILE').read()
 
-# Find clausius block in reference
+# Find clausius block in reference and rewrite old vendored imports.
 start_marker = 'def _clausius_env_vars():'
 end_marker = '# TODO: this function has become too cumbersome'
 ref_start = ref.index(start_marker)
 ref_end = ref.index(end_marker)
-ref_block = ref[ref_start:ref_end]
+ref_block = ref[ref_start:ref_end].replace('nemo_skills.clausius_sdk', 'clausius_sdk')
 
 # Replace in target
 tgt_start = tgt.index(start_marker)
@@ -174,12 +177,12 @@ import re
 ref = open('$REFERENCE/nemo_skills/pipeline/utils/exp.py').read()
 tgt = open('$EXP_FILE').read()
 
-# Extract clausius block from reference
+# Extract clausius block from reference and rewrite old vendored imports.
 start_marker = 'def _clausius_env_vars():'
 end_marker = '# TODO: this function has become too cumbersome'
 ref_start = ref.index(start_marker)
 ref_end = ref.index(end_marker)
-ref_block = ref[ref_start:ref_end]
+ref_block = ref[ref_start:ref_end].replace('nemo_skills.clausius_sdk', 'clausius_sdk')
 
 # Insert before the TODO comment in target
 if end_marker in tgt:
@@ -226,7 +229,7 @@ if marker in tgt:
     idx = tgt.index(marker)
     hook = '''    # ── Clausius SDK: emit job_prepared ─────────────────────────────
     try:
-        from nemo_skills.clausius_sdk.hooks import on_task_prepared
+        from clausius_sdk.hooks import on_task_prepared
         on_task_prepared(
             task_name=task_name,
             cluster=cluster_config.get(\"executor\", \"\"),
@@ -261,7 +264,7 @@ if marker in tgt:
 
     # ── Clausius SDK: emit job_submitted ──────────────────────────
     try:
-        from nemo_skills.clausius_sdk.hooks import on_run_submitted
+        from clausius_sdk.hooks import on_run_submitted
         on_run_submitted(cluster=cluster_config.get(\"executor\", \"\"), dry_run=dry_run)
     except Exception:
         pass'''
@@ -279,7 +282,7 @@ fi
 # ── Summary ───────────────────────────────────────────────────────────
 echo ""
 FOUND=$(grep -rl "clausius_sdk" "$TARGET/nemo_skills/pipeline/" 2>/dev/null | wc -l)
-SDK_FILES=$(find "$TARGET/nemo_skills/clausius_sdk" -name "*.py" 2>/dev/null | wc -l)
+SDK_FILES=$(find "$TARGET/clausius_sdk" -name "*.py" 2>/dev/null | wc -l)
 echo "=== Integration complete ==="
 echo "  SDK package:  $SDK_FILES Python files"
 echo "  Hooked files: $FOUND pipeline files"
