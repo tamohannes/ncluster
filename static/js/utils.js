@@ -558,7 +558,8 @@ function nonSdkBadge(job) {
   if (!job) return '';
   const source = String(job.run_source || '').toLowerCase();
   if (source !== 'legacy') return '';
-  const title = 'Run created via the legacy poller path \u2014 the SDK transport did not reach Clausius for this row, so resubmissions will be tracked as new runs with fresh hashes instead of resumes. Set CLAUSIUS_URL and run tools/integrate-sdk.sh to fix.';
+  if (String(job.run_uuid || '').trim()) return '';
+  const title = 'Run was not submitted with the Clausius SDK (no CLAUSIUS_RUN_UUID anywhere in the batch script) \u2014 resubmissions of the same expname/output_dir will be tracked as new runs with fresh hashes instead of resumes. Set CLAUSIUS_URL and run tools/integrate-sdk.sh to fix.';
   return `<span class="group-non-sdk-badge" title="${escAttr(title)}">non-SDK</span>`;
 }
 
