@@ -86,7 +86,7 @@ def _fill_starred(cluster, jobs):
     con = get_db()
     placeholders = ",".join("?" for _ in run_ids)
     rows = con.execute(
-        f"""SELECT id, root_job_id, run_name, run_uuid, starred
+        f"""SELECT id, root_job_id, run_name, run_uuid, starred, source
             FROM runs WHERE id IN ({placeholders})""",
         list(run_ids),
     ).fetchall()
@@ -100,6 +100,7 @@ def _fill_starred(cluster, jobs):
             j["run_root_job_id"] = row["root_job_id"]
             j["run_name"] = row["run_name"]
             j["run_uuid"] = row["run_uuid"]
+            j["run_source"] = row["source"] or "legacy"
             j["run_hash"] = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
 
 
