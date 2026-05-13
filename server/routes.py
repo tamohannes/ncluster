@@ -399,8 +399,12 @@ def _log_slow(response):
 @api.route("/run/<path:_subpath>")
 @api.route("/explorer/<path:_subpath>")
 def index(_subpath=None):
-    from .settings import get_team_name
-    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=get_team_name()))
+    from .settings import get_custom_metrics_enabled, get_team_name
+    resp = make_response(render_template(
+        "index.html", clusters=CLUSTERS, username=DEFAULT_USER,
+        team=get_team_name(),
+        custom_metrics_enabled=get_custom_metrics_enabled(),
+    ))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -1370,6 +1374,50 @@ def _resolve_run_via_job(cluster, job_id):
     return None
 
 
+def _inherit_sdk_by_run_uuid(run):
+    """Hydrate a SLURM-detected child row with provenance from its SDK
+    orchestrator sibling (matched by shared run_uuid).
+
+    The SDK propagates ``CLAUSIUS_RUN_UUID`` to spawned NeMo-Run jobs; the
+    poller records that UUID on the SLURM-side run row via
+    ``_capture_run_metadata`` -> ``update_run_meta(sdk_run_uuid=...)``. Both
+    rows therefore share a UUID, and SDK-side metrics already resolve via
+    that UUID. This helper completes the story for params/metadata, which
+    live as JSON columns on the orchestrator row, not in the metrics tables.
+    """
+    run_uuid = (run.get("run_uuid") or "").strip()
+    if not run_uuid:
+        return
+    if run.get("source") == "sdk" and (run.get("params_json") or run.get("metadata_json")):
+        return
+    try:
+        from .db import get_db
+        con = get_db()
+        sibling = con.execute(
+            """SELECT submit_command, submit_cwd, git_commit, launcher_hostname,
+                      primary_output_dir, params_json, metadata_json
+               FROM runs
+               WHERE run_uuid=? AND id != ? AND source='sdk'
+               ORDER BY CASE WHEN submit_command != '' THEN 0 ELSE 1 END, id DESC
+               LIMIT 1""",
+            (run_uuid, run.get("id") or 0),
+        ).fetchone()
+        con.close()
+    except Exception:
+        return
+    if not sibling:
+        return
+    for field in (
+        "submit_command", "submit_cwd", "git_commit",
+        "launcher_hostname", "primary_output_dir",
+        "params_json", "metadata_json",
+    ):
+        if not run.get(field) and sibling[field]:
+            run[field] = sibling[field]
+    if not run.get("source") or run["source"] == "legacy":
+        run["source"] = "sdk+legacy"
+
+
 def _inherit_sdk_provenance(run, cluster):
     """If a legacy run shares a name with an SDK run, copy provenance fields.
 
@@ -1454,6 +1502,13 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
     run["gpus_per_node"] = gpus_per_node
     run["run_hash"] = get_run_hash(cluster, run.get("root_job_id", ""), run.get("run_uuid", ""))
 
+    # When a SLURM-detected child row has been linked to an SDK orchestrator
+    # via CLAUSIUS_RUN_UUID, hydrate the orchestrator's provenance/params/
+    # metadata into this response so the popup shows a unified view. The
+    # orchestrator typically lives on a sibling cluster (e.g.
+    # `aws-dfw-science`) and carries the actual `set_metadata()` data.
+    _inherit_sdk_by_run_uuid(run)
+
     if not run.get("submit_command") and run.get("source") != "sdk":
         _inherit_sdk_provenance(run, cluster)
 
@@ -1468,6 +1523,17 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
             run["params"] = {}
     else:
         run["params"] = {}
+
+    raw_meta = run.pop("metadata_json", "") or ""
+    if raw_meta:
+        try:
+            run["metadata"] = json.loads(raw_meta)
+        except (ValueError, TypeError):
+            run["metadata"] = {}
+    else:
+        run["metadata"] = {}
+
+    run["malfunctioned"] = bool(int(run.get("malfunctioned") or 0))
 
     return jsonify({"status": "ok", "run": run})
 
@@ -2035,13 +2101,14 @@ def api_retry_run_meta(cluster, root_job_id):
 
 @api.route("/api/run/<int:run_id>", methods=["PATCH"])
 def api_update_run(run_id):
-    """Partial update of user-editable run fields (starred, notes)."""
+    """Partial update of user-editable run fields (starred, notes, malfunctioned)."""
     data = request.get_json(force=True, silent=True) or {}
     starred = data.get("starred")
     notes = data.get("notes")
-    if starred is None and notes is None:
+    malfunctioned = data.get("malfunctioned")
+    if starred is None and notes is None and malfunctioned is None:
         return jsonify({"status": "error", "error": "No fields to update"}), 400
-    update_run_fields(run_id, starred=starred, notes=notes)
+    update_run_fields(run_id, starred=starred, notes=notes, malfunctioned=malfunctioned)
     return jsonify({"status": "ok"})
 
 
@@ -3242,6 +3309,9 @@ from .logbooks import (
     delete_entry as _lb_delete,
     search_entries as _lb_search,
     list_campaigns as _lb_campaigns,
+    get_campaign_board as _lb_get_campaign_board,
+    list_campaign_boards as _lb_list_campaign_boards,
+    update_campaign_board_by_campaign as _lb_update_campaign_board,
     save_image as _lb_save_image,
     get_image_path as _lb_get_image_path,
     resolve_entry_refs as _lb_resolve_refs,
@@ -3264,6 +3334,71 @@ def api_logbook_campaigns(project):
     return jsonify(_lb_campaigns(project))
 
 
+@api.route("/api/logbook/<project>/campaign_board")
+def api_logbook_campaign_board_get(project):
+    campaign = request.args.get("campaign", "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign query parameter is required"}), 400
+    result = _lb_get_campaign_board(project, campaign)
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    if result.get("status") == "error":
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/campaign_boards")
+def api_logbook_campaign_boards_list(project):
+    return jsonify(_lb_list_campaign_boards(project))
+
+
+@api.route("/api/logbook/<project>/campaign_board", methods=["POST"])
+def api_logbook_campaign_board_create(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    title = (payload.get("title") or "").strip() or f"Campaign board: {campaign}"
+    body = (payload.get("body") or "").strip()
+    board_json = payload.get("board_json")
+    campaign_goal = payload.get("campaign_goal")
+    result = _lb_create(
+        project, title, body,
+        entry_type="campaign_board",
+        campaign=campaign,
+        board_json=board_json,
+        campaign_goal=campaign_goal,
+    )
+    if result.get("status") == "error_validation":
+        code = 409 if "already exists" in (result.get("error") or "") else 400
+        return jsonify(result), code
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/campaign_board", methods=["PUT"])
+def api_logbook_campaign_board_put(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or request.args.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    title = payload.get("title")
+    if title is not None:
+        title = title.strip()
+    body = payload.get("body")
+    if body is not None:
+        body = body.strip()
+    board_json = payload.get("board_json")
+    campaign_goal = payload.get("campaign_goal")
+    result = _lb_update_campaign_board(
+        project, campaign, title=title, body=body, board_json=board_json, campaign_goal=campaign_goal
+    )
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    if result.get("status") == "error_validation":
+        return jsonify({"status": "error", "error": result.get("error", "")}), 400
+    return jsonify(result)
+
+
 @api.route("/api/logbook/<project>/entries", methods=["POST"])
 def api_logbook_create(project):
     payload = request.get_json(silent=True) or {}
@@ -3273,7 +3408,16 @@ def api_logbook_create(project):
     body = (payload.get("body") or "").strip()
     entry_type = (payload.get("entry_type") or "note").strip()
     campaign = payload.get("campaign")
-    return jsonify(_lb_create(project, title, body, entry_type=entry_type, campaign=campaign))
+    board_json = payload.get("board_json")
+    campaign_goal = payload.get("campaign_goal")
+    result = _lb_create(
+        project, title, body, entry_type=entry_type, campaign=campaign,
+        board_json=board_json, campaign_goal=campaign_goal,
+    )
+    if result.get("status") == "error_validation":
+        code = 409 if "already exists" in (result.get("error") or "") else 400
+        return jsonify(result), code
+    return jsonify(result)
 
 
 @api.route("/api/logbook/<project>/entries/<int:entry_id>")
@@ -3310,10 +3454,13 @@ def api_logbook_update(project, entry_id):
     pinned = payload.get("pinned")
     new_project = payload.get("new_project")
     campaign = payload.get("campaign")
+    board_json = payload.get("board_json")
+    campaign_goal = payload.get("campaign_goal")
     result = _lb_update(
         project, entry_id,
         title=title, body=body, entry_type=entry_type,
         pinned=pinned, new_project=new_project, campaign=campaign,
+        board_json=board_json, campaign_goal=campaign_goal,
     )
     status = result.get("status")
     if status == "error":
@@ -3379,8 +3526,8 @@ def api_logbook_bulk_read():
 
     if sort not in ("edited_at", "created_at", "title"):
         return jsonify({"status": "error", "error": "sort must be one of: edited_at, created_at, title"}), 400
-    if entry_type and entry_type not in ("note", "plan"):
-        return jsonify({"status": "error", "error": "entry_type must be 'note', 'plan', or omitted"}), 400
+    if entry_type and entry_type not in ("note", "plan", "campaign_board"):
+        return jsonify({"status": "error", "error": "entry_type must be 'note', 'plan', 'campaign_board', or omitted"}), 400
 
     projects = [project] if project else list_logbook_projects()
     if not projects:
@@ -3540,30 +3687,6 @@ def api_logbook_export_download(token):
             "X-Content-Type-Options": "nosniff",
         },
     )
-
-
-@api.route("/api/logbook/<project>/map")
-def api_logbook_map(project):
-    con = get_db()
-    rows = con.execute(
-        "SELECT id, title, entry_type, created_at, edited_at "
-        "FROM logbook_entries WHERE project=? ORDER BY edited_at DESC",
-        (project,),
-    ).fetchall()
-    links = con.execute(
-        """SELECT l.source_id, l.target_id FROM logbook_links l
-           JOIN logbook_entries e ON l.source_id = e.id
-           WHERE e.project = ?""",
-        (project,),
-    ).fetchall()
-    con.close()
-
-    nodes = [{"id": r["id"], "title": r["title"], "entry_type": r["entry_type"],
-              "created_at": r["created_at"], "edited_at": r["edited_at"]}
-             for r in rows]
-    explicit_links = [{"source_id": l["source_id"], "target_id": l["target_id"]}
-                      for l in links]
-    return jsonify({"nodes": nodes, "links": explicit_links})
 
 
 @api.route("/api/spotlight")
