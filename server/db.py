@@ -29,7 +29,13 @@ def get_run_hash(cluster, root_job_id, run_uuid=""):
 
 
 def get_run_by_hash(cluster, run_hash):
-    """Return a run row by full hash or unique hash prefix within a cluster."""
+    """Return a run row by full hash or unique hash prefix within a cluster.
+
+    Matches against the current UUID-derived hash AND the legacy
+    sha1(cluster:root_job_id) hash so that pre-UUID-backfill URLs / board
+    cells / logbook refs keep resolving after a SLURM child row gets linked
+    to its SDK orchestrator via CLAUSIUS_RUN_UUID.
+    """
     target = str(run_hash or "").strip().lower()
     if not target:
         return None
@@ -41,10 +47,12 @@ def get_run_by_hash(cluster, run_hash):
     con.close()
     matches = []
     for row in rows:
-        row_hash = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
-        if row_hash.lower().startswith(target):
+        candidates = {get_run_hash(cluster, row["root_job_id"], row["run_uuid"])}
+        if row["run_uuid"]:
+            candidates.add(get_run_hash(cluster, row["root_job_id"], ""))
+        if any(c.lower().startswith(target) for c in candidates):
             item = dict(row)
-            item["run_hash"] = row_hash
+            item["run_hash"] = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
             matches.append(item)
     if len(matches) == 1:
         return matches[0]
@@ -55,7 +63,9 @@ def resolve_run_hash_prefix(run_hash, cluster=""):
     """Resolve a full hash or unique hash prefix across one or all clusters.
 
     Returns ``{"status": "ok", "run": row}``, ``{"status": "ambiguous"}``, or
-    ``{"status": "not_found"}``.
+    ``{"status": "not_found"}``. Accepts both the current UUID-derived hash
+    and the legacy sha1(cluster:root_job_id) hash so old refs keep working
+    after a row gets its UUID backfilled.
     """
     target = str(run_hash or "").strip().lower()
     if not target:
@@ -68,10 +78,13 @@ def resolve_run_hash_prefix(run_hash, cluster=""):
     con.close()
     matches = []
     for row in rows:
-        row_hash = get_run_hash(row["cluster"], row["root_job_id"], row["run_uuid"])
-        if row_hash.lower().startswith(target):
+        primary_hash = get_run_hash(row["cluster"], row["root_job_id"], row["run_uuid"])
+        candidates = {primary_hash}
+        if row["run_uuid"]:
+            candidates.add(get_run_hash(row["cluster"], row["root_job_id"], ""))
+        if any(c.lower().startswith(target) for c in candidates):
             item = dict(row)
-            item["run_hash"] = row_hash
+            item["run_hash"] = primary_hash
             matches.append(item)
     if len(matches) == 1:
         return {"status": "ok", "run": matches[0], "matches": matches}
@@ -1388,7 +1401,8 @@ def _find_sdk_run_for_name(con, cluster, run_name):
     return None
 
 
-def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda_state=""):
+def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="",
+                    conda_state="", sdk_run_uuid=""):
     has_data = any([batch_script, scontrol_raw, env_vars])
     with db_write() as con:
         con.execute("""
@@ -1401,10 +1415,19 @@ def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda
             WHERE id = ?
         """, (batch_script, scontrol_raw, env_vars, conda_state,
               1 if has_data else 0, run_id))
+        # Bind the SDK orchestrator's run_uuid to SLURM-detected child rows
+        # so the popup unifies orchestrator-side params/metadata/metrics.
+        # Only set when the row currently has no UUID — never overwrite an
+        # SDK-native run's own identity.
+        if sdk_run_uuid:
+            con.execute(
+                "UPDATE runs SET run_uuid=? WHERE id=? AND (run_uuid IS NULL OR run_uuid='')",
+                (sdk_run_uuid, run_id),
+            )
 
 
-def update_run_fields(run_id, starred=None, notes=None):
-    """Partial update of user-editable run fields (starred, notes)."""
+def update_run_fields(run_id, starred=None, notes=None, malfunctioned=None):
+    """Partial update of user-editable run fields (starred, notes, malfunctioned)."""
     sets, params = [], []
     if starred is not None:
         sets.append("starred = ?")
@@ -1412,6 +1435,9 @@ def update_run_fields(run_id, starred=None, notes=None):
     if notes is not None:
         sets.append("notes = ?")
         params.append(notes)
+    if malfunctioned is not None:
+        sets.append("malfunctioned = ?")
+        params.append(int(bool(malfunctioned)))
     if not sets:
         return
     params.append(run_id)
@@ -1733,8 +1759,21 @@ def store_run_scalar(run_uuid, event_seq, ts, payload):
         ))
 
 
+def _deep_merge_dict(base, overlay):
+    """Recursively merge overlay into base (mutates base). Dict + dict merges;
+    any other type replaces the slot."""
+    if not isinstance(base, dict) or not isinstance(overlay, dict):
+        return base
+    for k, v in overlay.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge_dict(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
 def merge_run_metadata(run_uuid, metadata):
-    """Shallow-merge user-provided static metadata into the SDK run row."""
+    """Deep-merge user-provided static metadata into the SDK run row."""
     if not isinstance(metadata, dict):
         return
     with db_write() as con:
@@ -1751,7 +1790,7 @@ def merge_run_metadata(run_uuid, metadata):
                     current = parsed
             except Exception:
                 current = {}
-        current.update(metadata)
+        _deep_merge_dict(current, metadata)
         con.execute(
             "UPDATE runs SET metadata_json=? WHERE run_uuid=?",
             (_json.dumps(current, default=str), canonical_uuid),

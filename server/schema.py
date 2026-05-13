@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS runs (
     sdk_status         TEXT DEFAULT '',
     params_json        TEXT DEFAULT '',
     metadata_json      TEXT DEFAULT '',
+    malfunctioned    INTEGER NOT NULL DEFAULT 0,
     UNIQUE(cluster, root_job_id)
 )
 """
@@ -119,14 +120,19 @@ CREATE TABLE IF NOT EXISTS logbook_entries (
     edited_at  TEXT NOT NULL,
     entry_type TEXT NOT NULL DEFAULT 'note',
     pinned     INTEGER NOT NULL DEFAULT 0,
-    campaign   TEXT NOT NULL DEFAULT ''
+    campaign       TEXT NOT NULL DEFAULT '',
+    board_json     TEXT NOT NULL DEFAULT '',
+    campaign_goal  TEXT NOT NULL DEFAULT ''
 )
 """
 """Per-project structured notes/plans with FTS5 search.
 
-``entry_type`` is ``'note'`` or ``'plan'``. ``pinned=1`` floats an
-entry to the top of list views. Entry IDs are globally unique across
-projects so ``#N`` cross-references work even after a move.
+``entry_type`` is ``'note'``, ``'plan'``, or ``'campaign_board'``.
+``campaign_board`` rows hold structured result grids in ``board_json``
+(JSON), optional ``campaign_goal`` prose, and at most one exists per ``(project, campaign)``.
+``pinned=1`` floats an entry to the top of list views. Entry IDs are
+globally unique across projects so ``#N`` cross-references work even
+after a move.
 """
 
 LOGBOOK_FTS = """
@@ -532,11 +538,14 @@ MIGRATIONS = [
     ("runs", "sdk_status", "TEXT DEFAULT ''"),
     ("runs", "params_json", "TEXT DEFAULT ''"),
     ("runs", "metadata_json", "TEXT DEFAULT ''"),
+    ("runs", "malfunctioned", "INTEGER NOT NULL DEFAULT 0"),
     # logbook_entries columns added in v3
     ("logbook_entries", "entry_type", "TEXT NOT NULL DEFAULT 'note'"),
     ("logbook_entries", "pinned", "INTEGER NOT NULL DEFAULT 0"),
     # logbook_entries columns added in v4
     ("logbook_entries", "campaign", "TEXT NOT NULL DEFAULT ''"),
+    ("logbook_entries", "board_json", "TEXT NOT NULL DEFAULT ''"),
+    ("logbook_entries", "campaign_goal", "TEXT NOT NULL DEFAULT ''"),
     # wds_history column added later in v3
     ("wds_history", "occupancy_factor", "REAL"),
     # projects column added in v4 for sidebar visibility (active vs backlog)
@@ -638,5 +647,10 @@ APP_SETTINGS_DEFAULTS: Dict[str, tuple[Any, Callable[[Any], Any], str]] = {
         "",
         str,
         "Optional bearer token required by POST /api/sdk/events. Empty allows unauthenticated ingest.",
+    ),
+    "custom_metrics_enabled": (
+        True,
+        bool,
+        "Show the custom metrics UI (log dir, extractors, stats panel). Disable to hide it globally.",
     ),
 }
