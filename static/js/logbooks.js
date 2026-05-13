@@ -2,7 +2,6 @@
 
 let _lbProject = '';
 let _lbEditingId = null;
-let _lbTypeFilter = '';
 let _lbCampaignFilter = '';
 let _lbInitReady = false;
 let _lbPendingEntryId = null;
@@ -15,7 +14,6 @@ let _lbPresentMode = false;
 const LB_SIDEBAR_WIDTH_KEY = 'clausius.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
-const LB_MAP_VIEW_KEY = 'clausius.lbMapView';
 let _pinnedEntryIds = new Set();
 
 function _cloneLbHistory(history) {
@@ -43,7 +41,6 @@ function _captureLogbookTabState() {
       entryTitle,
       currentEntry: _lbCurrentEntry || null,
       editingId: _lbEditingId || null,
-      typeFilter: _lbTypeFilter || '',
       campaignFilter: _lbCampaignFilter || '',
       history: _cloneLbHistory(_lbHistory),
       mainHtml: main ? main.innerHTML : '',
@@ -64,7 +61,6 @@ function _restoreLogbookTabState(state, tab) {
   _lbProject = s.project || (tab && tab.lbProject) || _lbProject || '';
   _lbCurrentEntry = s.currentEntry || null;
   _lbEditingId = s.editingId || null;
-  _lbTypeFilter = s.typeFilter || '';
   _lbCampaignFilter = s.campaignFilter || '';
   _lbHistory = _cloneLbHistory(s.history);
 
@@ -221,12 +217,7 @@ function onLogbookProjectChange() {
   _lbProject = sel.value;
   _lbEditingId = null;
   _lbCampaignFilter = '';
-  _mapActive = false;
-  _mapFocusEntryId = null;
-  _mapNeighborHops = 1;
-  _mapEdgeDir = 'both';
   _lbHistory = [];
-  _invalidateMapCache();
   _showMainEmpty();
   _loadEntries(_lbProject);
   _loadRunNames(_lbProject);
@@ -246,7 +237,6 @@ async function _loadEntries(project, query) {
   if (!el) return;
   const params = new URLSearchParams({ limit: '200' });
   if (query) params.set('q', query);
-  if (_lbTypeFilter) params.set('type', _lbTypeFilter);
   if (_lbCampaignFilter) params.set('campaign', _lbCampaignFilter);
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(project)}/entries?${params}`);
@@ -266,17 +256,39 @@ function _renderSidebarList(entries) {
   }
 
   _pinnedEntryIds = new Set(entries.filter(e => e.pinned).map(e => e.id));
-  const pinned = entries.filter(e => e.pinned);
-  const unpinned = entries.filter(e => !e.pinned);
-  const sorted = [...pinned, ...unpinned];
+  const cf = (_lbCampaignFilter || '').trim().toLowerCase();
+  let heroBoard = null;
+  if (cf) {
+    heroBoard = entries.find(
+      e => e.entry_type === 'campaign_board'
+        && String(e.campaign || '').trim().toLowerCase() === cf
+    ) || null;
+  }
+  const rest = heroBoard ? entries.filter(e => e.id !== heroBoard.id) : entries;
+
+  const pinned = rest.filter(e => e.pinned);
+  const unpinned = rest.filter(e => !e.pinned);
+  const unpinnedRanked = [...unpinned].sort((a, b) => {
+    const ra = a.entry_type === 'campaign_board' ? 0 : 1;
+    const rb = b.entry_type === 'campaign_board' ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    return String(b.edited_at || '').localeCompare(String(a.edited_at || ''));
+  });
+  const sorted = [...pinned, ...unpinnedRanked];
 
   let html = '';
+  if (heroBoard) {
+    html += '<div class="lb-sidebar-hero-board">';
+    html += '<div class="lb-sidebar-hero-board-label">Campaign board</div>';
+    html += _renderSidebarItems([heroBoard], false, { heroBoard: true });
+    html += '</div>';
+  }
   if (pinned.length && unpinned.length) {
-    html += _renderSidebarItems(pinned, true);
+    html += _renderSidebarItems(pinned, true, {});
     html += '<div class="lb-sidebar-pin-sep"></div>';
-    html += _renderSidebarItems(unpinned, false);
-  } else {
-    html += _renderSidebarItems(sorted, false);
+    html += _renderSidebarItems(unpinnedRanked, false, {});
+  } else if (sorted.length) {
+    html += _renderSidebarItems(sorted, false, {});
   }
   el.innerHTML = html;
   if (typeof _appTabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
@@ -301,24 +313,28 @@ function _cleanSidebarPreview(text) {
     .trim();
 }
 
-function _renderSidebarItems(items, showPinIcon) {
-  const projColor = _getProjectColor(_lbProject) || '';
+function _renderSidebarItems(items, showPinIcon, opts) {
+  const o = opts || {};
+  const hero = !!o.heroBoard;
   return items.map(e => {
     const date = _formatDate(e.created_at);
     const title = (e.title || '').replace(/</g, '&lt;');
     const rawPreview = e.snippet || e.body_preview || '';
     const preview = e.snippet ? _renderSnippet(rawPreview) : _cleanSidebarPreview(rawPreview).replace(/</g, '&lt;');
     const isPlan = e.entry_type === 'plan';
-    const typeCls = isPlan ? ' lb-type-plan' : '';
+    const isBoard = e.entry_type === 'campaign_board';
+    const heroCls = hero ? ' lb-sidebar-item--hero-board' : '';
+    const typeCls = hero ? '' : (isBoard ? ' lb-type-board' : (isPlan ? ' lb-type-plan' : ''));
+    const boardGlyph = isBoard ? '<span class="lb-sidebar-board-glyph" title="Campaign board">▦</span>' : '';
     const pinned = _isEntryPinned(e.id);
     const pinCls = pinned ? ' lb-pinned' : '';
     const pinBtn = `<span class="lb-pin-btn${pinned ? ' active' : ''}" onclick="event.stopPropagation();togglePinEntry(${e.id})" title="${pinned ? 'Unpin' : 'Pin'}">📌</span>`;
     const camp = e.campaign || '';
-    const tint = camp && projColor ? campaignShade(projColor, camp) : '';
-    const tintStyle = tint ? `style="--lb-tint:${tint}"` : '';
-    const campChip = camp ? `<span class="lb-sidebar-item-campaign">${camp}</span>` : '';
-    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" data-campaign="${camp}" data-entry-meta="#${e.id} · ${date}" ${tintStyle} onclick="openLogbookEntry(${e.id})">
-      <div class="lb-sidebar-item-title"><span class="lb-sidebar-item-name">${title}</span>${pinBtn}</div>
+    const campChip = camp && !_lbCampaignFilter
+      ? `<span class="lb-sidebar-item-campaign">${camp}</span>`
+      : '';
+    return `<div class="lb-sidebar-item${typeCls}${heroCls}${pinCls}" data-id="${e.id}" data-campaign="${camp}" data-entry-meta="#${e.id} · ${date}" onclick="openLogbookEntry(${e.id})">
+      <div class="lb-sidebar-item-title">${boardGlyph}<span class="lb-sidebar-item-name">${title}</span>${pinBtn}</div>
       ${campChip}
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
@@ -378,58 +394,42 @@ document.addEventListener('fullscreenchange', () => {
 
 function onLogbookSearch() {}
 
-function filterLogbookType(btn) {
-  _lbTypeFilter = (btn && btn.dataset && btn.dataset.type) || '';
-  _lbCampaignFilter = '';
-  _loadCampaignChips();
-  if (_lbProject) _loadEntries(_lbProject);
-}
-
 async function _loadCampaignChips() {
   const el = document.getElementById('lb-campaign-filters');
   if (!el || !_lbProject) { if (el) el.innerHTML = ''; return; }
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/campaigns`);
     const data = await res.json();
-    const projColor = _getProjectColor(_lbProject) || '';
-    const allActive = !_lbCampaignFilter && !_lbTypeFilter ? ' active' : '';
-    let html = `<button class="lb-campaign-chip${allActive}" data-campaign="" onclick="toggleCampaignFilter(this)">all</button>`;
+    let html = `<div class="lb-campaign-picker-row">`
+      + `<select id="lb-campaign-select" class="lb-campaign-select" onchange="_onCampaignSelectChange(this)">`
+      + `<option value="">All campaigns</option>`;
     if (Array.isArray(data) && data.length) {
-      html += data.map(c => {
-        const active = _lbCampaignFilter === c.name ? ' active' : '';
-        const tint = projColor ? campaignShade(projColor, c.name) : '';
-        const style = tint ? `style="--chip-tint:${tint}"` : '';
-        return `<button class="lb-campaign-chip${active}" data-campaign="${c.name}" ${style} onclick="toggleCampaignFilter(this)">${c.name}<span class="lb-campaign-chip-count">${c.count}</span></button>`;
-      }).join('');
+      for (const c of data) {
+        const name = String(c.name || '');
+        const val = encodeURIComponent(name);
+        const labelEsc = name.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const sel = _lbCampaignFilter && String(name).trim().toLowerCase() === _lbCampaignFilter ? ' selected' : '';
+        const cnt = typeof c.count === 'number' ? c.count : '';
+        html += `<option value="${val}"${sel}>${labelEsc}${cnt !== '' ? ` (${cnt})` : ''}</option>`;
+      }
     }
+    html += `</select></div>`;
     el.innerHTML = html;
   } catch { el.innerHTML = ''; }
 }
 
-function toggleCampaignFilter(btn) {
-  const camp = btn.dataset.campaign || '';
-  if (!camp) {
-    _lbCampaignFilter = '';
-    _lbTypeFilter = '';
-  } else {
-    _lbCampaignFilter = _lbCampaignFilter === camp ? '' : camp;
+function _onCampaignSelectChange(sel) {
+  if (!sel) return;
+  const raw = sel.value || '';
+  let decoded = '';
+  if (raw) {
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      decoded = raw;
+    }
   }
-  document.querySelectorAll('.lb-campaign-chip:not(.lb-type-chip)').forEach(b => {
-    const isAll = !b.dataset.campaign;
-    b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
-  });
-  if (_lbProject) _loadEntries(_lbProject);
-}
-
-function _toggleTypeChip(btn) {
-  const type = btn.dataset.type || '';
-  _lbTypeFilter = _lbTypeFilter === type ? '' : type;
-  if (_lbTypeFilter) _lbCampaignFilter = '';
-  document.querySelectorAll('.lb-campaign-chip:not(.lb-type-chip)').forEach(b => {
-    const isAll = !b.dataset.campaign;
-    b.classList.toggle('active', isAll ? (!_lbCampaignFilter && !_lbTypeFilter) : b.dataset.campaign === _lbCampaignFilter);
-  });
-  document.querySelectorAll('.lb-type-chip').forEach(b => b.classList.toggle('active', b.dataset.type === _lbTypeFilter));
+  _lbCampaignFilter = decoded.trim().toLowerCase();
   if (_lbProject) _loadEntries(_lbProject);
 }
 
@@ -440,8 +440,15 @@ function _showMainEmpty() {
   if (_lbPresentMode) void toggleLogbookPresentMode(false);
   const el = document.getElementById('lb-main');
   if (!el) return;
-  el.classList.remove('lb-main-plan');
+  el.classList.remove('lb-main-plan', 'lb-main-board');
   el.innerHTML = '<div class="lb-main-empty">Select an entry or create a new one.</div>';
+  const topbarEl = document.getElementById('lb-topbar');
+  if (topbarEl) {
+    topbarEl.innerHTML = `
+      <div class="lb-topbar-crumb">
+        <span class="lb-topbar-crumb-project">${_lbProject || ''}</span>
+      </div>`;
+  }
 }
 
 function _pushLbHistory(state) {
@@ -456,9 +463,6 @@ function _pushLbHistory(state) {
 function _lbGoBack() {
   if (_lbHistory.length <= 1) {
     _lbHistory = [];
-    _mapActive = false;
-    _stopMapGraphSimulation();
-    _syncMapBtnActive(false);
     _showMainEmpty();
     return;
   }
@@ -470,21 +474,10 @@ function _lbGoBack() {
     _lbProject = prev.project;
     const sel = document.getElementById('lb-project-select');
     if (sel) sel.value = prev.project;
-    _invalidateMapCache();
     _loadEntries(prev.project);
     _loadRunNames(prev.project);
   }
 
-  if (prev.type === 'map') {
-    _mapActive = true;
-    _syncMapBtnActive(true);
-    _loadMapData(_lbProject);
-    return;
-  }
-
-  _mapActive = false;
-  _stopMapGraphSimulation();
-  _syncMapBtnActive(false);
   if (prev.entryId) {
     openLogbookEntry(prev.entryId, { pushHistory: false, anchor: prev.anchor });
   } else {
@@ -518,28 +511,63 @@ async function openLogbookEntry(entryId, opts = {}) {
     const created = _formatDate(entry.created_at);
     const edited = _formatDate(entry.edited_at);
     const isPlan = entry.entry_type === 'plan';
-    el.classList.toggle('lb-main-plan', isPlan);
-    const typeBadge = isPlan ? '<span class="lb-badge-plan">plan</span>' : '<span class="lb-badge-note">note</span>';
+    const isBoard = entry.entry_type === 'campaign_board';
+    el.classList.toggle('lb-main-plan', isPlan && !isBoard);
+    el.classList.toggle('lb-main-board', isBoard);
+    let typeBadge = '<span class="lb-badge-note">note</span>';
+    if (isPlan) typeBadge = '<span class="lb-badge-plan">plan</span>';
+    if (isBoard) typeBadge = '<span class="lb-badge-board">campaign board</span>';
+    const campChip = entry.campaign ? `<span class="lb-detail-campaign-chip">${String(entry.campaign).replace(/</g, '&lt;')}</span>` : '';
+    const goalTxt = ((entry.campaign_goal || '') + '').trim();
+    const goalBlock = isBoard && goalTxt
+      ? `<div class="lb-board-goal"><h2 class="lb-board-setup-heading">Campaign goal</h2><div class="lb-board-goal-body">${goalTxt.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div></div>`
+      : '';
+    const mainContent = isBoard
+      ? `<div class="lb-board-shell">
+          <div class="lb-board-ribbon">
+            <span class="lb-board-ribbon-label">Campaign board</span>
+            ${campChip}
+          </div>
+          ${goalBlock}
+          <div class="lb-board-setup">
+            <h2 class="lb-board-setup-heading">Setup &amp; conventions</h2>
+            <div class="lb-board-setup-body lb-detail-body">${bodyHtml}</div>
+          </div>
+          <div class="lb-board-grids">${_renderBoardJsonHtml(entry.board_json, false, entry.board_runtime)}</div>
+        </div>`
+      : `<div class="lb-detail-body">${bodyHtml}</div>`;
+    const topbarEl = document.getElementById('lb-topbar');
+    if (topbarEl) {
+      const titleSafe = String(entry.title || 'Untitled').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      topbarEl.innerHTML = `
+        <div class="lb-topbar-crumb">
+          <span class="lb-topbar-crumb-project">${_lbProject || ''}</span>
+          ${entry.campaign ? `<span class="lb-topbar-crumb-sep">/</span><span class="lb-topbar-crumb-campaign">${String(entry.campaign).replace(/</g, '&lt;')}</span>` : ''}
+          <span class="lb-topbar-crumb-sep">/</span>
+          <span class="lb-topbar-crumb-page">${titleSafe}</span>
+        </div>
+        <div class="lb-topbar-actions">
+          <button class="lb-topbar-btn lb-present-toggle${_lbPresentMode ? ' active' : ''}" onclick="toggleLogbookPresentMode()" title="Open this entry in present mode">${_presentModeButtonLabel()}</button>
+          <button class="lb-topbar-btn" onclick="exportEntryDocx()" title="Export as Word document (.docx)">docx</button>
+          <button class="lb-topbar-btn" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">html</button>
+          <button class="lb-topbar-btn" onclick="editLogbookEntry(${entry.id})" title="Edit entry">edit</button>
+          <span class="lb-info-wrapper">
+            <button class="lb-topbar-btn lb-info-btn" type="button" tabindex="0" title="Entry info">info</button>
+            <div class="lb-info-popup" role="tooltip">
+              <div class="lb-info-row"><span class="lb-info-label">Created</span><span class="lb-info-val">${created}</span></div>
+              ${entry.created_at !== entry.edited_at ? `<div class="lb-info-row"><span class="lb-info-label">Edited</span><span class="lb-info-val">${edited}</span></div>` : ''}
+              <div class="lb-info-row"><span class="lb-info-label">Type</span><span class="lb-info-val">${typeBadge}</span></div>
+              ${campChip ? `<div class="lb-info-row"><span class="lb-info-label">Campaign</span><span class="lb-info-val">${campChip}</span></div>` : ''}
+            </div>
+          </span>
+          <button class="lb-topbar-btn lb-topbar-btn-danger" onclick="deleteLogbookEntry(${entry.id})" title="Delete entry">delete</button>
+        </div>`;
+    }
     el.innerHTML = `
       <div class="lb-detail">
         <button class="lb-present-close" onclick="toggleLogbookPresentMode(false)" title="Exit present mode" aria-label="Exit present mode">×</button>
-        <div class="lb-detail-actions">
-          <button class="btn" onclick="_lbGoBack()" title="Back">← back</button>
-          <button class="btn" onclick="openEntryGraph(${entry.id})" title="Graph around this entry">graph</button>
-          <button class="btn lb-present-toggle${_lbPresentMode ? ' active' : ''}" onclick="toggleLogbookPresentMode()" title="Open this entry in present mode">${_presentModeButtonLabel()}</button>
-          ${typeBadge}
-          <span style="flex:1"></span>
-          <span class="lb-export-hint" onclick="exportEntryDocx()" title="Export as Word document (.docx)">docx</span>
-          <span class="lb-export-hint" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">${_exportShortcutLabel()} html</span>
-          <button class="btn" onclick="editLogbookEntry(${entry.id})">edit</button>
-          <button class="btn" onclick="deleteLogbookEntry(${entry.id})" style="color:var(--red)">delete</button>
-        </div>
         <h1 class="lb-detail-title">${title} <span class="lb-detail-id">#${entry.id}</span></h1>
-        <div class="lb-detail-meta">
-          <span>Created ${created}</span>
-          ${entry.created_at !== entry.edited_at ? `<span>· Edited ${edited}</span>` : ''}
-        </div>
-        <div class="lb-detail-body">${bodyHtml}</div>
+        ${mainContent}
       </div>`;
     _resolveEntryRefs();
     const scrollContainer = document.getElementById('lb-main');
@@ -744,7 +772,19 @@ async function exportEntryHtml() {
 
   const created = _formatDate(e.created_at);
   const edited = e.created_at !== e.edited_at ? ` · Edited ${_formatDate(e.edited_at)}` : '';
-  const typeBadge = e.entry_type === 'plan' ? '<span class="badge badge-plan">plan</span>' : '';
+  let typeBadge = '';
+  if (e.entry_type === 'plan') typeBadge = '<span class="badge badge-plan">plan</span>';
+  else if (e.entry_type === 'campaign_board') typeBadge = '<span class="badge badge-board">campaign board</span>';
+
+  const exportGoal = (e.entry_type === 'campaign_board')
+    ? (((e.campaign_goal || '') + '').trim())
+    : '';
+  const exportGoalHtml = exportGoal
+    ? `<h2>Campaign goal</h2><div class="export-goal">${exportGoal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
+    : '';
+  const mainExport = e.entry_type === 'campaign_board'
+    ? `${exportGoalHtml}<h2>Setup &amp; conventions</h2>${bodyHtml}<h2>Structured tables</h2>${_renderBoardJsonHtml(e.board_json, true, e.board_runtime)}`
+    : bodyHtml;
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -776,8 +816,11 @@ body {
 .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
 .badge-plan { background: #fef3c7; color: #b45309; }
 [data-theme="dark"] .badge-plan { background: #3d2e00; color: #fbbf24; }
+.badge-board { background: #e6f5f3; color: #1a7a72; }
+[data-theme="dark"] .badge-board { background: #0d3d38; color: #5ddebe; }
 h1 { font-size: 28px; font-weight: 700; line-height: 1.3; margin-bottom: 8px; letter-spacing: -0.02em; }
 h2 { font-size: 20px; font-weight: 700; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.export-goal { white-space: pre-wrap; font-size: 14px; line-height: 1.65; margin: 0 0 8px; color: var(--text); }
 h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; }
 p { margin: 10px 0; }
 a { color: var(--accent); text-decoration: none; }
@@ -873,7 +916,7 @@ figcaption strong { color: var(--text); font-weight: 600; }
 <div class="container">
   <h1>${(e.title || '').replace(/</g, '&lt;')} ${typeBadge}</h1>
   <div class="meta">${_lbProject} · #${e.id} · ${created}${edited}</div>
-  ${bodyHtml}
+  ${mainExport}
 </div>
 <script>
 (function(){
@@ -923,35 +966,115 @@ function exportEntryDocx() {
 
 // ── Editor ──────────────────────────────────────────────────────────────────
 
-function showLogbookEditor(entryId, title, body, entryType, campaign) {
+function _lbSyncEditorTypeRow() {
+  const sel = document.getElementById('lb-edit-type');
+  const row = document.getElementById('lb-edit-board-row');
+  const shell = document.getElementById('lb-editor-board-shell');
+  if (!sel || !row) return;
+  const isBoard = sel.value === 'campaign_board';
+  row.style.display = isBoard ? 'block' : 'none';
+  if (shell) shell.style.display = isBoard ? 'block' : 'none';
+}
+
+function _lbFormatBoardJson() {
+  const ta = document.getElementById('lb-edit-board-json');
+  if (!ta) return;
+  try {
+    const o = JSON.parse(ta.value.trim() || '{}');
+    ta.value = JSON.stringify(o, null, 2);
+    toast('Formatted JSON', 'ok');
+  } catch (e) {
+    toast('Invalid JSON — fix before formatting', 'error');
+  }
+}
+
+/** Append a run_metric_grid section: columns declare default metric keys (scalar_latest); cells only need cluster + run_hash unless overriding. */
+function _lbInsertSmartMetricGridTemplate() {
+  const ta = document.getElementById('lb-edit-board-json');
+  if (!ta) return;
+  let o;
+  try {
+    o = JSON.parse(ta.value.trim() || '{}');
+  } catch (e) {
+    toast('Invalid JSON — fix before inserting a template', 'error');
+    return;
+  }
+  if (typeof o !== 'object' || o === null || Array.isArray(o)) {
+    toast('board_json must be a JSON object', 'error');
+    return;
+  }
+  if (o.version == null) o.version = 1;
+  if (!Array.isArray(o.sections)) o.sections = [];
+  const n = o.sections.filter((s) => s && String(s.type || '').toLowerCase() === 'run_metric_grid').length;
+  o.sections.push({
+    type: 'run_metric_grid',
+    title: `Metrics ${n + 1}`,
+    columns: [
+      { id: 'metric_a', label: 'Metric A', scalar: 'pass_at_1' },
+      { id: 'metric_b', label: 'Metric B', scalar: 'accuracy' },
+    ],
+    rows: [{ id: 'exp1', label: 'Experiment 1' }],
+    cells: {
+      'exp1:metric_a': { cluster: 'local', run_hash: '00000000' },
+      'exp1:metric_b': { cluster: 'local', run_hash: '00000000' },
+    },
+  });
+  ta.value = JSON.stringify(o, null, 2);
+  toast('Inserted run_metric_grid — edit scalar names, cluster, and run_hash for each cell', 'ok');
+}
+
+function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson, campaignGoal) {
   if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _lbEditingId = entryId || null;
   const el = document.getElementById('lb-main');
   if (!el) return;
+  el.classList.remove('lb-main-plan', 'lb-main-board');
   const titleVal = (title || '').replace(/"/g, '&quot;');
   const bodyVal = (body || '').replace(/</g, '&lt;');
   const typeVal = entryType || 'note';
   const campVal = (campaign || '').replace(/"/g, '&quot;');
+  let bj = boardJson;
+  if (bj == null || bj === '') bj = '{"version":1,"sections":[]}';
+  const bjStr = typeof bj === 'string' ? bj : JSON.stringify(bj, null, 2);
   el.innerHTML = `
     <div class="lb-editor">
       <div class="lb-editor-type-row">
-        <select id="lb-edit-type" class="lb-editor-type-select">
+        <select id="lb-edit-type" class="lb-editor-type-select" onchange="_lbSyncEditorTypeRow()">
           <option value="note" ${typeVal === 'note' ? 'selected' : ''}>Note</option>
           <option value="plan" ${typeVal === 'plan' ? 'selected' : ''}>Plan</option>
+          <option value="campaign_board" ${typeVal === 'campaign_board' ? 'selected' : ''}>Campaign board</option>
         </select>
-        <input type="text" class="lb-editor-campaign" id="lb-edit-campaign" list="lb-campaign-suggest" placeholder="campaign" value="${campVal}">
+        <input type="text" class="lb-editor-campaign" id="lb-edit-campaign" list="lb-campaign-suggest" placeholder="campaign (required for board)" value="${campVal}">
         <datalist id="lb-campaign-suggest"></datalist>
       </div>
+      <div id="lb-editor-board-shell" class="lb-editor-board-shell" style="display:${typeVal === 'campaign_board' ? 'block' : 'none'}">
+        <div class="lb-editor-board-banner">Campaign board — canonical team surface. <strong>Table</strong> sections: each row needs <code>cluster</code> + <code>run_hash</code>; optional <code>"type":"run_status"</code> column (max one per section) shows live Slurm/SDK aggregate state. <strong>run_metric_grid</strong> (smart metric table): pick which SDK stats appear in each column — optional <code>scalar</code> on a column is the default <code>scalar_latest</code> metric name for that column; each <code>cells["row_id:col_id"]</code> entry sets <code>cluster</code> + <code>run_hash</code> and may override with its own <code>scalar</code>. Every row×column pair is required. On save/read, Clausius fills <code>board_runtime</code> with live status, numeric values, and <code>malfunctioned</code> flags (no external services). Use <strong>insert template</strong> below to scaffold a grid, then replace metric keys and run hashes.</div>
+        <label class="lb-editor-board-label" for="lb-edit-campaign-goal">Campaign goal</label>
+        <textarea class="lb-editor-campaign-goal" id="lb-edit-campaign-goal" rows="4" placeholder="What this campaign is trying to achieve (plain text, a few sentences)…"></textarea>
+      </div>
       <input type="text" class="lb-editor-title" id="lb-edit-title" placeholder="Entry title" value="${titleVal}">
-      <textarea class="lb-editor-body" id="lb-edit-body" placeholder="Write your entry in markdown…&#10;&#10;Use @run-name to reference jobs.&#10;Drag/drop or paste images to attach.&#10;Tables, code blocks, and headers are all supported." rows="20">${bodyVal}</textarea>
-      <div class="lb-editor-hint">drag &amp; drop or paste images into the editor</div>
+      <textarea class="lb-editor-body" id="lb-edit-body" placeholder="Setup &amp; conventions (markdown)…&#10;&#10;Use @run-name to reference jobs.&#10;Drag/drop or paste images to attach." rows="14">${bodyVal}</textarea>
+      <div id="lb-edit-board-row" style="display:${typeVal === 'campaign_board' ? 'block' : 'none'}">
+        <label class="lb-editor-board-label" for="lb-edit-board-json">board_json</label>
+        <textarea class="lb-editor-board-json" id="lb-edit-board-json" rows="14" spellcheck="false"></textarea>
+        <div class="lb-editor-board-json-actions">
+          <button type="button" class="btn" onclick="_lbFormatBoardJson()">format JSON</button>
+          <button type="button" class="btn" onclick="_lbInsertSmartMetricGridTemplate()" title="Append a run_metric_grid section with column-level scalar keys">insert smart table template</button>
+        </div>
+      </div>
+      <div class="lb-editor-hint">drag &amp; drop or paste images into the body field</div>
       <div class="lb-editor-actions">
         <button class="btn" onclick="saveLogbookEntry()">save</button>
         <button class="btn" onclick="_onEditorCancel()">cancel</button>
       </div>
     </div>`;
+  const bjEl = document.getElementById('lb-edit-board-json');
+  if (bjEl) bjEl.value = bjStr;
+  const cgEl = document.getElementById('lb-edit-campaign-goal');
+  if (cgEl) cgEl.value = (campaignGoal != null && campaignGoal !== '') ? String(campaignGoal) : '';
   _setupImageHandlers();
   _loadCampaignSuggestions();
+  _lbSyncEditorTypeRow();
 }
 
 async function _loadCampaignSuggestions() {
@@ -1045,7 +1168,7 @@ async function editLogbookEntry(entryId) {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`);
     const entry = await res.json();
     if (entry.status === 'error') { toast(entry.error, 'error'); return; }
-    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type, entry.campaign);
+    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type, entry.campaign, entry.board_json, entry.campaign_goal);
   } catch (e) {
     toast('Failed to load entry for editing', 'error');
   }
@@ -1062,6 +1185,24 @@ async function saveLogbookEntry() {
   const entry_type = typeSelect ? typeSelect.value : 'note';
   const campaign = campInput ? campInput.value.trim().toLowerCase() : '';
   if (!title) { toast('Title is required', 'error'); return; }
+  if (entry_type === 'campaign_board' && !campaign) {
+    toast('Campaign is required for a campaign board', 'error');
+    return;
+  }
+
+  const payload = { title, body, entry_type, campaign };
+  if (entry_type === 'campaign_board') {
+    const bjta = document.getElementById('lb-edit-board-json');
+    const raw = bjta ? bjta.value.trim() : '';
+    try {
+      payload.board_json = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      toast('board_json is not valid JSON', 'error');
+      return;
+    }
+    const cgta = document.getElementById('lb-edit-campaign-goal');
+    payload.campaign_goal = cgta ? cgta.value.trim() : '';
+  }
 
   const t = toastLoading(_lbEditingId ? 'Saving entry…' : 'Creating entry…');
   try {
@@ -1070,13 +1211,13 @@ async function saveLogbookEntry() {
       res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${_lbEditingId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, entry_type, campaign }),
+        body: JSON.stringify(payload),
       });
     } else {
       res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, entry_type, campaign }),
+        body: JSON.stringify(payload),
       });
     }
     const d = await res.json();
@@ -1084,7 +1225,6 @@ async function saveLogbookEntry() {
       t.done(_lbEditingId ? 'Entry updated' : 'Entry created');
       const openId = _lbEditingId || d.id;
       _lbEditingId = null;
-      _invalidateMapCache(_lbProject);
       await _loadEntries(_lbProject);
       if (openId) openLogbookEntry(openId);
     } else {
@@ -1104,7 +1244,6 @@ async function deleteLogbookEntry(entryId) {
     const d = await res.json();
     if (d.status === 'ok') {
       t.done('Entry deleted');
-      _invalidateMapCache(_lbProject);
       _showMainEmpty();
       await _loadEntries(_lbProject);
     } else {
@@ -1138,6 +1277,179 @@ function _formatDate(iso) {
     const d = new Date(iso.replace('T', ' '));
     return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   } catch (_) { return iso; }
+}
+
+function _lbEscapeAttr(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/'/g, '&#39;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/** CSS class suffix for board_runtime status labels (matches server slugs). */
+function _lbBoardStatusSlug(label) {
+  const raw = String(label || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return raw || 'unknown';
+}
+
+function _lbBoardStatusDisplay(label) {
+  if (label == null || label === '' || label === '—') return '—';
+  return String(label).replace(/_/g, ' ');
+}
+
+function _lbRunMetricRuntimeKey(sectionIndex, rowId, colId) {
+  return `${sectionIndex}|${rowId}|${colId}`;
+}
+
+/** Map backend status to a small set of UI tones (colors). */
+function _lbRunMetricTone(status, hasValue) {
+  if (hasValue) return 'value';
+  const s = String(status || '').toLowerCase();
+  if (s === 'completed') return 'completed';
+  if (s === 'running') return 'running';
+  if (s === 'pending' || s === 'submitting') return 'pending';
+  if (s === 'failed' || s === 'error' || s === 'cancelled' || s === 'timeout') return 'failed';
+  if (s === 'mixed') return 'pending';
+  if (s === 'not_found' || s === 'no_jobs') return 'missing';
+  return 'unknown';
+}
+
+function _lbRunMetricStatusAbbrev(status) {
+  const s = String(status || '').toLowerCase();
+  const map = {
+    completed: '✓',
+    running: '●',
+    pending: '◔',
+    submitting: '◔',
+    failed: '✕',
+    cancelled: '✕',
+    timeout: '✕',
+    mixed: '◆',
+    not_found: '—',
+    no_jobs: '○',
+    error: '!',
+  };
+  return map[s] || '·';
+}
+
+function _renderRunMetricGridSection(sec, sectionIndex, boardRuntime, forExport) {
+  const title = (sec && sec.title) ? String(sec.title).replace(/</g, '&lt;') : `Section ${sectionIndex + 1}`;
+  const cols = sec && Array.isArray(sec.columns) ? sec.columns : [];
+  const rows = sec && Array.isArray(sec.rows) ? sec.rows : [];
+  const cm = (boardRuntime && boardRuntime.cells) ? boardRuntime.cells : {};
+  const head = cols.map((c) => {
+    const lab = String(c.label != null ? c.label : c.id || '').replace(/</g, '&lt;');
+    const sk = c.scalar ? String(c.scalar).replace(/</g, '&lt;') : '';
+    const keySpan = sk ? ` <span class="lb-run-metric-col-key" title="scalar_latest key">${sk}</span>` : '';
+    return `<th><span class="lb-run-metric-th-inner">${lab}${keySpan}</span></th>`;
+  }).join('');
+  const body = rows.map((row) => {
+    const rid = row && row.id != null ? String(row.id) : '';
+    const tds = cols.map((c) => {
+      const cid = c && c.id != null ? String(c.id) : '';
+      const rk = _lbRunMetricRuntimeKey(sectionIndex, rid, cid);
+      const cell = cm[rk] || null;
+      const st = cell && cell.status ? String(cell.status) : 'missing';
+      const val = cell && cell.value != null && cell.value !== '' ? String(cell.value) : '';
+      const hasVal = !!val;
+      const cluster = cell && cell.cluster ? String(cell.cluster).trim() : '';
+      const runHash = cell && cell.run_hash ? String(cell.run_hash).trim() : '';
+      const scalar = cell && cell.scalar ? String(cell.scalar) : '';
+      const malfunctioned = !!(cell && cell.malfunctioned);
+      const tone = _lbRunMetricTone(st, hasVal);
+      const tipParts = [
+        cluster && runHash ? `${cluster}/${runHash}` : '',
+        st,
+        scalar ? `scalar:${scalar}` : '',
+        malfunctioned ? 'malfunctioned' : '',
+      ].filter(Boolean);
+      const tip = _lbEscapeAttr(tipParts.join(' · '));
+      if (forExport) {
+        const cellTxt = hasVal ? val : _lbBoardStatusDisplay(st);
+        return `<td>${cellTxt.replace(/</g, '&lt;')}</td>`;
+      }
+      const oc = _lbEscapeAttr(cluster);
+      const oh = _lbEscapeAttr(runHash);
+      const inner = hasVal
+        ? `<span class="lb-run-metric-val">${val.replace(/</g, '&lt;')}</span>`
+        : `<span class="lb-run-metric-glyph" aria-hidden="true">${_lbRunMetricStatusAbbrev(st)}</span>`;
+      const open = cluster && runHash
+        ? `onclick="event.stopPropagation();if(typeof openRunInfoByHash==='function')openRunInfoByHash('${oc}','${oh}','')"`
+        : '';
+      const mfCls = malfunctioned ? ' lb-run-metric-cell--malfunctioned' : '';
+      return `<td class="lb-run-metric-td"><button type="button" class="lb-run-metric-cell lb-run-metric-cell--${tone}${mfCls}" title="${tip}" ${open}>${inner}</button></td>`;
+    }).join('');
+    const rlab = row && row.label != null ? String(row.label).replace(/</g, '&lt;') : rid;
+    return `<tr><th scope="row" class="lb-run-metric-row-label">${rlab}</th>${tds}</tr>`;
+  }).join('');
+  return `<div class="lb-board-section lb-board-section--metric-grid"><h3 class="lb-board-section-title">${title}</h3>`
+    + `<div class="lb-board-table-scroll"><table class="lb-board-table lb-run-metric-grid md-table"><thead><tr><th class="lb-run-metric-corner"></th>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+
+function _renderBoardJsonHtml(boardJsonStr, forExport, boardRuntime) {
+  if (!boardJsonStr || !String(boardJsonStr).trim()) return '';
+  let o;
+  try {
+    o = JSON.parse(String(boardJsonStr));
+  } catch (_) {
+    return '<p class="lb-board-json-err">Invalid board JSON</p>';
+  }
+  const sm = (boardRuntime && boardRuntime.statuses) ? boardRuntime.statuses : {};
+  const sections = o && Array.isArray(o.sections) ? o.sections : [];
+  if (!sections.length) {
+    return '<p class="lb-board-empty-hint">No structured tables yet. Edit this board and add JSON sections.</p>';
+  }
+  return sections.map((sec, si) => {
+    const secType = String(sec && sec.type != null ? sec.type : 'table').toLowerCase();
+    if (secType === 'run_metric_grid') {
+      return _renderRunMetricGridSection(sec, si, boardRuntime, forExport);
+    }
+    const title = (sec && sec.title) ? String(sec.title).replace(/</g, '&lt;') : `Section ${si + 1}`;
+    const cols = sec && Array.isArray(sec.columns) ? sec.columns : [];
+    const rows = sec && Array.isArray(sec.rows) ? sec.rows : [];
+    const head = cols.map(c => `<th>${String(c.label != null ? c.label : c.id || '').replace(/</g, '&lt;')}</th>`).join('')
+      + '<th class="lb-board-run-col">Run</th>';
+    const body = rows.map((row) => {
+      const clusterLc = row && row.cluster ? String(row.cluster).trim().toLowerCase() : '';
+      const runHashLc = row && row.run_hash ? String(row.run_hash).trim().toLowerCase() : '';
+      const statusKey = clusterLc && runHashLc ? `${clusterLc}:${runHashLc}` : '';
+      const cells = cols.map((c) => {
+        const id = c.id;
+        const colType = String(c.type || 'string').toLowerCase();
+        if (colType === 'run_status') {
+          const stRaw = statusKey && Object.prototype.hasOwnProperty.call(sm, statusKey) ? sm[statusKey] : null;
+          const hasVal = stRaw != null && stRaw !== '';
+          const display = hasVal ? _lbBoardStatusDisplay(stRaw) : '—';
+          const safe = display.replace(/</g, '&lt;');
+          if (forExport) {
+            return `<td>${safe}</td>`;
+          }
+          const slug = hasVal ? _lbBoardStatusSlug(stRaw) : 'unknown';
+          const titleAttr = _lbEscapeAttr(hasVal ? String(stRaw) : '');
+          return `<td><span class="lb-board-status lb-board-status--${slug}" title="${titleAttr}">${safe}</span></td>`;
+        }
+        const v = row && row.cells && id in row.cells ? row.cells[id] : '';
+        return `<td>${String(v).replace(/</g, '&lt;')}</td>`;
+      }).join('');
+      const cluster = row && row.cluster ? String(row.cluster).trim() : '';
+      const runHash = row && row.run_hash ? String(row.run_hash).trim() : '';
+      let runCell = '—';
+      if (runHash && cluster) {
+        if (forExport) {
+          runCell = `${cluster.replace(/</g, '&lt;')}/${runHash.replace(/</g, '&lt;')}`;
+        } else {
+          const oc = _lbEscapeAttr(cluster);
+          const oh = _lbEscapeAttr(runHash);
+          runCell = `<button type="button" class="lb-board-run-chip" onclick="event.stopPropagation();if(typeof openRunInfoByHash==='function')openRunInfoByHash('${oc}','${oh}','')">${runHash.replace(/</g, '&lt;')}</button>`;
+        }
+      }
+      return `<tr>${cells}<td class="lb-board-run-col">${runCell}</td></tr>`;
+    }).join('');
+    return `<div class="lb-board-section"><h3 class="lb-board-section-title">${title}</h3>`
+      + `<div class="lb-board-table-scroll"><table class="lb-board-table md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
+  }).join('');
 }
 
 function _renderLogbookMarkdown(raw) {
@@ -1201,7 +1513,6 @@ async function _openEntryRef(entryId, project, anchor) {
     _lbProject = project;
     const sel = document.getElementById('lb-project-select');
     if (sel) sel.value = project;
-    _invalidateMapCache();
     _loadEntries(project);
     _loadRunNames(project);
   }
@@ -1325,640 +1636,4 @@ document.addEventListener('blur', e => {
 }, true);
 
 
-// ── Semantic map ─────────────────────────────────────────────────────────────
-
-let _mapActive = false;
-let _mapData = null;
-let _mapDataProject = '';
-let _mapGraphSimulation = null;
-let _mapView = 'tree';
-let _mapFocusEntryId = null;
-let _mapNeighborHops = 1;
-let _mapEdgeDir = 'both';
-
-try {
-  const savedMapView = localStorage.getItem(LB_MAP_VIEW_KEY);
-  if (savedMapView === 'tree' || savedMapView === 'graph') _mapView = savedMapView;
-} catch (_) {}
-
-function _syncMapBtnActive(active) {
-  const mapBtn = document.querySelector('.lb-map-btn[data-type="map"]');
-  if (mapBtn) mapBtn.classList.toggle('active', active);
-  if (active) {
-    document.querySelectorAll('.lb-campaign-chip').forEach(b => b.classList.remove('active'));
-  } else {
-    _loadCampaignChips();
-  }
-}
-
-function _invalidateMapCache(project) {
-  if (!project || project === _mapDataProject) {
-    _mapData = null;
-    _mapDataProject = '';
-  }
-}
-
-function _stopMapGraphSimulation() {
-  if (_mapGraphSimulation) {
-    _mapGraphSimulation.stop();
-    _mapGraphSimulation = null;
-  }
-}
-
-function _mapFocusLabel() {
-  return _mapFocusEntryId ? `#${_mapFocusEntryId}` : '';
-}
-
-function _renderGraphScopeControls() {
-  if (!_mapFocusEntryId && _mapView !== 'graph') return '';
-
-  const hopOpts = ['1', '2', '3', '4', '5', 'all']
-    .map(v => `<option value="${v}"${String(_mapNeighborHops) === v ? ' selected' : ''}>${v === 'all' ? 'all' : `${v} hop${v === '1' ? '' : 's'}`}</option>`)
-    .join('');
-
-  const dirOpts = [['both', 'Both'], ['outgoing', 'Outgoing'], ['incoming', 'Incoming']]
-    .map(([v, label]) => `<option value="${v}"${_mapEdgeDir === v ? ' selected' : ''}>${label}</option>`)
-    .join('');
-
-  let html = '<div class="lb-map-scope-controls">';
-
-  if (_mapFocusEntryId) {
-    html += `<span class="lb-map-scope-chip">focus ${_mapFocusLabel()}</span>`;
-    html += `<label class="lb-map-scope-select-wrap">neighbors <select class="lb-map-scope-select" onchange="_setMapNeighborHops(this.value)">${hopOpts}</select></label>`;
-    html += `<button type="button" class="lb-map-scope-clear" onclick="_clearMapFocus()">all entries</button>`;
-  }
-
-  if (_mapView === 'graph') {
-    html += `<label class="lb-map-scope-select-wrap">edges <select class="lb-map-scope-select" onchange="_setMapEdgeDir(this.value)">${dirOpts}</select></label>`;
-  }
-
-  html += '</div>';
-  return html;
-}
-
-function _renderMapToggle() {
-  const treeCls = _mapView === 'tree' ? ' active' : '';
-  const graphCls = _mapView === 'graph' ? ' active' : '';
-  return `<div class="lb-map-toolbar">
-    <div class="lb-map-toggle">
-      <button type="button" class="lb-map-toggle-btn${treeCls}" onclick="_setMapView('tree')">Tree</button>
-      <button type="button" class="lb-map-toggle-btn${graphCls}" onclick="_setMapView('graph')">Graph</button>
-    </div>
-    ${_renderGraphScopeControls()}
-  </div>`;
-}
-
-function _setMapView(view) {
-  if (view !== 'tree' && view !== 'graph') return;
-  _mapView = view;
-  try { localStorage.setItem(LB_MAP_VIEW_KEY, _mapView); } catch (_) {}
-  if (!_mapActive) return;
-  const el = document.getElementById('lb-main');
-  if (!el) return;
-  if (_mapData && _mapDataProject === _lbProject) {
-    _renderMapView(el, _mapData);
-  } else {
-    _loadMapData(_lbProject);
-  }
-}
-
-function _setMapNeighborHops(value) {
-  if (value === 'all') _mapNeighborHops = 'all';
-  else {
-    const n = parseInt(value, 10);
-    _mapNeighborHops = Number.isFinite(n) ? Math.max(1, Math.min(6, n)) : 1;
-  }
-  if (!_mapActive) return;
-  const el = document.getElementById('lb-main');
-  if (!el) return;
-  if (_mapData && _mapDataProject === _lbProject) _renderMapView(el, _mapData);
-}
-
-function _setMapEdgeDir(dir) {
-  if (dir !== 'both' && dir !== 'outgoing' && dir !== 'incoming') return;
-  _mapEdgeDir = dir;
-  if (!_mapActive) return;
-  const el = document.getElementById('lb-main');
-  if (!el) return;
-  if (_mapData && _mapDataProject === _lbProject) _renderMapView(el, _mapData);
-}
-
-function _clearMapFocus() {
-  _mapFocusEntryId = null;
-  _mapNeighborHops = 1;
-  if (!_mapActive) return;
-  const el = document.getElementById('lb-main');
-  if (!el) return;
-  if (_mapData && _mapDataProject === _lbProject) _renderMapView(el, _mapData);
-}
-
-function openEntryGraph(entryId) {
-  if (!_lbProject || !entryId) return;
-  if (_lbPresentMode) void toggleLogbookPresentMode(false);
-  _mapFocusEntryId = Number(entryId);
-  _mapNeighborHops = 1;
-  _mapEdgeDir = 'both';
-  _mapView = 'graph';
-  try { localStorage.setItem(LB_MAP_VIEW_KEY, _mapView); } catch (_) {}
-  _mapActive = true;
-  _syncMapBtnActive(true);
-  _pushLbHistory({ type: 'map', project: _lbProject });
-  _loadMapData(_lbProject);
-}
-
-function toggleLogbookMap() {
-  if (_lbPresentMode) void toggleLogbookPresentMode(false);
-  _mapActive = !_mapActive;
-  _syncMapBtnActive(_mapActive);
-  if (_mapActive) {
-    _mapFocusEntryId = null;
-    _mapNeighborHops = 1;
-    _mapEdgeDir = 'both';
-    _pushLbHistory({ type: 'map', project: _lbProject });
-    _loadMapData(_lbProject);
-  } else {
-    _stopMapGraphSimulation();
-    const top = _lbHistory[_lbHistory.length - 1];
-    if (top && top.type === 'map') _lbHistory.pop();
-    _showMainEmpty();
-    _lbTypeFilter = '';
-    _lbCampaignFilter = '';
-    _loadCampaignChips();
-    if (_lbProject) _loadEntries(_lbProject);
-  }
-}
-
-async function _loadMapData(project, forceRefresh = false) {
-  if (!project) return;
-  const el = document.getElementById('lb-main');
-  if (!el) return;
-  if (!forceRefresh && _mapData && _mapDataProject === project) {
-    _renderMapView(el, _mapData);
-    return;
-  }
-  el.innerHTML = _renderMapToggle() + '<div class="lb-main-empty">Loading map...</div>';
-  try {
-    const res = await fetch(`/api/logbook/${encodeURIComponent(project)}/map`);
-    const data = await res.json();
-    if (data && !data.error) {
-      _mapData = data;
-      _mapDataProject = project;
-    }
-    _renderMapView(el, data && !data.error ? data : (_mapData || data));
-  } catch (e) {
-    el.innerHTML = _renderMapToggle() + '<div class="lb-main-empty" style="color:var(--red)">Failed to load map</div>';
-  }
-}
-
-function _renderMapView(el, data) {
-  if (_mapView === 'graph') _renderGraph(el, data);
-  else _renderMap(el, data);
-}
-
-function _renderMap(el, data) {
-  _stopMapGraphSimulation();
-  const focused = _getFocusedGraphData(data);
-  const nodes = focused.nodes;
-  const links = focused.links;
-  if (!nodes.length) {
-    el.innerHTML = _renderMapToggle() + '<div class="lb-main-empty">No entries to map. Use #id in entry bodies to create links.</div>';
-    return;
-  }
-
-  const byId = {};
-  for (const n of nodes) byId[n.id] = n;
-  const nodeIds = new Set(nodes.map(n => n.id));
-
-  // Build directed graph: source references target via #id.
-  // In the tree view, target is rendered as parent, source as child.
-  const childrenOf = {};
-  const hasParent = new Set();
-  for (const l of links) {
-    if (!nodeIds.has(l.source_id) || !nodeIds.has(l.target_id)) continue;
-    childrenOf[l.target_id] = childrenOf[l.target_id] || [];
-    childrenOf[l.target_id].push(l.source_id);
-    hasParent.add(l.source_id);
-  }
-
-  const roots = nodes.filter(n => !hasParent.has(n.id));
-
-  roots.sort((a, b) => {
-    if (a.entry_type !== b.entry_type) return a.entry_type === 'plan' ? -1 : 1;
-    return (b.edited_at || '').localeCompare(a.edited_at || '');
-  });
-
-  const rendered = new Set();
-  function renderSubtree(nodeId, depth) {
-    if (rendered.has(nodeId)) return '';
-    rendered.add(nodeId);
-    const n = byId[nodeId];
-    if (!n) return '';
-    const isPlan = n.entry_type === 'plan';
-    const kids = (childrenOf[nodeId] || []).filter(id => !rendered.has(id));
-    kids.sort((a, b) => (byId[b]?.edited_at || '').localeCompare(byId[a]?.edited_at || ''));
-
-    const nodeCls = isPlan ? 'lb-map-plan' : 'lb-map-note';
-    const iconCls = isPlan ? 'is-plan' : 'is-note';
-    const pinnedCls = _isEntryPinned(n.id) ? ' lb-map-pinned' : '';
-    const idBadge = `<span class="lb-map-id">#${n.id}</span>`;
-
-    let html = '';
-    if (depth > 0) html += '<div class="lb-map-child-wrap">';
-    html += `<div class="lb-map-node ${nodeCls}${pinnedCls}" onclick="_mapClickEntry(${n.id})">
-      <span class="lb-map-icon ${iconCls}" aria-hidden="true"></span>
-      <div class="lb-map-node-text">
-        <span class="lb-map-node-title">${_escMapHtml(n.title)}</span>
-        <span class="lb-map-node-meta">${_fmtMapDate(n.created_at)} ${idBadge}</span>
-      </div>
-      ${kids.length ? `<span class="lb-map-count">${kids.length}</span>` : ''}
-    </div>`;
-
-    if (kids.length) {
-      html += '<div class="lb-map-children">';
-      for (const kid of kids) html += renderSubtree(kid, depth + 1);
-      html += '</div>';
-    }
-    if (depth > 0) html += '</div>';
-    return html;
-  }
-
-  let html = _renderMapToggle() + '<div class="lb-map-scroll"><div class="lb-map">';
-  for (const root of roots) {
-    html += `<div class="lb-map-branch">${renderSubtree(root.id, 0)}</div>`;
-  }
-
-  // Render any nodes in cycles (linked but not reachable from roots).
-  const unreached = nodes.filter(n => !rendered.has(n.id));
-  for (const n of unreached) {
-    html += `<div class="lb-map-branch">${renderSubtree(n.id, 0)}</div>`;
-  }
-
-  html += '</div></div>';
-  el.innerHTML = html;
-}
-
-function _buildMapDepths(nodes, links) {
-  const indegree = new Map();
-  const outgoing = new Map();
-  for (const n of nodes) {
-    indegree.set(n.id, 0);
-    outgoing.set(n.id, []);
-  }
-  for (const l of links) {
-    if (!indegree.has(l.source) || !indegree.has(l.target)) continue;
-    indegree.set(l.target, (indegree.get(l.target) || 0) + 1);
-    outgoing.get(l.source).push(l.target);
-  }
-
-  const roots = nodes
-    .filter(n => (indegree.get(n.id) || 0) === 0)
-    .map(n => n.id);
-  const queue = roots.slice();
-  const depths = new Map();
-  for (const id of roots) depths.set(id, 0);
-
-  while (queue.length) {
-    const id = queue.shift();
-    const baseDepth = depths.get(id) || 0;
-    for (const child of outgoing.get(id) || []) {
-      const nextDepth = baseDepth + 1;
-      if (!depths.has(child) || nextDepth < depths.get(child)) {
-        depths.set(child, nextDepth);
-        queue.push(child);
-      }
-    }
-  }
-
-  // Cyclic or disconnected nodes still get a deterministic lane.
-  const unresolved = nodes
-    .filter(n => !depths.has(n.id))
-    .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-  let altDepth = 0;
-  for (const n of unresolved) {
-    depths.set(n.id, altDepth);
-    altDepth = (altDepth + 1) % 2;
-  }
-  return { depths, indegree };
-}
-
-function _getFocusedGraphData(data) {
-  const nodes = Array.isArray(data?.nodes) ? data.nodes : [];
-  const links = Array.isArray(data?.links) ? data.links : [];
-  if (!_mapFocusEntryId) return { nodes, links, focusKey: null };
-
-  const focusKey = String(_mapFocusEntryId);
-  const nodeById = new Map(nodes.map(n => [String(n.id), n]));
-  if (!nodeById.has(focusKey)) {
-    _mapFocusEntryId = null;
-    _mapNeighborHops = 1;
-    return { nodes, links, focusKey: null };
-  }
-
-  const adj = new Map();
-  for (const n of nodes) adj.set(String(n.id), new Set());
-  for (const l of links) {
-    const s = String(l.source_id);
-    const t = String(l.target_id);
-    if (!adj.has(s) || !adj.has(t)) continue;
-    // Neighborhood is treated as undirected around focus.
-    adj.get(s).add(t);
-    adj.get(t).add(s);
-  }
-
-  const keep = new Set([focusKey]);
-  const q = [[focusKey, 0]];
-  const maxHops = _mapNeighborHops === 'all' ? Number.POSITIVE_INFINITY : Number(_mapNeighborHops) || 1;
-  while (q.length) {
-    const [cur, dist] = q.shift();
-    if (dist >= maxHops) continue;
-    for (const nxt of adj.get(cur) || []) {
-      if (keep.has(nxt)) continue;
-      keep.add(nxt);
-      q.push([nxt, dist + 1]);
-    }
-  }
-
-  const filteredNodes = nodes.filter(n => keep.has(String(n.id)));
-  const filteredLinks = links.filter(l => keep.has(String(l.source_id)) && keep.has(String(l.target_id)));
-  return { nodes: filteredNodes, links: filteredLinks, focusKey };
-}
-
-function _renderGraph(el, data) {
-  const focused = _getFocusedGraphData(data);
-  const nodesIn = focused.nodes;
-  const linksIn = focused.links;
-  const focusKey = focused.focusKey;
-  if (!nodesIn.length) {
-    _stopMapGraphSimulation();
-    el.innerHTML = _renderMapToggle() + '<div class="lb-main-empty">No entries to map. Use #id in entry bodies to create links.</div>';
-    return;
-  }
-  if (typeof d3 === 'undefined') {
-    _mapView = 'tree';
-    _renderMap(el, data);
-    return;
-  }
-  _stopMapGraphSimulation();
-
-  const nodeById = new Map();
-  for (const n of nodesIn) nodeById.set(n.id, { ...n });
-  const allLinks = [];
-  for (const l of linksIn) {
-    if (!nodeById.has(l.source_id) || !nodeById.has(l.target_id)) continue;
-    allLinks.push({ source: l.source_id, target: l.target_id });
-  }
-
-  let links = allLinks;
-  if (_mapEdgeDir === 'outgoing' && focusKey) {
-    links = allLinks.filter(l => String(l.source) === focusKey);
-  } else if (_mapEdgeDir === 'incoming' && focusKey) {
-    links = allLinks.filter(l => String(l.target) === focusKey);
-  }
-  const nodes = Array.from(nodeById.values()).map(n => ({ ...n }));
-
-  const { depths } = _buildMapDepths(nodes, links);
-  let maxDepth = 0;
-  for (const n of nodes) {
-    n.depth = depths.get(n.id) || 0;
-    maxDepth = Math.max(maxDepth, n.depth);
-  }
-
-  // ── Static hierarchical layout ──
-  const minNodeW = 260;
-  const maxNodeW = 600;
-  const nodeH = 54;
-  const rowGap = 18;
-  const colGap = 60;
-
-  for (const n of nodes) {
-    const estimated = 70 + String(n.title || '').length * 7;
-    n.w = Math.max(minNodeW, Math.min(maxNodeW, estimated));
-  }
-
-  // Group nodes by depth column, sort by date within each column.
-  const columns = new Map();
-  for (const n of nodes) {
-    if (!columns.has(n.depth)) columns.set(n.depth, []);
-    columns.get(n.depth).push(n);
-  }
-  for (const col of columns.values()) {
-    col.sort((a, b) => {
-      if (a.entry_type !== b.entry_type) return a.entry_type === 'plan' ? -1 : 1;
-      return (b.edited_at || '').localeCompare(a.edited_at || '');
-    });
-  }
-
-  // Compute max width per column for uniform spacing.
-  const colWidths = new Map();
-  for (const [d, col] of columns) {
-    colWidths.set(d, Math.max(...col.map(n => n.w)));
-  }
-
-  // Compute x positions (column centers).
-  const leftPad = 40;
-  const colCenters = new Map();
-  let cx = leftPad;
-  for (let d = 0; d <= maxDepth; d++) {
-    const cw = colWidths.get(d) || minNodeW;
-    colCenters.set(d, cx + cw / 2);
-    cx += cw + colGap;
-  }
-  const rightPad = 40;
-  const totalWidth = cx - colGap + rightPad;
-
-  // Compute y positions (stack within column).
-  const topPad = 30;
-  let maxY = 0;
-  for (const [d, col] of columns) {
-    let y = topPad;
-    for (const n of col) {
-      n.x = colCenters.get(d);
-      n.y = y + nodeH / 2;
-      y += nodeH + rowGap;
-    }
-    maxY = Math.max(maxY, y);
-  }
-  const totalHeight = Math.max(maxY + topPad, 300);
-
-  el.innerHTML = _renderMapToggle() + `
-    <div class="lb-map lb-map--graph">
-      <div class="lb-map-graph">
-        <svg role="img" aria-label="Logbook graph map"></svg>
-      </div>
-    </div>`;
-
-  const graphWrap = el.querySelector('.lb-map-graph');
-  const svgNode = graphWrap ? graphWrap.querySelector('svg') : null;
-  if (!graphWrap || !svgNode) return;
-
-  const svg = d3.select(svgNode)
-    .attr('viewBox', `0 0 ${totalWidth} ${totalHeight}`)
-    .attr('width', totalWidth)
-    .attr('height', totalHeight);
-
-  const markerId = `lb-map-arrow-${Date.now()}`;
-  svg.append('defs').append('marker')
-    .attr('id', markerId)
-    .attr('viewBox', '0 -5 10 10')
-    .attr('refX', 9)
-    .attr('refY', 0)
-    .attr('markerWidth', 7)
-    .attr('markerHeight', 7)
-    .attr('orient', 'auto')
-    .append('path')
-    .attr('class', 'lb-map-arrow-head')
-    .attr('d', 'M0,-5L10,0L0,5');
-
-  const root = svg.append('g').attr('class', 'lb-map-graph-root');
-
-  // Build a lookup for positioned nodes.
-  const posById = new Map();
-  for (const n of nodes) posById.set(n.id, n);
-
-  // Draw edges as paths (curved for clarity).
-  root.append('g').attr('class', 'lb-map-links')
-    .selectAll('path')
-    .data(links)
-    .enter()
-    .append('path')
-    .attr('class', 'lb-map-link')
-    .attr('fill', 'none')
-    .attr('marker-end', `url(#${markerId})`)
-    .attr('d', d => {
-      const s = posById.get(typeof d.source === 'object' ? d.source.id : d.source);
-      const t = posById.get(typeof d.target === 'object' ? d.target.id : d.target);
-      if (!s || !t) return '';
-      const sx = s.x + s.w / 2;
-      const sy = s.y;
-      const tx = t.x - t.w / 2 - 12;
-      const ty = t.y;
-      const mx = (sx + tx) / 2;
-      return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
-    });
-
-  const nodeSel = root.append('g').attr('class', 'lb-map-nodes')
-    .selectAll('g')
-    .data(nodes, d => d.id)
-    .enter()
-    .append('g')
-    .attr('class', d => {
-      const typeCls = d.entry_type === 'plan' ? 'is-plan' : 'is-note';
-      const focusCls = focusKey && String(d.id) === focusKey ? ' is-focus' : '';
-      const pinCls = _isEntryPinned(d.id) ? ' is-pinned' : '';
-      return `lb-map-gnode ${typeCls}${focusCls}${pinCls}`;
-    })
-    .attr('transform', d => `translate(${d.x},${d.y})`)
-    .on('click', (event, d) => {
-      event.stopPropagation();
-      _mapClickEntry(d.id);
-    });
-
-  nodeSel.append('rect')
-    .attr('x', d => -d.w / 2)
-    .attr('y', -nodeH / 2)
-    .attr('width', d => d.w)
-    .attr('height', nodeH)
-    .attr('rx', 10)
-    .attr('ry', 10);
-
-  nodeSel.append('circle')
-    .attr('class', 'lb-map-gnode-dot')
-    .attr('cx', d => -d.w / 2 + 13)
-    .attr('cy', -nodeH / 2 + 13)
-    .attr('r', 4.5);
-
-  nodeSel.append('text')
-    .attr('class', 'lb-map-gnode-title')
-    .attr('x', d => -d.w / 2 + 24)
-    .attr('y', 4)
-    .text(d => String(d.title || ''));
-
-  nodeSel.append('text')
-    .attr('class', 'lb-map-gnode-meta')
-    .attr('x', d => -d.w / 2 + 24)
-    .attr('y', 18)
-    .text(d => {
-      const date = _fmtMapDate(d.created_at);
-      return date ? `#${d.id} · ${date}` : `#${d.id}`;
-    });
-
-  // Drag support (manual repositioning, no physics).
-  const drag = d3.drag()
-    .on('start', (event, d) => { d._dx = 0; d._dy = 0; })
-    .on('drag', (event, d) => {
-      d.x = event.x;
-      d.y = event.y;
-      d3.select(event.sourceEvent.target.closest('.lb-map-gnode'))
-        .attr('transform', `translate(${d.x},${d.y})`);
-      // Redraw connected edges.
-      root.selectAll('.lb-map-link').attr('d', dd => {
-        const s = posById.get(typeof dd.source === 'object' ? dd.source.id : dd.source);
-        const t = posById.get(typeof dd.target === 'object' ? dd.target.id : dd.target);
-        if (!s || !t) return '';
-        const sx = s.x + s.w / 2;
-        const sy = s.y;
-        const tx = t.x - t.w / 2 - 12;
-        const ty = t.y;
-        const mx = (sx + tx) / 2;
-        return `M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}`;
-      });
-    });
-  nodeSel.call(drag);
-
-  // Zoom + pan.
-  const zoom = d3.zoom()
-    .scaleExtent([0.3, 2.5])
-    .on('zoom', event => root.attr('transform', event.transform));
-  svg.call(zoom);
-
-  // Compute bounding box of all nodes.
-  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-  for (const n of nodes) {
-    bx0 = Math.min(bx0, n.x - n.w / 2);
-    by0 = Math.min(by0, n.y - nodeH / 2);
-    bx1 = Math.max(bx1, n.x + n.w / 2);
-    by1 = Math.max(by1, n.y + nodeH / 2);
-  }
-  const pad = 30;
-  bx0 -= pad; by0 -= pad; bx1 += pad; by1 += pad;
-  const bw = bx1 - bx0;
-  const bh = by1 - by0;
-
-  const vpW = graphWrap.clientWidth || totalWidth;
-  const vpH = graphWrap.clientHeight || totalHeight;
-
-  // If there's a focused entry, center on it at 1x scale.
-  // Otherwise fit the full bounding box.
-  const focusNode = focusKey ? posById.get(Number(focusKey)) : null;
-  if (focusNode) {
-    const s = Math.min(1, vpW / (focusNode.w + 400), vpH / (nodeH + 300));
-    const tx = vpW / 2 - focusNode.x * s;
-    const ty = vpH / 2 - focusNode.y * s;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
-  } else {
-    const s = Math.min(1, vpW / bw * 0.95, vpH / bh * 0.95);
-    const tx = (vpW - bw * s) / 2 - bx0 * s;
-    const ty = (vpH - bh * s) / 2 - by0 * s;
-    svg.call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(s));
-  }
-}
-
-function _mapClickEntry(id) {
-  _mapActive = false;
-  _stopMapGraphSimulation();
-  _syncMapBtnActive(false);
-  openLogbookEntry(id);
-}
-
-function _escMapHtml(s) {
-  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function _fmtMapDate(iso) {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso.replace('T', ' '));
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  } catch (_) { return ''; }
-}
 
