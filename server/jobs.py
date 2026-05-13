@@ -47,6 +47,46 @@ _RUN_NAME_MERGE_GAP_SEC = 600
 _STALE_PINNED_ACTIVE_STATES = {"RUNNING", "COMPLETING", "PENDING"}
 _SACCT_BATCH_SIZE = 200
 
+# TEMPORARY: also surface another user's Slurm rows on the live board (remove
+# this block and the merge in fetch_jobs_remote when no longer needed).
+_TEMP_BOARD_MIRROR_SLURM_USER = "earakelyan"
+_TEMP_BOARD_MIRROR_JOB_SUBSTR = "artsiv"
+
+
+def _temp_board_mirror_squeue_extra(cluster_name):
+    """Return (extra squeue lines, job ids from those lines) for the temp mirror."""
+    user = (_TEMP_BOARD_MIRROR_SLURM_USER or "").strip()
+    substr = (_TEMP_BOARD_MIRROR_JOB_SUBSTR or "").strip().lower()
+    if cluster_name == "local" or not user or not substr:
+        return [], set()
+    try:
+        out, _ = ssh_run_with_timeout(
+            cluster_name,
+            f"squeue -u {user} --noheader -o '{SQUEUE_FMT}'",
+            timeout_sec=12,
+        )
+    except Exception:
+        return [], set()
+    extra_lines = []
+    extra_ids = set()
+    need = len(SQUEUE_HDR)
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+        if substr not in (parts[1] or "").lower():
+            continue
+        if len(parts) < need:
+            parts += [""] * (need - len(parts))
+        extra_lines.append("|".join(parts[:need]))
+        jid = (parts[0] or "").strip()
+        if jid:
+            extra_ids.add(jid)
+    return extra_lines, extra_ids
+
 
 def parse_dependency(raw):
     if not raw or raw.strip() in {"", "(null)"}:
@@ -87,7 +127,15 @@ def parse_squeue_output(out):
 
 def fetch_jobs_remote(cluster_name):
     out, _ = ssh_run(cluster_name, f"squeue -u $USER --noheader -o '{SQUEUE_FMT}'")
-    return parse_squeue_output(out)
+    base_lines = [ln for ln in (out or "").splitlines() if ln.strip()]
+    extra_lines, extra_ids = _temp_board_mirror_squeue_extra(cluster_name)
+    combined = "\n".join(base_lines + extra_lines).strip()
+    jobs = parse_squeue_output(combined) if combined else []
+    if extra_ids:
+        for j in jobs:
+            if j.get("jobid") in extra_ids:
+                j["_temp_board_mirror"] = True
+    return jobs
 
 
 _NEMO_SUBMISSION_MARKERS = ("--cluster", "pipeline.eval", "pipeline.generate", "pipeline.run_cmd")
@@ -756,9 +804,13 @@ echo "===CONDA_END==="
         scontrol_raw = _sacct_fallback_metadata(cluster, root_job_id)
 
     env_vars = _parse_env_from_scontrol(scontrol_raw)
+    sdk_run_uuid = _extract_clausius_run_uuid(batch_script)
 
     success = any([batch_script, scontrol_raw, env_vars])
-    update_run_meta(run_id, batch_script, scontrol_raw, env_vars, conda_state)
+    update_run_meta(
+        run_id, batch_script, scontrol_raw, env_vars, conda_state,
+        sdk_run_uuid=sdk_run_uuid,
+    )
 
     if not success:
         _run_meta_fetched.pop((cluster, root_job_id), None)
@@ -792,6 +844,23 @@ def _sacct_fallback_metadata(cluster, job_id):
         if len(parts) >= len(headers):
             lines.append("  ".join(f"{h}={parts[i]}" for i, h in enumerate(headers)))
     return "\n".join(lines) if lines else ""
+
+
+_CLAUSIUS_UUID_RE = re.compile(
+    r"CLAUSIUS_RUN_UUID[ \t]*[=:][ \t]*['\"]?([0-9a-fA-F]{32})['\"]?"
+)
+
+
+def _extract_clausius_run_uuid(batch_script):
+    """Recover the SDK run_uuid from CLAUSIUS_RUN_UUID exports inside a batch
+    script. The SDK propagates this env var to NeMo-Run spawned eval jobs so
+    that downstream Run(...) handles attach to the orchestrator's run identity;
+    we want SLURM-detected child rows to inherit the same identity instead of
+    being orphaned with empty run_uuid."""
+    if not batch_script:
+        return ""
+    m = _CLAUSIUS_UUID_RE.search(batch_script)
+    return m.group(1).lower() if m else ""
 
 
 def _parse_env_from_scontrol(scontrol_raw):

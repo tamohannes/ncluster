@@ -919,7 +919,10 @@ function renderCard(name, data) {
         const cls = isExpanded ? 'backups-btn expanded' : 'backups-btn';
         backupBtn = ` <button class="${cls}" data-backups-toggle="${j.jobid}" onclick="event.stopPropagation();toggleBackups('${j.jobid}')">${n} backup${n !== 1 ? 's' : ''}</button>`;
       }
-      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
+      const mirrorBadge = j._temp_board_mirror
+        ? '<span class="temp-board-mirror-badge" title="Peer queue mirror (temporary)">·peer</span>'
+        : '';
+      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${mirrorBadge}${backupBtn}`;
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
       return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${rowDisplay}">
