@@ -246,10 +246,17 @@ body {
   line-height: 1.5;
 }
 
-/* ── Topbar ── */
+/* ── Topbar ──
+ * Live in the flex flow (not position: fixed) so the topbar's actual
+ * rendered height determines where the app-shell starts. With a fixed
+ * topbar + margin-top compensation, any overshoot in the topbar's content
+ * height (e.g. two-line tabs) caused the page content to slide under the
+ * topbar. Flex-flow makes that overlap structurally impossible. */
 .topbar {
-  position: fixed; top: 0; left: 0; right: 0;
-  height: var(--topbar-h); z-index: 300;
+  position: relative;
+  flex: 0 0 auto;
+  min-height: var(--topbar-h);
+  z-index: 300;
   display: flex; align-items: center;
   padding: 0 8px;
   background: var(--bg);
@@ -354,9 +361,8 @@ body {
 .app-shell {
   display: flex;
   align-items: stretch;
-  margin-top: var(--topbar-h);
-  height: calc(100% - var(--topbar-h));
-  min-height: calc(100vh - var(--topbar-h));
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 .content-shell { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -364,9 +370,10 @@ body {
   width: 280px; max-width: 92vw;
   background: var(--bg);
   position: sticky;
-  /* Pin below the fixed topbar — `top: 0` would slide the sidebar behind
-     the topbar once the body scrolls, hiding the first nav-tab. */
-  top: var(--topbar-h);
+  /* Sticky at top: 0 of the .app-shell scroll context now that the topbar
+     lives in the flex flow above .app-shell rather than as a fixed
+     overlay — no need to offset by --topbar-h. */
+  top: 0;
   align-self: stretch;
   overflow: hidden;
   padding: 14px 14px 8px;
@@ -7432,8 +7439,13 @@ html {
 }
 
 body {
-  height: 100%;
-  min-height: 100vh;
+  /* Flex column: topbar (natural height) + app-shell (flex: 1). This
+     replaces the old position:fixed topbar + .app-shell margin-top hack
+     so the page content can never slide under the topbar regardless of
+     how tall the topbar's content (e.g. two-line tabs) renders. */
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   background: var(--bg);
   background-attachment: fixed;
   isolation: isolate;
