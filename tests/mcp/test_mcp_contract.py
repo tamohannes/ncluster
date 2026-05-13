@@ -13,6 +13,8 @@ from mcp_server import (
     health_check,
     list_jobs, list_log_files, get_job_log,
     get_job_stats, get_run_results, get_history, cancel_job, cancel_jobs,
+    get_run_params,
+    audit_run_reproducibility,
     jobs_summary, _slim_job,
     get_mounts, mount_cluster, clear_failed, clear_completed,
     run_script,
@@ -184,6 +186,58 @@ class TestGetRunResults:
         assert method == "GET"
         assert path == "/api/run_results_by_hash/c1/abc123"
         assert mock.call_args.kwargs["query_string"]["benchmark"] == "gpqa"
+
+
+@pytest.mark.mcp
+class TestGetRunParams:
+    async def test_fetches_run_info(self):
+        resp = {"status": "ok", "run": {"params": {"model": "x"}, "root_job_id": "1"}}
+        with patch("mcp_server._api", return_value=resp) as mock:
+            result = await get_run_params("c1", "abc12")
+        assert result["status"] == "ok"
+        assert result["params"]["model"] == "x"
+        mock.assert_called_once()
+        assert mock.call_args.args[:2] == ("GET", "/api/run_info_by_hash/c1/abc12")
+
+
+@pytest.mark.mcp
+class TestAuditRunReproducibility:
+    async def test_loads_run_and_metrics(self):
+        run_resp = {
+            "status": "ok",
+            "run": {
+                "run_hash": "h1",
+                "params": {},
+                "submit_command": "x",
+                "env_vars": "",
+                "conda_state": "",
+                "metadata": {},
+                "malfunctioned": 0,
+                "jobs": [],
+            },
+        }
+        met_resp = {
+            "status": "ok",
+            "series": {},
+            "latest": {},
+            "scalars": {},
+            "scalar_latest": {},
+            "metadata": {},
+        }
+
+        def fake_api(method, path, **kwargs):
+            if "run_info" in path:
+                return run_resp
+            if "run_metrics" in path:
+                return met_resp
+            return {"status": "error", "error": "unexpected"}
+
+        with patch("mcp_server._api", side_effect=fake_api):
+            result = await audit_run_reproducibility("eos", "h1")
+        assert result["status"] == "ok"
+        assert result["cluster"] == "eos"
+        assert result["run_hash"] == "h1"
+        assert "sdk_metrics" in result
 
 
 # ── get_history ──────────────────────────────────────────────────────────────

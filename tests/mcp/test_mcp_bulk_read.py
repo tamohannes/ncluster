@@ -56,7 +56,7 @@ class TestBulkReadLogbooks:
         assert result["status"] == "error"
 
     async def test_invalid_entry_type(self):
-        with patch("mcp_server._api", return_value={"status": "error", "error": "entry_type must be 'note', 'plan', or omitted"}):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "entry_type must be 'note', 'plan', 'campaign_board', or omitted"}):
             result = await bulk_read_logbooks(project="alpha", entry_type="bad")
         assert result["status"] == "error"
 

@@ -60,7 +60,7 @@ import sys
 import threading
 import time
 from io import BytesIO
-from typing import Optional
+from typing import Any, Optional
 
 import anyio.to_thread
 from mcp.server.fastmcp import FastMCP
@@ -73,6 +73,15 @@ from mcp.server.fastmcp import FastMCP
 # Server.poller is light (no Flask), so we keep its imports eager — we
 # need ``poller_running`` for ``health_check`` and ``mcp_self_check``.
 from server.poller import poller_running, start_poller, stop_poller
+from server.run_inspect import (
+    build_reproducibility_snapshot,
+    filter_env_vars,
+    filter_library_lines,
+    filter_metrics_payload,
+    parse_env_vars,
+    query_metadata,
+    truncate_text,
+)
 
 # MCP transport settings.
 #
@@ -666,19 +675,25 @@ async def get_job_stats(cluster: str, job_id: str) -> dict:
 
 @mcp.tool()
 async def get_run_info(cluster: str, run_hash: str) -> dict:
-    """Get detailed run info by run_hash: provenance, batch script, scontrol, env vars, conda state, and associated jobs."""
+    """Full run record: jobs, provenance, params, batch script, scontrol, env, conda, metadata.
+
+    Large fields (batch script, env, metrics) can be huge. For a compact one-shot
+    overview (identity, params, metric names, latest scalars, summaries), use
+    ``audit_run_reproducibility``. For targeted slices, use ``get_run_params``,
+    ``get_run_submit_command``, ``get_run_batch_script``, ``get_run_env_vars``,
+    ``get_run_libraries``, ``query_run_metadata``, and ``query_run_metrics``.
+    """
     return await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
 
 
 @mcp.tool()
 async def get_run_metrics(cluster: str, run_hash: str) -> dict:
-    """Get SDK-tracked run metrics and metadata by run_hash.
+    """Full SDK-tracked metrics for a run: series, latest points, scalars, and metadata.
 
-    Returns Aim-style series metrics (`series`, `latest`) from
-    `Run.track(..., step=...)`, scalar stats (`scalars`, `scalar_latest`) from
-    `Run.scalar(...)` or no-step `Run.track(...)`, and static `metadata`.
-    The UI Metrics tab can build line plots from series and bar charts from
-    scalars.
+    Returns Aim-style ``series`` / ``latest``, ``scalars`` / ``scalar_latest``, and
+    ``metadata``. Payloads can be large; use ``query_run_metrics`` to filter by
+    metric name or mode, or ``audit_run_reproducibility`` for names + latest values
+    before pulling full series.
     """
     return await _api_async("GET", f"/api/run_metrics_by_hash/{cluster}/{run_hash}")
 
@@ -695,6 +710,246 @@ async def get_run_results(cluster: str, run_hash: str, benchmark: Optional[str] 
     if benchmark:
         params["benchmark"] = benchmark
     return await _api_async("GET", f"/api/run_results_by_hash/{cluster}/{run_hash}", query_string=params)
+
+
+async def _mcp_load_run(cluster: str, run_hash: str) -> tuple[Optional[dict], Optional[dict]]:
+    """Return (error_dict, run_dict). ``run_dict`` is None on error."""
+    data = await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
+    if not isinstance(data, dict):
+        return {"status": "error", "error": "non-json run_info response"}, None
+    if data.get("status") != "ok":
+        return data, None
+    run = data.get("run")
+    if not isinstance(run, dict):
+        return {"status": "error", "error": "missing run object"}, None
+    return None, run
+
+
+async def _mcp_load_metrics(cluster: str, run_hash: str) -> tuple[Optional[dict], Optional[dict]]:
+    """Return (error_dict, metrics_payload). Payload matches ``/api/run_metrics_by_hash`` body."""
+    data = await _api_async("GET", f"/api/run_metrics_by_hash/{cluster}/{run_hash}")
+    if not isinstance(data, dict):
+        return {"status": "error", "error": "non-json metrics response"}, None
+    if data.get("status") != "ok":
+        return data, None
+    return None, data
+
+
+@mcp.tool()
+async def get_run_params(cluster: str, run_hash: str) -> dict:
+    """Return SDK pipeline kwargs (model, benchmarks, num_chunks, server_gpus, …) parsed from the run record."""
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    return {"status": "ok", "params": run.get("params") or {}}
+
+
+@mcp.tool()
+async def get_run_submit_command(cluster: str, run_hash: str) -> dict:
+    """Return the captured Slurm submit shell command and submit working directory."""
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    return {
+        "status": "ok",
+        "submit_command": run.get("submit_command") or "",
+        "submit_cwd": run.get("submit_cwd") or "",
+    }
+
+
+@mcp.tool()
+async def get_run_batch_script(
+    cluster: str,
+    run_hash: str,
+    max_chars: int = 256_000,
+    head_lines: Optional[int] = None,
+    tail_lines: Optional[int] = None,
+) -> dict:
+    """Return the Slurm batch script text with optional truncation.
+
+    Use ``head_lines`` + ``tail_lines`` together to keep the prolog and tail while
+    omitting the middle. ``max_chars`` caps the returned string size.
+    """
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    raw = run.get("batch_script") or ""
+    body = truncate_text(
+        raw,
+        max_chars=max_chars,
+        head_lines=head_lines,
+        tail_lines=tail_lines,
+    )
+    return {"status": "ok", "root_job_id": run.get("root_job_id"), **body}
+
+
+@mcp.tool()
+async def get_run_scontrol(cluster: str, run_hash: str, max_chars: int = 120_000) -> dict:
+    """Return raw ``scontrol show job`` text captured for the orchestrator job (truncated)."""
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    raw = run.get("scontrol_raw") or ""
+    body = truncate_text(raw, max_chars=max_chars)
+    return {"status": "ok", **body}
+
+
+@mcp.tool()
+async def get_run_env_vars(
+    cluster: str,
+    run_hash: str,
+    search: Optional[str] = None,
+    keys: Optional[list[str]] = None,
+) -> dict:
+    """Return environment variables captured for the run.
+
+    Pass ``keys`` for exact variable names (e.g. ``["PATH","CUDA_HOME"]``) or
+    ``search`` for a case-insensitive substring match on names or values.
+    """
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    env_raw = run.get("env_vars") or ""
+    parsed = parse_env_vars(env_raw)
+    filtered = filter_env_vars(parsed, search=search, keys=keys)
+    return {
+        "status": "ok",
+        "count": len(filtered),
+        "env": filtered,
+    }
+
+
+@mcp.tool()
+async def get_run_libraries(
+    cluster: str,
+    run_hash: str,
+    search: Optional[str] = None,
+    max_lines: int = 2000,
+) -> dict:
+    """Return conda / pip freeze style library listing captured for the run.
+
+    ``search`` splits on whitespace; every term must appear on a line
+    (case-insensitive), e.g. ``torch cuda`` matches lines containing both.
+    """
+    err, run = await _mcp_load_run(cluster, run_hash)
+    if err is not None:
+        return err
+    raw = run.get("conda_state") or ""
+    block = filter_library_lines(raw, search=search, max_lines=max_lines)
+    return {"status": "ok", **block}
+
+
+@mcp.tool()
+async def query_run_metadata(
+    cluster: str,
+    run_hash: str,
+    key_prefix: Optional[str] = None,
+    query: Optional[str] = None,
+    source: str = "run",
+) -> dict:
+    """Search flattened SDK metadata key/value pairs for a run.
+
+    ``source`` is ``run`` (metadata on the run row from ``get_run_info``) or
+    ``metrics`` (the ``metadata`` map bundled with SDK metrics — same DB field
+    in most cases, but ``metrics`` reads via the metrics endpoint).
+
+    ``key_prefix`` filters dotted keys (e.g. ``judge``). ``query`` matches a
+    substring on dotted keys or JSON-serialised values.
+    """
+    src = (source or "run").strip().lower()
+    if src in ("metrics", "metrics_sdk", "sdk_metrics"):
+        err, payload = await _mcp_load_metrics(cluster, run_hash)
+        if err is not None:
+            return err
+        meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    else:
+        err, run = await _mcp_load_run(cluster, run_hash)
+        if err is not None:
+            return err
+        meta = run.get("metadata") if isinstance(run.get("metadata"), dict) else {}
+    hits = query_metadata(meta, key_prefix=key_prefix, query=query)
+    return {"status": "ok", "source": src, "count": len(hits), "metadata": hits}
+
+
+@mcp.tool()
+async def query_run_metrics(
+    cluster: str,
+    run_hash: str,
+    metric_substring: str = "",
+    kinds: Optional[list[str]] = None,
+    series_mode: str = "full",
+    step_min: Optional[int] = None,
+    step_max: Optional[int] = None,
+    max_points_per_series: int = 500,
+) -> dict:
+    """Filter SDK metrics for a run: series steps, scalars, and/or metadata.
+
+    ``metric_substring`` matches metric names (case-insensitive). Leave empty to
+    include all keys (still subject to ``max_points_per_series``).
+
+    ``kinds`` lists any of ``series``, ``scalars``, ``metadata`` (default: all three).
+
+    ``series_mode``: ``full`` returns up to ``max_points_per_series`` tail points
+    per series (after optional ``step_min`` / ``step_max``); ``last`` returns only
+    the final point per series; ``summary`` returns counts and min/max step per
+    series plus the last point. Scalars honour ``last``/``summary`` as latest-only.
+    """
+    err, payload = await _mcp_load_metrics(cluster, run_hash)
+    if err is not None:
+        return err
+    return filter_metrics_payload(
+        payload,
+        metric_substring=metric_substring,
+        kinds=kinds,
+        series_mode=series_mode,
+        step_min=step_min,
+        step_max=step_max,
+        max_points_per_series=max_points_per_series,
+    )
+
+
+@mcp.tool()
+async def audit_run_reproducibility(
+    cluster: str,
+    run_hash: str,
+    include_full_env: bool = False,
+    include_full_conda: bool = False,
+    batch_script_max_chars: int = 48_000,
+    scontrol_max_chars: int = 24_000,
+    conda_preview_lines: int = 150,
+) -> dict:
+    """Structured run snapshot in one response (identity, launch context, Slurm files, env/libs, metric inventory).
+
+    Fetches run info + SDK metrics once each, then returns: identity (git, launcher,
+    cwd, output dir), ``submit_command`` and parsed ``params``, truncated batch
+    script and ``scontrol``, env key inventory (or full env when ``include_full_env``),
+    conda/pip preview (or more lines when ``include_full_conda``), flattened metadata
+    keys from the run row and metrics bundle, and every SDK metric name with
+    ``scalar_latest`` plus per-series summaries. Useful for audits, debugging, or
+    reproducibility checks; use ``query_run_metrics`` / ``get_run_env_vars`` for
+    deeper pulls. The payload includes ``suggested_follow_ups`` with optional next checks.
+    """
+    err_r, run = await _mcp_load_run(cluster, run_hash)
+    if err_r is not None:
+        return err_r
+    err_m, metrics = await _mcp_load_metrics(cluster, run_hash)
+    if err_m is not None:
+        return err_m
+    snap = build_reproducibility_snapshot(
+        run,
+        metrics,
+        include_full_env=include_full_env,
+        include_full_conda=include_full_conda,
+        batch_script_max_chars=batch_script_max_chars,
+        scontrol_max_chars=scontrol_max_chars,
+        conda_preview_lines=conda_preview_lines,
+    )
+    snap["cluster"] = cluster
+    snap["run_hash"] = run_hash
+    cc = snap.get("cluster_context")
+    if isinstance(cc, dict) and not (cc.get("run_hash") or "").strip():
+        cc["run_hash"] = run_hash
+    return snap
 
 
 @mcp.tool()
@@ -1298,17 +1553,35 @@ async def find_logbook_entries(
 
 
 @mcp.tool()
-async def create_logbook_entry(project: str, title: str, body: str = "", entry_type: str = "note", campaign: Optional[str] = None) -> dict:
+async def create_logbook_entry(
+    project: str,
+    title: str,
+    body: str = "",
+    entry_type: str = "note",
+    campaign: Optional[str] = None,
+    board_json: Optional[Any] = None,
+    campaign_goal: Optional[str] = None,
+) -> dict:
     """Create a new logbook entry. Supports markdown, #N cross-refs, @run-name refs, images.
 
     See the project-logbook workspace rule for full formatting guidelines.
-    entry_type: "note" (results/findings) or "plan" (plans/designs).
+    entry_type: "note" (results/findings), "plan" (plans/designs), or
+        "campaign_board" (singleton per project+campaign; requires ``campaign``
+        and optionally ``board_json`` / ``campaign_goal``).
     campaign: Optional campaign name. Auto-detected from a [campaign] title
         prefix when omitted (the prefix is stripped from the stored title).
+    board_json: Optional dict or JSON string; only used for ``entry_type`` =
+        ``"campaign_board"`` (validated server-side).
+    campaign_goal: Short plain-text description of the campaign's goal; only
+        for ``campaign_board``.
     """
     payload = {"title": title, "body": body, "entry_type": entry_type}
     if campaign is not None:
         payload["campaign"] = campaign
+    if board_json is not None:
+        payload["board_json"] = board_json
+    if campaign_goal is not None:
+        payload["campaign_goal"] = campaign_goal
     return await _api_async("POST", f"/api/logbook/{project}/entries", json=payload)
 
 
@@ -1322,6 +1595,8 @@ async def update_logbook_entry(
     pinned: Optional[bool] = None,
     new_project: Optional[str] = None,
     campaign: Optional[str] = None,
+    board_json: Optional[Any] = None,
+    campaign_goal: Optional[str] = None,
 ) -> dict:
     """Update any subset of a logbook entry's mutable attributes. Bumps edited_at.
 
@@ -1330,13 +1605,15 @@ async def update_logbook_entry(
         entry_id: Globally unique entry id.
         title: New title string.
         body: New markdown body. Re-parses #N references and rebuilds the link table.
-        entry_type: "note" or "plan". Invalid values are silently ignored.
+        entry_type: "note", "plan", or "campaign_board". Invalid values are silently ignored.
         pinned: True to pin, False to unpin. Pinned entries sort to the top
             of list_logbook_entries.
         new_project: Move the entry to a different project. Entry IDs are
             globally unique so cross-project #N references keep working.
             Pass the bare project name (e.g. "hle"), not a URL.
         campaign: Campaign name (lowercase). Pass "" to clear.
+        board_json: For ``campaign_board`` entries only: dict or JSON string.
+        campaign_goal: For ``campaign_board`` only: short plain-text goal.
 
     All fields except project/entry_id are optional; pass only the ones you
     want to change. Returns {"status": "ok", "id", "edited_at", "project"?}.
@@ -1354,6 +1631,10 @@ async def update_logbook_entry(
         payload["new_project"] = new_project
     if campaign is not None:
         payload["campaign"] = campaign
+    if board_json is not None:
+        payload["board_json"] = board_json
+    if campaign_goal is not None:
+        payload["campaign_goal"] = campaign_goal
     return await _api_async("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
 
 
@@ -1361,6 +1642,89 @@ async def update_logbook_entry(
 async def delete_logbook_entry(project: str, entry_id: int) -> dict:
     """Delete a logbook entry. Destructive."""
     return await _api_async("DELETE", f"/api/logbook/{project}/entries/{entry_id}")
+
+
+@mcp.tool()
+async def get_campaign_board(project: str, campaign: str) -> dict:
+    """Read the canonical **campaign board** for ``project`` + ``campaign``.
+
+    This is the north-star summary for multi-run experiment matrices (structured
+    tables + setup markdown). **Call this first** before summarizing campaign
+    results or editing the board. Returns full entry (``body``, ``board_json``,
+    ``campaign_goal``, ``entry_type``, ``edited_at``, …) or ``{"status": "not_found", ...}`` if none
+    exists yet.
+    """
+    camp = (campaign or "").strip().lower()
+    return await _api_async("GET", f"/api/logbook/{project}/campaign_board", query_string={"campaign": camp})
+
+
+@mcp.tool()
+async def list_campaign_boards(project: str) -> list[dict]:
+    """List every campaign that has a **campaign board** in this project.
+
+    Returns ``[{"campaign", "entry_id", "title", "edited_at"}, ...]`` sorted by
+    ``edited_at`` descending (most recently updated boards first). Use to discover
+    boards before ``get_campaign_board``.
+    """
+    data = await _api_async("GET", f"/api/logbook/{project}/campaign_boards")
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def create_campaign_board(
+    project: str,
+    campaign: str,
+    title: str = "",
+    body: str = "",
+    board_json: Optional[Any] = None,
+    campaign_goal: str = "",
+) -> dict:
+    """Create the singleton campaign board for ``project`` + ``campaign``.
+
+    High-impact: this is the team's canonical results surface. Fails with
+    ``existing_id`` if a board already exists — use ``get_campaign_board`` then
+    ``update_campaign_board`` instead. Prefer **minimal** initial ``board_json``;
+    expand after reading current metrics. Optional ``campaign_goal`` is a short
+    plain-text description of what this campaign is trying to achieve.
+    """
+    payload: dict = {"campaign": (campaign or "").strip().lower()}
+    if title:
+        payload["title"] = title.strip()
+    if body is not None:
+        payload["body"] = body.strip()
+    if board_json is not None:
+        payload["board_json"] = board_json
+    if campaign_goal:
+        payload["campaign_goal"] = campaign_goal.strip()
+    return await _api_async("POST", f"/api/logbook/{project}/campaign_board", json=payload)
+
+
+@mcp.tool()
+async def update_campaign_board(
+    project: str,
+    campaign: str,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    board_json: Optional[Any] = None,
+    campaign_goal: Optional[str] = None,
+) -> dict:
+    """Update the campaign board for ``project`` + ``campaign``.
+
+    **Read before write:** call ``get_campaign_board`` immediately before editing.
+    Apply **small, intentional** diffs to ``board_json`` — never replace the
+    entire structure blindly. Only fields you pass are updated (``None`` skips).
+    Pass ``campaign_goal`` to update the short prose description of the campaign's goal.
+    """
+    payload: dict = {"campaign": (campaign or "").strip().lower()}
+    if title is not None:
+        payload["title"] = title.strip()
+    if body is not None:
+        payload["body"] = body.strip()
+    if board_json is not None:
+        payload["board_json"] = board_json
+    if campaign_goal is not None:
+        payload["campaign_goal"] = campaign_goal
+    return await _api_async("PUT", f"/api/logbook/{project}/campaign_board", json=payload)
 
 
 @mcp.tool()

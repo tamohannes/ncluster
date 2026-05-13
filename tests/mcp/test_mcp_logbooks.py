@@ -12,6 +12,8 @@ from unittest.mock import patch
 from mcp_server import (
     list_logbook_entries, read_logbook_entry, create_logbook_entry,
     update_logbook_entry, delete_logbook_entry,
+    get_campaign_board, list_campaign_boards, create_campaign_board,
+    update_campaign_board,
 )
 
 
@@ -134,3 +136,51 @@ class TestDeleteLogbookEntry:
         with patch("mcp_server._api", return_value={"status": "ok"}) as mock:
             await delete_logbook_entry("alpha", 42)
         mock.assert_called_once_with("DELETE", "/api/logbook/alpha/entries/42")
+
+
+@pytest.mark.mcp
+class TestCampaignBoardTools:
+    async def test_get_campaign_board(self):
+        payload = {"id": 9, "entry_type": "campaign_board", "campaign": "mpsf"}
+        with patch("mcp_server._api", return_value=payload) as mock:
+            result = await get_campaign_board("hle", "mpsf")
+        assert result["id"] == 9
+        mock.assert_called_once()
+        args, kwargs = mock.call_args
+        assert args[0] == "GET"
+        assert args[1] == "/api/logbook/hle/campaign_board"
+        assert kwargs["query_string"]["campaign"] == "mpsf"
+
+    async def test_list_campaign_boards(self):
+        rows = [{"campaign": "mpsf", "entry_id": 9, "title": "Board", "edited_at": "x"}]
+        with patch("mcp_server._api", return_value=rows) as mock:
+            result = await list_campaign_boards("hle")
+        assert result == rows
+        mock.assert_called_once_with("GET", "/api/logbook/hle/campaign_boards")
+
+    async def test_create_campaign_board(self):
+        resp = {"status": "ok", "id": 1}
+        board = {"version": 1, "sections": []}
+        with patch("mcp_server._api", return_value=resp) as mock:
+            result = await create_campaign_board(
+                "hle", "mpsf", title="T", body="B", board_json=board, campaign_goal="Beat baseline."
+            )
+        assert result["status"] == "ok"
+        _, kwargs = mock.call_args
+        assert kwargs["json"]["campaign"] == "mpsf"
+        assert kwargs["json"]["title"] == "T"
+        assert kwargs["json"]["body"] == "B"
+        assert kwargs["json"]["board_json"] == board
+        assert kwargs["json"]["campaign_goal"] == "Beat baseline."
+
+    async def test_update_campaign_board(self):
+        resp = {"status": "ok", "id": 1}
+        with patch("mcp_server._api", return_value=resp) as mock:
+            result = await update_campaign_board("hle", "mpsf", body="new", campaign_goal="g")
+        assert result["status"] == "ok"
+        args, kwargs = mock.call_args
+        assert args[0] == "PUT"
+        assert args[1] == "/api/logbook/hle/campaign_board"
+        assert kwargs["json"]["campaign"] == "mpsf"
+        assert kwargs["json"]["body"] == "new"
+        assert kwargs["json"]["campaign_goal"] == "g"
