@@ -1328,14 +1328,31 @@ repin_recent_terminal_jobs = cleanup_local_on_startup
 # ─── Run CRUD ────────────────────────────────────────────────────────────────
 
 def upsert_run(cluster, root_job_id, run_name="", project=""):
-    """Create or return existing run. Returns the run id.
+    """Create or return existing run. Returns the run id, or ``None`` when
+    legacy-row creation is disabled and no matching SDK run can be found.
 
-    Legacy (non-SDK) submissions still land here when the poller discovers
-    Slurm jobs without a matching SDK orchestrator. The Clausius SDK is the
-    default submission path going forward, so every legacy row creation is
-    logged once as a warning so users can spot non-SDK submissions and
-    migrate them (set ``CLAUSIUS_URL`` and run ``tools/integrate-sdk.sh``).
+    Legacy fetching is **disabled by default** going forward: every
+    submission is expected to come through the Clausius SDK, which creates
+    its own ``source='sdk'`` row. The Slurm poller then attaches the
+    discovered jobs to that SDK row via this function.
+
+    Three cases:
+
+    1. **Existing row at (cluster, root_job_id)** — return its id, refresh
+       run_name/project where empty.
+    2. **No row at (cluster, root_job_id), but an SDK row matches by name**
+       — *claim* the SDK row: rewrite its synthetic identifier so the row
+       lives on the real Slurm cluster. Subsequent polls just hit case 1.
+    3. **No match at all** — return ``None`` so the caller skips writing
+       Slurm metadata for an untracked job.
+
+    Set the environment variable ``CLAUSIUS_ALLOW_LEGACY_RUNS=1`` to
+    re-enable the historical behavior (insert a fresh ``source='legacy'``
+    row when no SDK match is found).
     """
+    import os as _os
+    allow_legacy = (_os.environ.get("CLAUSIUS_ALLOW_LEGACY_RUNS", "") or "").lower() in ("1", "true", "yes")
+
     with db_write() as con:
         row = con.execute(
             "SELECT id FROM runs WHERE cluster=? AND root_job_id=?",
@@ -1349,22 +1366,54 @@ def upsert_run(cluster, root_job_id, run_name="", project=""):
                     "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
                     (run_name, project, run_id),
                 )
-        else:
-            sdk_run = _find_sdk_run_for_name(con, cluster, run_name) if run_name else None
-            if sdk_run:
-                run_id = sdk_run["id"]
+            return run_id
+
+        # Case 2/3: try to find a matching SDK row, including across
+        # synthetic cluster aliases (e.g. SDK runs the user configured as
+        # 'aws-cmh-science' while Slurm reports the job on 'aws-cmh').
+        sdk_run = _find_sdk_run_for_name(con, cluster, run_name) if run_name else None
+        if sdk_run:
+            run_id = sdk_run["id"]
+            sdk_root = sdk_run["root_job_id"] or ""
+            sdk_cluster = sdk_run["cluster"] or ""
+            looks_synthetic = sdk_root.startswith("sdk-") or sdk_cluster != cluster
+            if looks_synthetic:
+                # Claim the SDK row onto the real Slurm identifier so future
+                # polls (case 1) match directly on (cluster, root_job_id).
+                try:
+                    con.execute(
+                        "UPDATE runs SET cluster=?, root_job_id=?, "
+                        "run_name=COALESCE(NULLIF(?,''), run_name), "
+                        "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
+                        (cluster, root_job_id, run_name, project, run_id),
+                    )
+                except sqlite3.IntegrityError:
+                    # Another row already holds (cluster, root_job_id).
+                    # Fall back to just touching the SDK row's name/project.
+                    con.execute(
+                        "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
+                        "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
+                        (run_name, project, run_id),
+                    )
+            else:
                 con.execute(
                     "UPDATE runs SET run_name=COALESCE(NULLIF(?,''), run_name), "
                     "project=COALESCE(NULLIF(?,''), project) WHERE id=?",
                     (run_name, project, run_id),
                 )
-            else:
-                cur = con.execute(
-                    "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
-                    (cluster, root_job_id, run_name, project),
-                )
-                run_id = cur.lastrowid
-                _warn_legacy_run_created(cluster, root_job_id, run_name)
+            return run_id
+
+        if not allow_legacy:
+            # Legacy fetching disabled. Don't materialize a row for a job
+            # that has no SDK orchestrator.
+            return None
+
+        cur = con.execute(
+            "INSERT INTO runs (cluster, root_job_id, run_name, project) VALUES (?,?,?,?)",
+            (cluster, root_job_id, run_name, project),
+        )
+        run_id = cur.lastrowid
+        _warn_legacy_run_created(cluster, root_job_id, run_name)
         return run_id
 
 
@@ -1397,20 +1446,33 @@ def _warn_legacy_run_created(cluster, root_job_id, run_name):
 
 
 def _find_sdk_run_for_name(con, cluster, run_name):
-    """Check if an SDK run exists that matches a legacy run's name.
+    """Find the SDK run that this Slurm poll should attach to.
 
-    The SDK expname (e.g. 'hle_test_eval-gpqa4') often appears as a
-    substring in the legacy run_name (e.g. 'profiling_hle_test_eval-gpqa4-gpqa')
-    because the poller appends benchmark/job suffixes and the cluster config
-    adds a job_name_prefix. Try exact, LIKE-substring, and reverse-substring.
+    The SDK expname (e.g. ``hle_test_eval-gpqa4``) often appears as a
+    substring in the Slurm-side run_name (e.g.
+    ``profiling_hle_test_eval-gpqa4-gpqa``) because the poller appends
+    benchmark/job suffixes and the cluster config adds a job_name_prefix.
+
+    We search across **all** clusters (same cluster first, then any
+    cluster) because the SDK is typically configured with a synthetic
+    cluster name like ``aws-cmh-science`` while the real Slurm job lands
+    on ``aws-cmh``. Falling back to cross-cluster matching is what makes
+    "disable legacy fetching" actually work — the dedup logic catches the
+    cross-cluster case and avoids the duplicate row.
+
+    We also no longer filter out ``sdk_status='completed'`` rows so the
+    poller can still attach late-arriving Slurm metadata to a run the SDK
+    already marked finished.
     """
     if not run_name:
         return None
 
-    sdk_filter = "source='sdk' AND sdk_status NOT IN ('completed', 'failed')"
+    sdk_filter = "source='sdk'"
+    select = "SELECT id, run_name, cluster, root_job_id"
 
+    # Same-cluster exact match → strongest signal.
     row = con.execute(
-        f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND run_name=? LIMIT 1",
+        f"{select} FROM runs WHERE cluster=? AND {sdk_filter} AND run_name=? LIMIT 1",
         (cluster, run_name),
     ).fetchone()
     if row:
@@ -1421,18 +1483,44 @@ def _find_sdk_run_for_name(con, cluster, run_name):
     if len(parts) == 2:
         candidates.append(parts[1])
 
+    # Same-cluster substring match.
     for name in candidates:
+        for direction in (f"%{name}%",):
+            row = con.execute(
+                f"{select} FROM runs WHERE cluster=? AND {sdk_filter} AND run_name LIKE ? "
+                "ORDER BY id DESC LIMIT 1",
+                (cluster, direction),
+            ).fetchone()
+            if row:
+                return row
         row = con.execute(
-            f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND run_name LIKE ? ORDER BY id DESC LIMIT 1",
-            (cluster, f"%{name}%"),
+            f"{select} FROM runs WHERE cluster=? AND {sdk_filter} AND ? LIKE '%' || run_name || '%' "
+            "ORDER BY id DESC LIMIT 1",
+            (cluster, name),
         ).fetchone()
         if row:
             return row
 
+    # Cross-cluster exact match — typical SDK shadow case.
+    row = con.execute(
+        f"{select} FROM runs WHERE {sdk_filter} AND run_name=? ORDER BY id DESC LIMIT 1",
+        (run_name,),
+    ).fetchone()
+    if row:
+        return row
+
+    # Cross-cluster substring match. Be conservative: bidirectional
+    # substring on the candidate forms.
     for name in candidates:
         row = con.execute(
-            f"SELECT id, run_name FROM runs WHERE cluster=? AND {sdk_filter} AND ? LIKE '%' || run_name || '%' ORDER BY id DESC LIMIT 1",
-            (cluster, name),
+            f"{select} FROM runs WHERE {sdk_filter} AND run_name LIKE ? ORDER BY id DESC LIMIT 1",
+            (f"%{name}%",),
+        ).fetchone()
+        if row:
+            return row
+        row = con.execute(
+            f"{select} FROM runs WHERE {sdk_filter} AND ? LIKE '%' || run_name || '%' ORDER BY id DESC LIMIT 1",
+            (name,),
         ).fetchone()
         if row:
             return row
@@ -1596,6 +1684,67 @@ def _find_resume_canonical_run(con, run_uuid, cluster, expname, output_dir):
            LIMIT 1""",
         (cluster, run_uuid, expname, output_dir),
     ).fetchone()
+
+
+def find_sdk_run_uuid_by_output_dir(output_dir, run_name="", cluster=""):
+    """SDK-side resume lookup: return the canonical run_uuid that already
+    covers this submission's ``output_dir``, or ``None`` if no SDK run exists.
+
+    The SDK calls this from ``ClausiusSession.start_from_cli`` *before*
+    minting a fresh uuid, so a repeat submission of the same expname (e.g.
+    ``ns eval ++skip_filled=True`` resume) attaches to the existing run row
+    instead of creating a duplicate.
+
+    The strongest signal is ``primary_output_dir``: the fresh-run-IDs
+    protocol (see job-naming rule) guarantees two fresh runs use distinct
+    output_dirs, so a matching output_dir means "this is the same logical
+    experiment".  ``run_name`` and ``cluster`` are used only as
+    disambiguating tiebreaks when multiple SDK runs share an output_dir
+    (which shouldn't happen but is cheap to guard against).
+    """
+    od = _norm_output_dir(output_dir)
+    if not od:
+        return None
+    con = get_db()
+    try:
+        # Same cluster + run_name + output_dir → strongest match
+        if cluster and run_name:
+            row = con.execute(
+                """SELECT run_uuid FROM runs
+                   WHERE source='sdk' AND run_uuid != ''
+                     AND cluster=? AND run_name=?
+                     AND rtrim(primary_output_dir, '/') = ?
+                   ORDER BY id DESC LIMIT 1""",
+                (cluster, run_name, od),
+            ).fetchone()
+            if row:
+                return resolve_run_uuid(row["run_uuid"], con=con)
+        # Same run_name + output_dir (cluster drift, e.g. aws-cmh-science vs aws-cmh)
+        if run_name:
+            row = con.execute(
+                """SELECT run_uuid FROM runs
+                   WHERE source='sdk' AND run_uuid != ''
+                     AND run_name=?
+                     AND rtrim(primary_output_dir, '/') = ?
+                   ORDER BY id DESC LIMIT 1""",
+                (run_name, od),
+            ).fetchone()
+            if row:
+                return resolve_run_uuid(row["run_uuid"], con=con)
+        # Same output_dir only — catches the "user changed expname between
+        # submissions" case where the directory is the canonical identifier.
+        row = con.execute(
+            """SELECT run_uuid FROM runs
+               WHERE source='sdk' AND run_uuid != ''
+                 AND rtrim(primary_output_dir, '/') = ?
+               ORDER BY id DESC LIMIT 1""",
+            (od,),
+        ).fetchone()
+        if row:
+            return resolve_run_uuid(row["run_uuid"], con=con)
+        return None
+    finally:
+        con.close()
 
 
 def get_run_uuid_family(run_uuid):

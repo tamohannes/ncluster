@@ -724,6 +724,11 @@ def _detect_and_register_runs(cluster, jobs):
             canonical_root_job_id = existing_run_roots.get(canonical_run_id, root_job_id)
 
         run_id = upsert_run(cluster, canonical_root_job_id, run_name, project)
+        # Legacy fetching is disabled by default: a None means there's no
+        # SDK run for this job and we shouldn't materialize a row. Skip the
+        # rest of the per-run bookkeeping.
+        if run_id is None:
+            continue
         associate_jobs_to_run(cluster, run_id, job_ids)
 
         started = min(
@@ -947,6 +952,10 @@ def create_run_on_demand(cluster, root_job_id):
     gk, actual_root, job_ids = target_group
 
     run_id = upsert_run(cluster, actual_root, gk, project)
+    # When legacy fetching is disabled (the default) and there's no SDK
+    # run to attach to, skip the rest — there's no row to write into.
+    if run_id is None:
+        return actual_root
     associate_jobs_to_run(cluster, run_id, job_ids)
 
     started = root_job.get("started") or root_job.get("submitted")

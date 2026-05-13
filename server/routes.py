@@ -69,6 +69,7 @@ from .db import (
     resolve_run_hash_prefix,
     list_metrics_views, get_metrics_view, create_metrics_view,
     update_metrics_view, delete_metrics_view,
+    find_sdk_run_uuid_by_output_dir,
 )
 from .board import build_board_snapshot, build_cluster_board_entry, _fill_output_dirs
 
@@ -1535,6 +1536,12 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
 
     run["malfunctioned"] = bool(int(run.get("malfunctioned") or 0))
 
+    from .resubmit import eligibility as _resubmit_eligibility
+    _can_resubmit, _resubmit_reason = _resubmit_eligibility(run)
+    run["can_resubmit"] = _can_resubmit
+    if not _can_resubmit:
+        run["resubmit_blocked_reason"] = _resubmit_reason
+
     return jsonify({"status": "ok", "run": run})
 
 
@@ -2008,6 +2015,216 @@ def api_resolve_run_hash(run_hash):
     return jsonify({"status": "error", "error": "Run not found", "matches": []}), 404
 
 
+@api.route("/api/runs_by_name")
+def api_runs_by_name():
+    """Find runs by run_name substring/prefix/suffix.
+
+    Used by the Metrics Explorer to auto-discover runs from an AimQL query
+    like ``run.name.contains("mcp_mcpv2lt")`` so users don't have to add
+    each run by hash.
+
+    Query params:
+      - ``q``: search term (required, min 2 chars)
+      - ``mode``: ``contains`` (default) | ``startswith`` | ``endswith`` | ``equals``
+      - ``limit``: max results to return (default 50, max 200)
+      - ``has_metrics``: ``1`` to restrict to runs that have at least one
+        SDK metric or scalar logged (default off)
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q or len(q) < 2:
+        return jsonify({"status": "ok", "runs": [], "total": 0})
+    mode = (request.args.get("mode") or "contains").lower()
+    if mode not in ("contains", "startswith", "endswith", "equals"):
+        mode = "contains"
+    try:
+        limit = max(1, min(200, int(request.args.get("limit") or 50)))
+    except ValueError:
+        limit = 50
+    has_metrics = (request.args.get("has_metrics") or "").lower() in ("1", "true", "yes")
+
+    if mode == "startswith":
+        like = f"{q}%"
+    elif mode == "endswith":
+        like = f"%{q}"
+    elif mode == "equals":
+        like = q
+    else:
+        like = f"%{q}%"
+
+    con = get_db()
+    try:
+        sql = """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
+                        r.project, r.sdk_status, r.started_at, r.created_at
+                 FROM runs r
+                 WHERE r.run_name LIKE ? COLLATE NOCASE"""
+        params = [like]
+        if has_metrics:
+            sql += """ AND (
+                EXISTS (SELECT 1 FROM run_metrics m WHERE m.run_uuid = r.run_uuid LIMIT 1)
+                OR EXISTS (SELECT 1 FROM run_scalars s WHERE s.run_uuid = r.run_uuid LIMIT 1)
+            )"""
+        sql += " ORDER BY COALESCE(r.started_at, r.created_at, '') DESC LIMIT ?"
+        params.append(limit)
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+    runs = []
+    for r in rows:
+        run_hash = get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"])
+        if not run_hash:
+            continue
+        runs.append({
+            "cluster": r["cluster"],
+            "run_hash": run_hash,
+            "run_name": r["run_name"] or "",
+            "project": r["project"] or "",
+            "sdk_status": r["sdk_status"] or "",
+            "started_at": r["started_at"] or "",
+        })
+    return jsonify({"status": "ok", "runs": runs, "total": len(runs), "mode": mode})
+
+
+@api.route("/api/sdk/resolve_run")
+def api_sdk_resolve_run():
+    """SDK resume-aware lookup. Called by the Clausius SDK's
+    ``ClausiusSession.start_from_cli`` *before* it mints a fresh uuid so a
+    repeat submission of the same expname (``ns eval ++skip_filled=True``
+    resume, cluster-name drift, etc.) attaches to the existing run row
+    instead of creating a duplicate.
+
+    Query params:
+      - ``output_dir`` (required): the run's primary_output_dir. This is the
+        canonical experiment identifier — fresh-run-IDs ensure distinct
+        output_dirs for distinct experiments.
+      - ``run_name`` (optional): expname hint for disambiguation.
+      - ``cluster`` (optional): cluster hint for disambiguation.
+
+    Returns:
+      - ``{"status": "ok", "exists": true,  "run_uuid": "<canonical>"}`` on match
+      - ``{"status": "ok", "exists": false}`` when no SDK run covers this dir
+    """
+    output_dir = (request.args.get("output_dir") or "").strip()
+    run_name = (request.args.get("run_name") or "").strip()
+    cluster = (request.args.get("cluster") or "").strip()
+    if not output_dir:
+        return jsonify({"status": "ok", "exists": False})
+    uuid = find_sdk_run_uuid_by_output_dir(output_dir, run_name=run_name, cluster=cluster)
+    if uuid:
+        return jsonify({"status": "ok", "exists": True, "run_uuid": uuid})
+    return jsonify({"status": "ok", "exists": False})
+
+
+# Catalog of (path → distinct values) used by the AimQL autocomplete to
+# suggest values for `metric.name`, `metric.context.<k>`, `run.cluster`,
+# `run.project`, `run.hparams.<k>`, etc. Results are sampled to stay fast
+# even on large databases.
+_METRIC_FIELD_VALUE_LIMIT = 200
+_METRIC_FIELD_VALUE_SAMPLE = 10000
+
+
+@api.route("/api/metric_field_values")
+def api_metric_field_values():
+    path = (request.args.get("path") or "").strip()
+    q = (request.args.get("q") or "").strip().lower()
+    try:
+        limit = max(1, min(_METRIC_FIELD_VALUE_LIMIT, int(request.args.get("limit") or 100)))
+    except ValueError:
+        limit = 100
+    if not path:
+        return jsonify({"status": "ok", "path": path, "values": []})
+
+    con = get_db()
+    values = []
+    try:
+        if path in ("metric.name", "metric.key"):
+            rows = con.execute("""
+                SELECT key FROM (
+                    SELECT DISTINCT key FROM run_metrics
+                    UNION
+                    SELECT DISTINCT key FROM run_scalars
+                ) ORDER BY key
+            """).fetchall()
+            values = [r["key"] for r in rows]
+        elif path == "metric.kind":
+            values = ["series", "scalar"]
+        elif path == "run.cluster":
+            rows = con.execute(
+                "SELECT DISTINCT cluster FROM runs WHERE cluster IS NOT NULL AND cluster != '' ORDER BY cluster"
+            ).fetchall()
+            values = [r["cluster"] for r in rows]
+        elif path == "run.project":
+            rows = con.execute(
+                "SELECT DISTINCT project FROM runs WHERE project IS NOT NULL AND project != '' ORDER BY project"
+            ).fetchall()
+            values = [r["project"] for r in rows]
+        elif path.startswith("metric.context."):
+            ctx_key = path[len("metric.context."):]
+            if not re.fullmatch(r"[A-Za-z0-9_\-]+", ctx_key):
+                return jsonify({"status": "ok", "path": path, "values": []})
+            # Sample distinct context values from both series and scalars.
+            json_path = f"$.{ctx_key}"
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT json_extract(context_json, ?) AS v
+                FROM (
+                    SELECT context_json FROM run_metrics
+                    WHERE context_json IS NOT NULL AND context_json != '' AND context_json != '{{}}'
+                    LIMIT ?
+                )
+                WHERE v IS NOT NULL
+                UNION
+                SELECT DISTINCT json_extract(context_json, ?) AS v
+                FROM (
+                    SELECT context_json FROM run_scalars
+                    WHERE context_json IS NOT NULL AND context_json != '' AND context_json != '{{}}'
+                    LIMIT ?
+                )
+                WHERE v IS NOT NULL
+                ORDER BY v
+                """,
+                (json_path, _METRIC_FIELD_VALUE_SAMPLE, json_path, _METRIC_FIELD_VALUE_SAMPLE),
+            ).fetchall()
+            values = sorted({str(r["v"]) for r in rows if r["v"] is not None})
+        elif path.startswith("run.hparams."):
+            hp_key = path[len("run.hparams."):]
+            if not re.fullmatch(r"[A-Za-z0-9_\-]+", hp_key):
+                return jsonify({"status": "ok", "path": path, "values": []})
+            json_path = f"$.{hp_key}"
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT json_extract(params_json, ?) AS v
+                FROM runs
+                WHERE params_json IS NOT NULL AND params_json != ''
+                LIMIT ?
+                """,
+                (json_path, _METRIC_FIELD_VALUE_SAMPLE),
+            ).fetchall()
+            values = sorted({str(r["v"]) for r in rows if r["v"] is not None})
+        elif path.startswith("run.") and "." not in path[4:]:
+            # Top-level metadata key on the runs row, e.g. run.model
+            meta_key = path[4:]
+            if not re.fullmatch(r"[A-Za-z0-9_\-]+", meta_key):
+                return jsonify({"status": "ok", "path": path, "values": []})
+            json_path = f"$.{meta_key}"
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT json_extract(metadata_json, ?) AS v
+                FROM runs
+                WHERE metadata_json IS NOT NULL AND metadata_json != ''
+                LIMIT ?
+                """,
+                (json_path, _METRIC_FIELD_VALUE_SAMPLE),
+            ).fetchall()
+            values = sorted({str(r["v"]) for r in rows if r["v"] is not None})
+    finally:
+        con.close()
+
+    if q:
+        values = [v for v in values if q in v.lower()]
+    return jsonify({"status": "ok", "path": path, "values": values[:limit], "total": len(values)})
+
+
 @api.route("/api/metrics_views")
 def api_metrics_views_list():
     views = []
@@ -2097,6 +2314,54 @@ def api_retry_run_meta(cluster, root_job_id):
         db.execute("UPDATE runs SET meta_fetched=0 WHERE cluster=? AND root_job_id=?", (cluster, str(root_job_id)))
     _capture_run_metadata(cluster, str(root_job_id), run["id"])
     return api_run_info(cluster, root_job_id)
+
+
+@api.route("/api/resubmit_by_hash/<cluster>/<run_hash>", methods=["POST"])
+def api_resubmit_by_hash(cluster, run_hash):
+    """Re-execute the captured ``submit_command`` for an SDK-tracked run.
+
+    Eligibility: ``source='sdk'``, non-empty ``submit_command``, and no
+    job in ``RUNNING/COMPLETING/PENDING/SUBMITTING``. On success the
+    captured command is spawned as a detached ``bash -c`` child whose
+    stdout/stderr stream into ``data/resubmit_logs/<run_uuid>__<ts>.log``.
+    """
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run = _load_run_by_ref(cluster, run_hash, allow_on_demand=False)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+    run["run_hash"] = run.get("run_hash") or get_run_hash(
+        cluster, run.get("root_job_id", ""), run.get("run_uuid", "")
+    )
+    from .resubmit import eligibility as _resubmit_eligibility, spawn as _resubmit_spawn
+    can, reason = _resubmit_eligibility(run)
+    if not can:
+        return jsonify({"status": "error", "error": reason}), 400
+    try:
+        info = _resubmit_spawn(run)
+    except Exception as exc:
+        _log.exception("resubmit %s/%s failed", cluster, run_hash)
+        return jsonify({"status": "error", "error": str(exc)}), 500
+    return jsonify({
+        "status": "ok",
+        "pid": info["pid"],
+        "log_name": info["log_name"],
+        "log_url": info["log_url"],
+        "had_conda_prefix": info["had_conda_prefix"],
+    })
+
+
+@api.route("/api/resubmit_log/<filename>")
+def api_resubmit_log(filename):
+    """Serve a resubmit log file as plain text (capped at 1 MB)."""
+    from .resubmit import read_log as _resubmit_read_log
+    ok, content, status = _resubmit_read_log(filename)
+    if not ok:
+        return jsonify({"status": "error", "error": content}), status
+    resp = make_response(content, status)
+    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @api.route("/api/run/<int:run_id>", methods=["PATCH"])
