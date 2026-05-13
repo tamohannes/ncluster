@@ -312,13 +312,34 @@ class ClausiusSession:
         config_overrides: dict | None = None,
         params: dict | None = None,
     ) -> ClausiusSession:
-        """Create or return the global session, capturing launch provenance."""
+        """Create or return the global session, capturing launch provenance.
+
+        Resume-aware: before minting a fresh uuid we ask the Clausius server
+        whether an existing SDK run already covers this submission's
+        ``output_dir`` (e.g. a previous ``ns eval ++skip_filled=True`` of the
+        same expname). On match we attach to the existing run so all
+        downstream events (job_prepared, job_submitted, metric_logged, …)
+        merge into the canonical row instead of spawning a duplicate.
+        """
         with cls._instance_lock:
             if cls._instance is not None and cls._instance.active:
                 return cls._instance
 
+        existing_uuid = _resolve_existing_run_uuid(output_dir, expname, cluster)
+
         transports = _build_transports(output_dir)
-        session = cls(transports)
+        if existing_uuid:
+            session = cls(
+                transports,
+                run_uuid=existing_uuid,
+                seq_start=int(time.time() * 1_000_000) + (os.getpid() % 1000),
+            )
+            # The canonical run is owned by its original launcher; suppress
+            # the atexit "submit_failed" emit so a flaky resubmission can't
+            # clobber the existing sdk_status.
+            session._finished = True
+        else:
+            session = cls(transports)
         cls._instance = session
 
         full_command = " ".join(sys.argv)
@@ -338,6 +359,9 @@ class ClausiusSession:
             env_vars_set=_detect_env_vars_set(),
             params=_sanitize_params(params or {}),
         )
+        # `run_started` is idempotent server-side: when the row exists the
+        # server falls through to an UPDATE, so resubmissions refresh
+        # submit_command / params / git_commit without minting a new row.
         session.emit_run_started(provenance)
         return session
 
@@ -353,6 +377,56 @@ class ClausiusSession:
             if cls._instance is not None:
                 cls._instance._shutdown()
             cls._instance = None
+
+
+def _resolve_existing_run_uuid(
+    output_dir: str,
+    run_name: str = "",
+    cluster: str = "",
+    timeout_sec: float = 2.5,
+) -> str | None:
+    """Ask the Clausius server whether an existing SDK run already covers
+    this submission's ``output_dir``. Returns the canonical run_uuid on
+    match, ``None`` otherwise (including any error path).
+
+    This is the SDK-side half of the resume-aware dedup contract. The
+    fresh-run-IDs protocol guarantees that two *fresh* experiments use
+    distinct output_dirs, so a match means "this is a resume" — typically
+    ``ns eval ++skip_filled=True`` with the same expname, or a resubmission
+    after a launcher crash.
+
+    Fails open: timeouts, network errors, or a server-side ``exists=False``
+    all return ``None``, so a stale or unreachable Clausius never blocks
+    NeMo-Skills submissions.
+
+    Stdlib-only — the SDK ships standalone via ``integrate-sdk.sh`` and must
+    not introduce a pip-install dependency for callers.
+    """
+    base = (os.environ.get("CLAUSIUS_URL", "") or "").strip().rstrip("/")
+    if not base or not output_dir:
+        return None
+    try:
+        import json as _json
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+
+        params: dict[str, str] = {"output_dir": output_dir}
+        if run_name:
+            params["run_name"] = run_name
+        if cluster:
+            params["cluster"] = cluster
+        url = f"{base}/api/sdk/resolve_run?{urlencode(params)}"
+        req = Request(url, method="GET")
+        token = (os.environ.get("CLAUSIUS_TOKEN", "") or "").strip()
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urlopen(req, timeout=timeout_sec) as resp:  # nosec: trusted local URL
+            body = _json.loads(resp.read().decode("utf-8") or "{}")
+        if isinstance(body, dict) and body.get("exists") and body.get("run_uuid"):
+            return str(body["run_uuid"])
+    except Exception as exc:
+        LOG.debug("clausius: resolve_run lookup failed: %s", exc)
+    return None
 
 
 def _build_transports(output_dir: str = "") -> list[Transport]:
