@@ -358,8 +358,17 @@ def export_entry_docx(project, entry):
         meta_parts.append(f"Edited {entry['edited_at']}")
     if entry.get("entry_type") == "plan":
         meta_parts.append("PLAN")
+    elif entry.get("entry_type") == "campaign_board":
+        meta_parts.append("CAMPAIGN BOARD")
+        if entry.get("campaign"):
+            meta_parts.append(f"campaign:{entry['campaign']}")
     meta_p = doc.add_paragraph(style="EntryMeta")
     meta_p.add_run(" · ".join(meta_parts))
+
+    cg = (entry.get("campaign_goal") or "").strip()
+    if entry.get("entry_type") == "campaign_board" and cg:
+        doc.add_paragraph(style="Body")
+        doc.add_paragraph(cg, style="Body")
 
     body = entry.get("body", "")
     _render_body(doc, body, project)

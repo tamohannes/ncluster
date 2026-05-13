@@ -30,6 +30,7 @@
 </div>
 <div class="app-shell" id="app-shell">
   <aside class="side-nav" id="side-nav">
+    <div class="side-nav-scroll">
     <div class="nav-tabs-wrap">
       <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')"><span class="nav-tab-icon">⚡</span> Live</button>
       <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','Runs')"><span class="nav-tab-icon">📋</span> Runs</button>
@@ -54,6 +55,7 @@
         <div class="stat-row"><span class="dot" style="background:var(--cyan)"></span><span class="stat-val" id="s-clusters">—</span><span class="stat-lbl">clusters up</span></div>
         <div class="stat-row"><span class="dot" style="background:var(--green)"></span><span class="stat-val" id="s-mounted">—</span><span class="stat-lbl">mounted</span></div>
       </div>
+    </div>
     </div>
     <div class="nav-user-btn" onclick="openSettingsModal()">
       <img class="nav-user-img" src="/api/user_avatar" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
@@ -181,16 +183,13 @@
       </div>
     </div>
 
-    <!-- Logbook view -->
-    <div class="logbook-view" id="logbook-view">
-      <div class="lb-page">
-        <div class="lb-sidebar">
+      <!-- Logbook view -->
+      <div class="logbook-view" id="logbook-view">
+        <div class="lb-topbar" id="lb-topbar"></div>
+        <div class="lb-page">
+          <div class="lb-sidebar">
           <div class="lb-sidebar-head">
             <select id="lb-project-select" onchange="onLogbookProjectChange()"></select>
-            <button class="btn" onclick="showLogbookEditor()" title="new entry">+ new</button>
-            <button class="btn lb-map-btn" data-type="map" onclick="toggleLogbookMap()" title="Map view">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            </button>
           </div>
           <div class="lb-campaign-filters" id="lb-campaign-filters"></div>
           <div class="lb-sidebar-list" id="lb-sidebar-list"></div>
@@ -570,6 +569,7 @@
           <details class="set-group">
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Display</span></summary>
             <div class="set-group-body">
+              <label class="set-row"><span>Custom metrics</span><input type="checkbox" id="set-custom-metrics" checked></label>
               <label class="set-row"><span>Runs page size</span><input type="number" id="set-hist-pagesize" min="5" max="500" value="50"></label>
               <label class="set-row"><span>JSONL records to load</span><input type="number" id="set-jsonl-limit" min="0" max="10000" value="50"></label>
               <label class="set-row"><span>JSONL load mode</span>
@@ -624,6 +624,7 @@
 <script id="cluster-data" type="application/json">{{ clusters | tojson }}</script>
 <script id="username-data" type="text/plain">{{ username }}</script>
 <script id="team-data" type="text/plain">{{ team }}</script>
+<script>var _customMetricsEnabled={{ custom_metrics_enabled | tojson }};function isCustomMetricsEnabled(){return _customMetricsEnabled}</script>
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="{{ url_for('static', filename='js/utils.js') }}?v={{ v }}"></script>
