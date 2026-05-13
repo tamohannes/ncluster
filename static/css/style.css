@@ -364,7 +364,9 @@ body {
   width: 280px; max-width: 92vw;
   background: var(--bg);
   position: sticky;
-  top: 0;
+  /* Pin below the fixed topbar — `top: 0` would slide the sidebar behind
+     the topbar once the body scrolls, hiding the first nav-tab. */
+  top: var(--topbar-h);
   align-self: stretch;
   overflow: hidden;
   padding: 14px 14px 8px;
