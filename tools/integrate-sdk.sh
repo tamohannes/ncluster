@@ -50,22 +50,22 @@ HOOK_BLOCK='
     # CLAUSIUS_SDK_HOOK_START
     try:
         from clausius_sdk.hooks import maybe_start_session
+        from nemo_skills.pipeline.utils.clausius_param_enrichment import build_run_params
         _cl_local = locals()
-        _cl_keys = (
-            "model", "server_type", "server_gpus", "server_nodes", "server_args",
-            "benchmarks", "split", "num_samples", "num_chunks", "with_sandbox",
-            "judge_model", "judge_server_type", "judge_server_gpus", "judge_server_args",
-            "dependent_jobs", "input_file", "input_dir", "dataset",
-            "prompt_format", "prompt_config", "prompt_template",
-            "preprocess_cmd", "sandbox_container", "container",
-        )
         _cl_ctx = _cl_local.get("ctx")
+        _cl_args = list(getattr(_cl_ctx, "args", []) or [])
+        # Project-side params builder: single source of truth for the Run
+        # Metadata tree. Returns a fully nested params dict (inference /
+        # server / judge / pipeline / slurm / tools / ...). The SDK passes
+        # params through verbatim; we pass command="" so it does not parse
+        # ctx args again on its own.
+        _cl_params = build_run_params(_cl_local, _cl_args)
         maybe_start_session(
             expname=expname,
-            command=" ".join(getattr(_cl_ctx, "args", []) or []),
+            command="",
             output_dir=_cl_local.get("output_dir") or "",
             cluster=cluster or "",
-            params={k: _cl_local[k] for k in _cl_keys if k in _cl_local},
+            params=_cl_params,
         )
     except Exception:
         pass
