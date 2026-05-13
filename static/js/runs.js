@@ -160,6 +160,14 @@ function _renderRunBody(run, cluster) {
       <span class="run-notes-saved" id="run-notes-saved">saved</span>
     </div>
   </div>`;
+  const malfunctioned = !!(run.malfunctioned);
+  overviewHtml += `<div class="run-malfunction-block">
+    <label class="run-malfunction-label">
+      <input type="checkbox" id="run-malfunction-checkbox" ${malfunctioned ? 'checked' : ''}
+             onchange="_toggleRunMalfunctioned(${runId}, this.checked)">
+      <span>Malfunctioned — treat results as unreliable; redo experiment</span>
+    </label>
+  </div>`;
 
   const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
   const _durationRing = _runDurationRing(earliest, latest);
@@ -221,6 +229,10 @@ function _renderRunBody(run, cluster) {
   </div>`;
 
   const paramsHtml = _renderRunParams(run.params, run.root_job_id);
+  const _sdkMeta = run.metadata || {};
+  const _metaSuffix = String(run.root_job_id || run.id || '0').replace(/\W/g, '_');
+  const metaTree = _renderSdkMetadataTree(_sdkMeta, `db-${_metaSuffix}`);
+  if (metaTree) metadataHtml += metaTree;
   metadataHtml += '<div id="run-sdk-metadata"></div>';
   if (paramsHtml) metadataHtml += paramsHtml;
   metricsHtml += '<div class="run-empty-state" id="run-metrics-empty">No tracked metrics yet.</div><div id="run-sdk-metrics"></div><div id="run-custom-metrics"></div>';
@@ -231,7 +243,7 @@ function _renderRunBody(run, cluster) {
       <pre id="${cmdId}" style="white-space:pre-wrap;word-break:break-all;padding-right:36px">${_escHtml(run.submit_command)}</pre>
       <button onclick="navigator.clipboard.writeText(document.getElementById('${cmdId}').textContent).then(()=>{this.textContent='✓';setTimeout(()=>this.textContent='⧉',1200)})" style="position:absolute;top:6px;right:6px;background:var(--surface);border:1px solid var(--border);color:var(--muted);border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px;line-height:1">⧉</button>
     </div>`;
-    metadataHtml += _renderToggleSection('submit-cmd', 'Submit Command', cmdContent, false);
+    metadataHtml += _renderToggleSection('submit-cmd', 'Submit Command', cmdContent, true);
   }
 
   if (run.batch_script) {
@@ -251,7 +263,7 @@ function _renderRunBody(run, cluster) {
     metadataHtml += _renderToggleSection('conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true);
   }
 
-  if (!run.submit_command && !run.batch_script && !run.scontrol_raw && !run.env_vars && !run.conda_state) {
+  if (!metadataHtml) {
     metadataHtml += '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:12px 0">';
     metadataHtml += 'No metadata captured yet. ';
     metadataHtml += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';
@@ -308,8 +320,8 @@ function _renderRunBody(run, cluster) {
 
   const tabs = [
     ['overview', 'Overview'],
-    ['metrics', 'Metrics'],
     ['metadata', 'Metadata'],
+    ['metrics', 'Metrics'],
     ['jobs', `Jobs${jobs.length ? ` (${jobs.length})` : ''}`],
   ];
   const tabButtons = tabs.map(([id, label], idx) => `
@@ -318,8 +330,8 @@ function _renderRunBody(run, cluster) {
   const html = `<div class="run-tabs">${tabButtons}</div>
     <div class="run-tab-panels">
       <div class="run-tab-panel active" id="run-tab-overview">${overviewHtml}</div>
-      <div class="run-tab-panel" id="run-tab-metrics">${metricsHtml}</div>
       <div class="run-tab-panel" id="run-tab-metadata">${metadataHtml}</div>
+      <div class="run-tab-panel" id="run-tab-metrics">${metricsHtml}</div>
       <div class="run-tab-panel" id="run-tab-jobs">${jobsHtml}</div>
     </div>`;
 
@@ -330,6 +342,7 @@ function _renderRunBody(run, cluster) {
 async function _loadRunCustomMetrics(cluster, rootJobId) {
   const el = document.getElementById('run-custom-metrics');
   if (!el || document.hidden) return;
+  if (typeof isCustomMetricsEnabled === 'function' && !isCustomMetricsEnabled()) return;
   try {
     const res = await fetch(`/api/custom_metrics_run/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
     const d = await res.json();
@@ -444,16 +457,10 @@ async function _loadRunSdkMetrics(cluster, rootJobId) {
     }
 
     if (hasMetadata) {
-      const rows = Object.entries(metadata).sort((a, b) => a[0].localeCompare(b[0])).map(([k, v]) => `
-        <div class="run-params-row">
-          <span class="run-params-label">${_escHtml(k)}</span>
-          <span class="run-params-value">${_escHtml(_formatMetricValue(v))}</span>
-        </div>`).join('');
-      if (metaEl) {
-        metaEl.innerHTML = `<div class="run-params">
-        <div class="run-params-head">SDK Metadata</div>
-        <div class="run-params-grid">${rows}</div>
-      </div>`;
+      const safe = String(rootJobId || '0').replace(/\W/g, '_');
+      const treeBlock = _renderSdkMetadataTree(metadata, `api-${safe}`);
+      if (metaEl && treeBlock) {
+        metaEl.innerHTML = treeBlock;
       }
     }
 
@@ -799,10 +806,178 @@ function _renderRunParams(params, rootJobId) {
   const depJobs = _paramInt(params.dependent_jobs);
   if (depJobs != null && depJobs > 0) push('Dependent jobs', String(depJobs));
 
-  if (!rows.length) return '';
-  return `<div class="run-params" data-run-root="${escAttr(String(rootJobId || ''))}">
-    <div class="run-params-head">Run Parameters</div>
-    <div class="run-params-grid">${rows.join('')}</div>
+  // Build hierarchical "all params" tree from all keys, including curated
+  // ones (shown as the polished summary above) so the tree is a complete
+  // reference. Dotted keys like `inference.temperature` become nested groups.
+  // Hydra duplicate aliases (flat + dotted with same value) are collapsed.
+  const allParamsTree = _buildParamsTree(params);
+  const treeHtml = _renderParamsTree(allParamsTree, 0, '');
+  const treeCount = treeHtml ? (treeHtml.match(/class="rpt-row"/g) || []).length : 0;
+
+  if (!rows.length && !treeHtml) return '';
+  const sectionId = `run-params-toggle-${rootJobId || 'x'}`;
+  const searchId = `run-params-search-${rootJobId || 'x'}`;
+  const treeId = `run-params-tree-${rootJobId || 'x'}`;
+  const curated = rows.length
+    ? `<div class="run-params-grid">${rows.join('')}</div>`
+    : '';
+  const allSection = treeHtml
+    ? `<div class="run-params-subhead">All params (${treeCount})</div>
+       <input type="text" class="run-params-search" id="${searchId}" placeholder="Search params…"
+              oninput="_filterParamsTree('${treeId}', this.value)">
+       <div class="run-params-tree" id="${treeId}">${treeHtml}</div>`
+    : '';
+  const inner = `<div class="run-params" data-run-root="${escAttr(String(rootJobId || ''))}">
+    ${curated}${allSection}
+  </div>`;
+  return _renderToggleSection(sectionId, 'Run Parameters', inner, true);
+}
+
+function _isPlainParamObject(v) {
+  return v != null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function _buildParamsTree(params) {
+  // When a dotted Hydra-style key (e.g. `inference.temperature`) shares the
+  // same value as a flat key (`temperature`), drop the dotted one — pick the
+  // shorter, more readable label.
+  const deduped = {};
+  const flatVals = new Map();
+  for (const [k, v] of Object.entries(params)) {
+    if (v == null || v === '') continue;
+    if (!k.includes('.')) flatVals.set(k, JSON.stringify(v));
+    deduped[k] = v;
+  }
+  for (const key of Object.keys(deduped)) {
+    if (!key.includes('.')) continue;
+    const leaf = key.split('.').pop();
+    if (flatVals.has(leaf) && flatVals.get(leaf) === JSON.stringify(deduped[key])) {
+      delete deduped[key];
+    }
+  }
+
+  const root = {};
+
+  function mergeObjectIntoNode(target, obj, keyPrefix) {
+    for (const subk of Object.keys(obj).sort()) {
+      const subv = obj[subk];
+      const fk = keyPrefix ? `${keyPrefix}.${subk}` : subk;
+      if (_isPlainParamObject(subv)) {
+        if (!target[subk] || target[subk].__leaf) {
+          target[subk] = {};
+        }
+        if (!target[subk].__leaf) mergeObjectIntoNode(target[subk], subv, fk);
+      } else {
+        target[subk] = { __leaf: true, value: subv, fullKey: fk };
+      }
+    }
+  }
+
+  function insert(dottedKey, val) {
+    const parts = dottedKey.split('.');
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const seg = parts[i];
+      if (!node[seg] || typeof node[seg] !== 'object' || node[seg].__leaf) {
+        node[seg] = {};
+      }
+      node = node[seg];
+    }
+    const last = parts[parts.length - 1];
+
+    if (_isPlainParamObject(val)) {
+      if (!node[last] || node[last].__leaf) {
+        node[last] = {};
+      }
+      if (!node[last].__leaf) mergeObjectIntoNode(node[last], val, dottedKey);
+    } else {
+      node[last] = { __leaf: true, value: val, fullKey: dottedKey };
+    }
+  }
+
+  for (const key of Object.keys(deduped).sort()) {
+    insert(key, deduped[key]);
+  }
+  return root;
+}
+
+function _renderParamsTree(node, depth, pathPrefix = '') {
+  const entries = Object.keys(node).sort((a, b) => {
+    const aIsGroup = node[a] && !node[a].__leaf;
+    const bIsGroup = node[b] && !node[b].__leaf;
+    if (aIsGroup !== bIsGroup) return aIsGroup ? 1 : -1;
+    return a.localeCompare(b);
+  });
+  let html = '';
+  for (const key of entries) {
+    const child = node[key];
+    if (child && child.__leaf) {
+      const displayVal = (typeof child.value === 'object')
+        ? JSON.stringify(child.value)
+        : String(child.value);
+      html += `<div class="rpt-row" data-key="${escAttr(child.fullKey.toLowerCase())}" data-val="${escAttr(displayVal.toLowerCase())}" style="padding-left:${depth * 16}px">
+        <span class="rpt-key">${_escHtml(key)}</span>
+        <span class="rpt-val" title="${escAttr(displayVal)}">${_escHtml(displayVal)}</span>
+      </div>`;
+    } else {
+      const subPath = pathPrefix ? `${pathPrefix}.${key}` : key;
+      const childHtml = _renderParamsTree(child, depth + 1, subPath);
+      html += `<div class="rpt-group" data-path="${escAttr(subPath.toLowerCase())}" style="padding-left:${depth * 16}px">
+        <span class="rpt-group-label">${_escHtml(key)}</span>
+      </div>${childHtml}`;
+    }
+  }
+  return html;
+}
+
+function _filterParamsTree(treeId, query) {
+  const tree = document.getElementById(treeId);
+  if (!tree) return;
+  const q = (query || '').trim().toLowerCase();
+  const rows = tree.querySelectorAll('.rpt-row');
+  const groups = tree.querySelectorAll('.rpt-group');
+  if (!q) {
+    rows.forEach(r => { r.style.display = ''; });
+    groups.forEach(g => { g.style.display = ''; });
+    return;
+  }
+  const visiblePrefixes = new Set();
+  rows.forEach(r => {
+    const k = r.getAttribute('data-key') || '';
+    const v = r.getAttribute('data-val') || '';
+    const match = k.includes(q) || v.includes(q);
+    r.style.display = match ? '' : 'none';
+    if (match && k) {
+      const parts = k.split('.');
+      for (let i = 1; i <= parts.length; i++) visiblePrefixes.add(parts.slice(0, i).join('.'));
+    }
+  });
+  groups.forEach(g => {
+    const p = (g.getAttribute('data-path') || '').toLowerCase();
+    const label = (g.querySelector('.rpt-group-label')?.textContent || '').toLowerCase();
+    const show = [...visiblePrefixes].some(vp => vp === p || vp.startsWith(`${p}.`))
+      || label.includes(q);
+    g.style.display = show ? '' : 'none';
+  });
+}
+
+/** Hierarchical tree + search for SDK metadata (same shape as params). */
+function _renderSdkMetadataTree(obj, idSuffix) {
+  if (!obj || typeof obj !== 'object') return '';
+  const keys = Object.keys(obj);
+  if (!keys.length) return '';
+  const tree = _buildParamsTree(obj);
+  const treeHtml = _renderParamsTree(tree, 0, '');
+  if (!treeHtml) return '';
+  const n = (treeHtml.match(/class="rpt-row"/g) || []).length;
+  const safe = String(idSuffix || 'x').replace(/\W/g, '_');
+  const searchId = `sdk-meta-search-${safe}`;
+  const treeId = `sdk-meta-tree-${safe}`;
+  return `<div class="run-params">
+    <div class="run-params-head">SDK Metadata (${n})</div>
+    <input type="text" class="run-params-search" id="${searchId}" placeholder="Search metadata…"
+           oninput="_filterParamsTree('${treeId}', this.value)">
+    <div class="run-params-tree" id="${treeId}">${treeHtml}</div>
   </div>`;
 }
 
@@ -1101,6 +1276,23 @@ async function _toggleRunMark(runId) {
     if (typeof syncRunMarkedBorders === 'function') {
       syncRunMarkedBorders(cluster, rootJobId, !!wasMarked);
     }
+  }
+}
+
+async function _toggleRunMalfunctioned(runId, checked) {
+  const el = document.getElementById('run-malfunction-checkbox');
+  try {
+    const res = await fetch(`/api/run/${runId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ malfunctioned: !!checked }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || 'request failed');
+    }
+  } catch (_) {
+    if (el) el.checked = !checked;
   }
 }
 
