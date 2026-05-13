@@ -4595,6 +4595,8 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   font-family: var(--mono); font-size: 0.82em;
   padding: 2px 5px; border-radius: 4px;
   background: var(--surface2);
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "clig" 0, "calt" 0;
 }
 
 /* Logbook reader: open layout, light separators instead of grid borders */
@@ -4897,7 +4899,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .logbook-entry-content p { margin: 4px 0; }
 .logbook-entry-content ul { margin: 4px 0; padding-left: 18px; }
 .logbook-entry-content pre { background: var(--surface); padding: 6px 8px; border-radius: 4px; font-size: 10px; overflow-x: auto; }
-.md-inline-code { background: var(--surface); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+.md-inline-code { background: var(--surface); padding: 1px 4px; border-radius: 3px; font-size: 10px; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0, "calt" 0; }
 .md-small-caps {
   font-family: var(--sans);
   font-variant-caps: small-caps;
