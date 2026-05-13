@@ -181,6 +181,17 @@ describe('markdownToHtml', () => {
     expect(result).toContain('<span class="md-small-caps">Artsiv</span>');
     expect(result).not.toContain('\\textsc');
   });
+  it('keeps pipes inside inline code spans from splitting cells', () => {
+    const src = '| Action | Format |\n|---|---|\n| Python tool call | `<\\|start\\|>assistant<\\|channel\\|>final` |';
+    const result = markdownToHtml(src);
+    expect(result).toContain('<code class="md-inline-code">&lt;|start|&gt;assistant&lt;|channel|&gt;final</code>');
+    expect((result.match(/<td/g) || []).length).toBe(2);
+  });
+  it('treats \\| as a literal pipe outside code spans', () => {
+    const result = markdownToHtml('| A | B |\n|---|---|\n| foo \\| bar | baz |');
+    expect(result).toContain('<td>foo | bar</td>');
+    expect(result).toContain('<td>baz</td>');
+  });
 });
 
 describe('_popupShouldLoadFully', () => {

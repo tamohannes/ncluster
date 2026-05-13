@@ -1050,6 +1050,44 @@ function _isTableSep(line) {
   return /^\|[\s:|-]+\|$/.test(line.trim());
 }
 
+function _splitTableRowCells(line) {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+
+  const cells = [];
+  let cur = '';
+  let inCode = false;
+  let codeMarker = '';
+
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && s[i + 1] === '|') {
+      cur += '|';
+      i++;
+      continue;
+    }
+    if (c === '`') {
+      let j = i;
+      while (j < s.length && s[j] === '`') j++;
+      const seq = s.slice(i, j);
+      if (!inCode) { inCode = true; codeMarker = seq; }
+      else if (seq === codeMarker) { inCode = false; codeMarker = ''; }
+      cur += seq;
+      i = j - 1;
+      continue;
+    }
+    if (c === '|' && !inCode) {
+      cells.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  cells.push(cur);
+  return cells.map(x => x.trim());
+}
+
 const _MD_TABLE_COLOR_TOKENS = {
   green: { bg: 'var(--tbl-mint)', fg: 'var(--tbl-mint-fg)' },
   good: { bg: 'var(--tbl-mint)', fg: 'var(--tbl-mint-fg)' },
@@ -1121,7 +1159,7 @@ function _extractMdTableMarkers(rawCell) {
 function _renderTableRows(tableLines, tblNum) {
   if (tableLines.length < 2) return tableLines.map(l => `<p>${_mdInline(l)}</p>`).join('');
   const parseRow = (line, tag) => {
-    const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+    const cells = _splitTableRowCells(line);
     const rowAttrs = { gapBefore: false, classes: [], styles: [] };
     const renderedCells = cells.map(rawCell => {
       const parsed = _extractMdTableMarkers(rawCell);
