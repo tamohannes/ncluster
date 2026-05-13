@@ -8,7 +8,7 @@ let _runPageState = {
   selectedScalars: [],
   metricQuery: '',
   catalogTab: 'series',
-  pageTab: 'metrics',
+  pageTab: 'overview',
   xAxis: 'step',
   groupByContext: '',
   smoothing: 0.25,
@@ -134,13 +134,13 @@ function _runPageReadUrlState() {
   _runPageState.showRaw = params.get('raw') === '1';
   _runPageState.ignoreOutliers = params.get('outliers') === '0';
   _runPageState.tooltipMode = params.get('hover') === 'nearest' ? 'nearest' : 'all';
-  _runPageState.pageTab = params.get('tab') || 'metrics';
+  _runPageState.pageTab = params.get('tab') || 'overview';
   _runPageState.catalogTab = params.get('kind') || 'series';
 }
 
 function _runPageCurrentQuery() {
   const params = new URLSearchParams();
-  if (_runPageState.pageTab && _runPageState.pageTab !== 'metrics') params.set('tab', _runPageState.pageTab);
+  if (_runPageState.pageTab && _runPageState.pageTab !== 'overview') params.set('tab', _runPageState.pageTab);
   if (_runPageState.selectedSeries.length) params.set('series', _runPageState.selectedSeries.map(encodeURIComponent).join(','));
   if (_runPageState.selectedScalars.length) params.set('scalars', _runPageState.selectedScalars.map(encodeURIComponent).join(','));
   if (_runPageState.metricQuery) params.set('q', _runPageState.metricQuery);
@@ -440,10 +440,10 @@ function _runPageRender() {
   const title = run.run_name || run.name || `Run ${_runPageState.runHash}`;
   const jobs = run.jobs || [];
   const tabs = [
-    ['metrics', 'Metrics'],
     ['overview', 'Overview'],
+    ['metadata', 'Metadata'],
+    ['metrics', 'Metrics'],
     ['jobs', `Jobs${jobs.length ? ` (${jobs.length})` : ''}`],
-    ['provenance', 'Provenance'],
   ];
   const tabButtons = tabs.map(([id, label]) => `
     <button type="button" class="run-page-tab${_runPageState.pageTab === id ? ' active' : ''}" onclick="_runPageSetTab('${id}')">${label}</button>
@@ -472,8 +472,10 @@ function _runPageRenderPanel() {
   if (!el) return;
   _runPageDestroyCharts();
   if (_runPageState.pageTab === 'overview') el.innerHTML = _runPageOverviewHtml();
+  else if (_runPageState.pageTab === 'metadata' || _runPageState.pageTab === 'provenance') {
+    el.innerHTML = _runPageMetadataHtml();
+  }
   else if (_runPageState.pageTab === 'jobs') el.innerHTML = _runPageJobsHtml();
-  else if (_runPageState.pageTab === 'provenance') el.innerHTML = _runPageProvenanceHtml();
   else {
     el.innerHTML = _runPageMetricsHtml();
     _runPageRenderCharts();
@@ -481,16 +483,58 @@ function _runPageRenderPanel() {
 }
 
 function _runPageSetTab(tab) {
-  _runPageState.pageTab = tab || 'metrics';
+  _runPageState.pageTab = tab || 'overview';
   _runPageReplaceUrlState();
   _runPageRender();
 }
 
 function _runPageOverviewHtml() {
   const run = _runPageState.run || {};
-  const paramsHtml = _renderRunParams(run.params, run.root_job_id);
-  const metaHtml = _runPageKeyValueBlock('SDK Metadata', _runPageState.metrics.metadata || {});
+  const jobs = run.jobs || [];
+  const earliest = _earliestTime(jobs, 'started');
+  const latest = _latestTime(jobs, 'ended_at');
+  const duration = earliest && latest ? _formatDuration(earliest, latest) : '—';
+  const gpusPerNode = run.gpus_per_node;
+  const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
+  const _durationRing = _runDurationRing(earliest, latest);
+  const _runLabel = run.run_name || run.name || '';
+  const _cancelableRunIds = jobs
+    .filter(j => _isActivelyCancelableState((j.state || '').toUpperCase()))
+    .map(j => String(j.job_id || j.jobid));
+  const cluster = _runPageState.cluster;
+  const _cancelRunBtn = _cancelableRunIds.length > 0
+    ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`
+    : '';
+  const sdkExtra = (run.source === 'sdk' || run.source === 'sdk+legacy') ? `
+    <div class="run-timing-item">
+      <span class="run-timing-label">Source</span>
+      <span class="run-timing-value" style="color:var(--accent);font-weight:600">SDK</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Git</span>
+      <span class="run-timing-value">${_escHtml(run.git_commit || '—')}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Launcher</span>
+      <span class="run-timing-value">${_escHtml(run.launcher_hostname || '—')}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Working dir</span>
+      <span class="run-timing-value" style="word-break:break-all">${_escHtml(run.submit_cwd || '—')}</span>
+    </div>` : '';
+
   const scalarLatest = _runPageLatestScalarBlock();
+  const facts = _runPageKeyValueBlock('Run Facts', {
+    cluster: _runPageState.cluster,
+    run_hash: _runPageState.runHash,
+    root_job_id: run.root_job_id || '',
+    source: run.source || '',
+    git_commit: run.git_commit || '',
+    launcher: run.launcher_hostname || '',
+    working_dir: run.submit_cwd || '',
+    output_dir: run.primary_output_dir || '',
+  });
+
   return `<div class="run-page-overview-grid">
     <div>
       <div class="run-page-card">
@@ -498,14 +542,77 @@ function _runPageOverviewHtml() {
         <textarea class="run-page-notes" placeholder="Add notes about this run…" oninput="_runPageOnNoteInput()" onblur="_runPageSaveNotes()">${_escHtml(run.notes || '')}</textarea>
         <div class="run-page-save-state" id="run-page-notes-saved">saved</div>
       </div>
-      ${paramsHtml || '<div class="run-empty-state">No structured run parameters captured.</div>'}
+      <div class="run-page-card run-page-malfunction-card">
+        <div class="run-page-card-title">Run quality</div>
+        <label class="run-page-malfunction-label">
+          <input type="checkbox" class="run-page-malfunction-cb" ${run.malfunctioned ? 'checked' : ''}
+                 onchange="_runPageToggleMalfunctioned(this.checked)">
+          <span>Malfunctioned — treat metrics as low-trust; experiment should be redone</span>
+        </label>
+      </div>
+      <div class="run-page-card run-page-overview-summary">
+        <div class="run-page-card-title">Timeline & jobs</div>
+        <div class="run-timing">
+          <div class="run-timing-item">
+            <span class="run-timing-label">Started</span>
+            <span class="run-timing-value">${_fmtRunTime(earliest)}</span>
+          </div>
+          <div class="run-timing-item">
+            <span class="run-timing-label">Ended</span>
+            <span class="run-timing-value">${_fmtRunTime(latest)}</span>
+          </div>
+          <div class="run-timing-item">
+            <span class="run-timing-label">Duration</span>
+            <span class="run-timing-value" style="display:inline-flex;align-items:center;gap:5px">${_durationRing}${duration}</span>
+          </div>
+          <div class="run-timing-item">
+            <span class="run-timing-label">Project</span>
+            <span class="run-timing-value">${_escHtml(run.project || '—')}</span>
+          </div>
+          ${sdkExtra}
+        </div>
+        <div class="run-resource-bar run-page-resource-bar">
+          <span class="job-count-text">${_jobStates}</span>
+          ${_cancelRunBtn}
+        </div>
+      </div>
+      ${facts}
     </div>
     <div>
       ${scalarLatest}
-      ${metaHtml || '<div class="run-empty-state">No SDK metadata captured.</div>'}
       <div id="run-page-custom-metrics">${_runPageCustomMetricsHtml()}</div>
     </div>
   </div>`;
+}
+
+function _runPageMetadataHtml() {
+  const run = _runPageState.run || {};
+  const paramsHtml = _renderRunParams(run.params, run.root_job_id);
+  const _suffix = String(run.root_job_id || run.id || '0').replace(/\W/g, '_');
+  const metaHtml = _renderSdkMetadataTree(run.metadata || {}, `page-db-${_suffix}`);
+  const metricsMetaHtml = _renderSdkMetadataTree(_runPageState.metrics.metadata || {}, `page-api-${_suffix}`);
+
+  const sections = [];
+  if (run.submit_command) sections.push(_renderToggleSection('run-page-submit-cmd', 'Submit Command', `<pre>${_escHtml(run.submit_command)}</pre>`, true));
+  if (run.batch_script) sections.push(_renderToggleSection('run-page-batch-script', 'Batch Script', `<pre>${_escHtml(run.batch_script)}</pre>`, true));
+  if (run.scontrol_raw) sections.push(_renderToggleSection('run-page-scontrol', 'Slurm Configuration', `<pre>${_escHtml(run.scontrol_raw)}</pre>`, true));
+  if (run.env_vars) sections.push(_renderToggleSection('run-page-env-vars', 'Environment Variables', _renderEnvTable(run.env_vars), true));
+  if (run.conda_state) sections.push(_renderToggleSection('run-page-conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true));
+
+  const hasPrelude = !!(metaHtml || metricsMetaHtml);
+  const accordionInner = `${paramsHtml}${sections.join('')}`;
+  const hasAccordions = !!(paramsHtml || sections.length);
+  let inner = '';
+  if (!hasPrelude && !hasAccordions) {
+    inner = '<div class="run-empty-state">No infrastructure metadata captured yet.</div>';
+  } else {
+    inner = `${metaHtml}${metricsMetaHtml}`;
+    if (hasAccordions) {
+      inner += `<div class="run-page-meta-accordions">${accordionInner}</div>`;
+    }
+  }
+  const provClass = hasAccordions ? 'run-page-provenance run-page-provenance--stack' : 'run-page-provenance';
+  return `<div class="${provClass}">${inner}</div>`;
 }
 
 function _runPageMetricsHtml() {
@@ -1319,30 +1426,11 @@ function _runPageJobsHtml() {
   </div>`;
 }
 
-function _runPageProvenanceHtml() {
-  const run = _runPageState.run || {};
-  const sections = [];
-  if (run.submit_command) sections.push(_renderToggleSection('run-page-submit-cmd', 'Submit Command', `<pre>${_escHtml(run.submit_command)}</pre>`, false));
-  if (run.batch_script) sections.push(_renderToggleSection('run-page-batch-script', 'Batch Script', `<pre>${_escHtml(run.batch_script)}</pre>`, true));
-  if (run.scontrol_raw) sections.push(_renderToggleSection('run-page-scontrol', 'Slurm Configuration', `<pre>${_escHtml(run.scontrol_raw)}</pre>`, true));
-  if (run.env_vars) sections.push(_renderToggleSection('run-page-env-vars', 'Environment Variables', _renderEnvTable(run.env_vars), true));
-  if (run.conda_state) sections.push(_renderToggleSection('run-page-conda', 'Conda / Pip State', `<pre>${_escHtml(run.conda_state)}</pre>`, true));
-  const facts = _runPageKeyValueBlock('Run Facts', {
-    cluster: _runPageState.cluster,
-    run_hash: _runPageState.runHash,
-    root_job_id: run.root_job_id || '',
-    source: run.source || '',
-    git_commit: run.git_commit || '',
-    launcher: run.launcher_hostname || '',
-    working_dir: run.submit_cwd || '',
-    output_dir: run.primary_output_dir || '',
-  });
-  return `<div class="run-page-provenance">${facts}${sections.join('') || '<div class="run-empty-state">No provenance captured yet.</div>'}</div>`;
-}
 
 async function _runPageLoadCustomMetrics() {
   const run = _runPageState.run;
   if (!run || !run.root_job_id || document.hidden) return;
+  if (typeof isCustomMetricsEnabled === 'function' && !isCustomMetricsEnabled()) return;
   try {
     const res = await fetch(`/api/custom_metrics_run/${encodeURIComponent(_runPageState.cluster)}/${encodeURIComponent(run.root_job_id)}`);
     const d = await res.json();
@@ -1357,6 +1445,7 @@ async function _runPageLoadCustomMetrics() {
 }
 
 function _runPageCustomMetricsHtml() {
+  if (typeof isCustomMetricsEnabled === 'function' && !isCustomMetricsEnabled()) return '';
   const d = _runPageState.customMetrics;
   if (!d || !d.aggregates || !d.aggregates.length) return '';
   const rows = d.aggregates.map(agg => `
@@ -1373,6 +1462,26 @@ function _runPageCustomMetricsHtml() {
 function _runPageOnNoteInput() {
   if (_runPageState.noteTimer) clearTimeout(_runPageState.noteTimer);
   _runPageState.noteTimer = setTimeout(_runPageSaveNotes, 1500);
+}
+
+async function _runPageToggleMalfunctioned(checked) {
+  const run = _runPageState.run;
+  const cb = document.querySelector('.run-page-malfunction-cb');
+  if (!run || !run.id) return;
+  try {
+    const res = await fetch(`/api/run/${run.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ malfunctioned: !!checked }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || 'failed');
+    }
+    run.malfunctioned = !!checked;
+  } catch (_) {
+    if (cb) cb.checked = !checked;
+  }
 }
 
 async function _runPageSaveNotes() {
