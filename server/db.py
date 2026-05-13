@@ -2,6 +2,7 @@
 
 import hashlib
 import json as _json
+import logging
 import math
 import sqlite3
 import subprocess
@@ -10,6 +11,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from .config import DB_PATH, PINNABLE_TERMINAL_STATES, RESULT_DIR_NAMES
+
+log = logging.getLogger(__name__)
 
 RUN_HASH_LEN = 12
 
@@ -1325,7 +1328,14 @@ repin_recent_terminal_jobs = cleanup_local_on_startup
 # ─── Run CRUD ────────────────────────────────────────────────────────────────
 
 def upsert_run(cluster, root_job_id, run_name="", project=""):
-    """Create or return existing run. Returns the run id."""
+    """Create or return existing run. Returns the run id.
+
+    Legacy (non-SDK) submissions still land here when the poller discovers
+    Slurm jobs without a matching SDK orchestrator. The Clausius SDK is the
+    default submission path going forward, so every legacy row creation is
+    logged once as a warning so users can spot non-SDK submissions and
+    migrate them (set ``CLAUSIUS_URL`` and run ``tools/integrate-sdk.sh``).
+    """
     with db_write() as con:
         row = con.execute(
             "SELECT id FROM runs WHERE cluster=? AND root_job_id=?",
@@ -1354,7 +1364,36 @@ def upsert_run(cluster, root_job_id, run_name="", project=""):
                     (cluster, root_job_id, run_name, project),
                 )
                 run_id = cur.lastrowid
+                _warn_legacy_run_created(cluster, root_job_id, run_name)
         return run_id
+
+
+_LEGACY_WARN_SEEN = set()
+_LEGACY_WARN_LOCK = _th_db.Lock()
+
+
+def _warn_legacy_run_created(cluster, root_job_id, run_name):
+    """Log a deprecation warning when a non-SDK run row is created.
+
+    Each (cluster, root_job_id) is warned at most once so the polling loop
+    does not spam logs. Resubmissions allocate fresh Slurm job ids and so
+    each genuine non-SDK submission still produces one warning.
+    """
+    key = f"{cluster}:{root_job_id}"
+    with _LEGACY_WARN_LOCK:
+        if key in _LEGACY_WARN_SEEN:
+            return
+        _LEGACY_WARN_SEEN.add(key)
+        if len(_LEGACY_WARN_SEEN) > 5000:
+            _LEGACY_WARN_SEEN.clear()
+            _LEGACY_WARN_SEEN.add(key)
+    log.warning(
+        "DEPRECATED legacy run row created (cluster=%s root_job_id=%s run_name=%r); "
+        "the Clausius SDK is the default submission path \u2014 set CLAUSIUS_URL and run "
+        "tools/integrate-sdk.sh so resubmissions are detected as resumes instead of "
+        "new runs with fresh hashes.",
+        cluster, root_job_id, run_name,
+    )
 
 
 def _find_sdk_run_for_name(con, cluster, run_name):
