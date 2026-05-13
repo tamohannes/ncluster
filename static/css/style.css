@@ -377,15 +377,9 @@ body {
   min-height: 0;
 }
 /* Scroll only the nav body; keeping the profile row out avoids flex+auto-margin
- * phantom scroll extent at the bottom of the sidebar (browser quirk).
- *
- * `flex: 0 1 auto` (basis=content, grow=0, shrink=1) means the scroll area
- * is content-sized when it fits and shrinks with an internal scrollbar
- * when it doesn't. The user pill then sits immediately after the
- * Summary section instead of being pinned at the viewport bottom with a
- * tall empty gap above it. */
+ * phantom scroll extent at the bottom of the sidebar (browser quirk). */
 .side-nav-scroll {
-  flex: 0 1 auto;
+  flex: 1;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
