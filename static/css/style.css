@@ -943,6 +943,20 @@ tr.bg-job:hover td { opacity: 0.7; }
   background: var(--surface);
   vertical-align: middle;
 }
+.group-non-sdk-badge {
+  font-family: var(--mono);
+  font-weight: 700; letter-spacing: 0.04em;
+  padding: 1px 6px; border-radius: 3px; margin-left: 4px;
+  font-size: 9px;
+  color: #b76800;
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid rgba(245, 166, 35, 0.35);
+  vertical-align: middle;
+  cursor: help;
+}
+.group-non-sdk-badge:hover {
+  background: rgba(245, 166, 35, 0.22);
+}
 tr.group-bg-0 td { background-color: var(--group-bg-0); }
 tr.group-bg-1 td { background-color: var(--group-bg-1); }
 tr.group-bg-2 td { background-color: var(--group-bg-2); }
@@ -1142,6 +1156,22 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .cancel-run-btn:hover {
   background: var(--red-bg) !important;
+}
+
+.resubmit-run-btn {
+  margin-left: auto;
+  font-size: 10px !important; padding: 2px 10px !important;
+  border-color: var(--accent) !important; color: var(--accent) !important;
+  border-radius: 4px;
+}
+.resubmit-run-btn:hover {
+  background: var(--accent-bg) !important;
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+.run-resource-bar .cancel-run-btn + .resubmit-run-btn,
+.run-resource-bar .resubmit-run-btn + .cancel-run-btn {
+  margin-left: 0;
 }
 
 .run-params {

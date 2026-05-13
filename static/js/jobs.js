@@ -799,6 +799,7 @@ function renderCard(name, data) {
       if (runUuid) runTitleParts.push(`UUID ${runUuid}`);
       if (rootJobId) runTitleParts.push(`root ${rootJobId}`);
       const attemptBadge = groupKeyCounts[gk] > 1 && !hasRunIdentity ? runAttemptBadge(rootJob) : '';
+      const legacyBadge = name !== 'local' ? nonSdkBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
@@ -834,7 +835,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${noProjectBtn}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${legacyBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
