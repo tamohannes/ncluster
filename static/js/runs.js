@@ -222,10 +222,14 @@ function _renderRunBody(run, cluster) {
   const _cancelRunBtn = _cancelableRunIds.length > 0
     ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`
     : '';
+  const _resubmitBtn = run.can_resubmit
+    ? `<button class="action-btn resubmit-run-btn" onclick="_resubmitRun('${escAttr(cluster)}','${escAttr(run.run_hash || '')}','${escAttr(_runLabel)}')" title="Re-run the original submission command locally">resubmit</button>`
+    : '';
 
   overviewHtml += `<div class="run-resource-bar">
     <span class="job-count-text">${_jobStates}</span>
     ${_cancelRunBtn}
+    ${_resubmitBtn}
   </div>`;
 
   const paramsHtml = _renderRunParams(run.params, run.root_job_id);
@@ -233,7 +237,6 @@ function _renderRunBody(run, cluster) {
   const _metaSuffix = String(run.root_job_id || run.id || '0').replace(/\W/g, '_');
   const metaTree = _renderSdkMetadataTree(_sdkMeta, `db-${_metaSuffix}`);
   if (metaTree) metadataHtml += metaTree;
-  metadataHtml += '<div id="run-sdk-metadata"></div>';
   if (paramsHtml) metadataHtml += paramsHtml;
   metricsHtml += '<div class="run-empty-state" id="run-metrics-empty">No tracked metrics yet.</div><div id="run-sdk-metrics"></div><div id="run-custom-metrics"></div>';
 
@@ -437,8 +440,7 @@ function _destroyRunMetricCharts() {
 
 async function _loadRunSdkMetrics(cluster, rootJobId) {
   const el = document.getElementById('run-sdk-metrics');
-  const metaEl = document.getElementById('run-sdk-metadata');
-  if ((!el && !metaEl) || document.hidden) return;
+  if (!el || document.hidden) return;
   try {
     const res = await fetch(`/api/run_metrics/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
     const d = await res.json();
@@ -450,21 +452,17 @@ async function _loadRunSdkMetrics(cluster, rootJobId) {
     const scalarKeys = Object.keys(scalars).sort();
     const hasMetadata = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
     if (!hasMetadata && !keys.length && !scalarKeys.length) {
-      if (el) {
-        el.innerHTML = _renderRunPlotBuilderShell([], []);
-      }
+      el.innerHTML = _renderRunPlotBuilderShell([], []);
       return;
     }
 
-    if (hasMetadata) {
-      const safe = String(rootJobId || '0').replace(/\W/g, '_');
-      const treeBlock = _renderSdkMetadataTree(metadata, `api-${safe}`);
-      if (metaEl && treeBlock) {
-        metaEl.innerHTML = treeBlock;
-      }
-    }
+    // Note: SDK Metadata is already rendered synchronously from the initial
+    // /api/run_info payload (`run.metadata`), so we deliberately do NOT
+    // re-render it here. Re-rendering the same `metadata_json` column from
+    // the metrics endpoint produced a duplicate "SDK Metadata (4)" section.
+    void hasMetadata;
 
-    if (!el || (!keys.length && !scalarKeys.length)) return;
+    if (!keys.length && !scalarKeys.length) return;
     let html = '';
 
     const scalarRows = scalarKeys.map((k) => {
@@ -1347,6 +1345,53 @@ async function _cancelRun(cluster, jobIds, runName) {
   }
   await _doCancelGroup(cluster, jobIds, runName);
   refreshCluster(cluster, true);
+}
+
+async function _resubmitRun(cluster, runHash, runName) {
+  if (!cluster || !runHash) {
+    toast('Missing cluster or run hash', 'error');
+    return;
+  }
+  let info = null;
+  try {
+    const r = await fetch(`/api/run_info_by_hash/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`);
+    const d = await r.json();
+    if (d.status !== 'ok' || !d.run) throw new Error(d.error || 'Run not found');
+    info = d.run;
+  } catch (e) {
+    toast(`Failed to load run: ${e.message}`, 'error');
+    return;
+  }
+  if (!info.can_resubmit) {
+    toast(info.resubmit_blocked_reason || 'Run is not eligible to resubmit', 'error');
+    return;
+  }
+  const cmd = info.submit_command || '';
+  const ok = confirm(
+    `Resubmit "${runName || runHash}"?\n\n` +
+    `This re-runs the original submission command on this machine:\n\n` +
+    `${cmd}\n\n` +
+    `A fresh SDK run will appear on the board once submission starts.`
+  );
+  if (!ok) return;
+  const t = toastLoading(`Resubmitting ${runName || runHash}…`);
+  try {
+    const res = await fetchWithTimeout(
+      `/api/resubmit_by_hash/${encodeURIComponent(cluster)}/${encodeURIComponent(runHash)}`,
+      { method: 'POST' },
+      30000,
+    );
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      t.done(d.error || 'Resubmit failed', 'error');
+      return;
+    }
+    t.done(`Resubmit started (pid ${d.pid})`);
+    try { window.open(d.log_url, '_blank', 'noopener'); } catch { /* popup blocked */ }
+    if (typeof refreshCluster === 'function') refreshCluster(cluster, true);
+  } catch (e) {
+    t.done(`Resubmit failed: ${e.message}`, 'error');
+  }
 }
 
 document.addEventListener('keydown', (e) => {

@@ -38,9 +38,9 @@ function _persistAllData() {
 
 // ── App tabs ─────────────────────────────────────────────────────────────────
 const _tabIcons = {
-  live:    '⚡', history: '⏱', metrics: '◈',
+  live:    '⚡', history: '⏱', metrics: '🖥',
   logbook: '📓', project: '📁',
-  clusters: '🖥', run: '◈',
+  clusters: '🗄', run: '◈',
 };
 let _appTabs = [{ id: 1, type: 'live', label: 'Live', project: null }];
 let _activeTabId = 1;

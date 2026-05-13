@@ -505,6 +505,9 @@ function _runPageOverviewHtml() {
   const _cancelRunBtn = _cancelableRunIds.length > 0
     ? `<button class="action-btn cancel-run-btn" onclick="_cancelRun('${escAttr(cluster)}',${escAttr(JSON.stringify(_cancelableRunIds))},'${escAttr(_runLabel)}')">cancel run</button>`
     : '';
+  const _resubmitBtn = run.can_resubmit
+    ? `<button class="action-btn resubmit-run-btn" onclick="_resubmitRun('${escAttr(cluster)}','${escAttr(run.run_hash || _runPageState.runHash || '')}','${escAttr(_runLabel)}')" title="Re-run the original submission command locally">resubmit</button>`
+    : '';
   const sdkExtra = (run.source === 'sdk' || run.source === 'sdk+legacy') ? `
     <div class="run-timing-item">
       <span class="run-timing-label">Source</span>
@@ -574,6 +577,7 @@ function _runPageOverviewHtml() {
         <div class="run-resource-bar run-page-resource-bar">
           <span class="job-count-text">${_jobStates}</span>
           ${_cancelRunBtn}
+          ${_resubmitBtn}
         </div>
       </div>
       ${facts}
@@ -1369,18 +1373,88 @@ function _runPageStatCard(key, stats, kind) {
   </div>`;
 }
 
+// Build a single "Latest Scalars" widget that fans out by (name × context).
+// The server's `scalar_latest` map is keyed by metric name only (last write
+// wins), so a metric logged under many contexts (e.g. `accuracy` across 72
+// benchmark/eval_mode/scorer tuples) is reduced to one arbitrary bucket —
+// which is how `accuracy = 0.0` could appear here while ~71 other accuracy
+// buckets had meaningful non-zero values. We rebuild the per-bucket view
+// from the full `scalars` payload so every distinct context shows up.
 function _runPageLatestScalarBlock() {
-  const latest = _runPageState.metrics.scalar_latest || {};
-  if (!Object.keys(latest).length) return '';
-  const rows = Object.entries(latest).sort((a, b) => a[0].localeCompare(b[0])).slice(0, 24).map(([k, p]) => `
-    <div class="run-params-row">
-      <span class="run-params-label">${_escHtml(k)}</span>
-      <span class="run-params-value">${_escHtml(_formatMetricValue(p.value))}</span>
+  const scalars = _runPageState.metrics.scalars || {};
+  const buckets = [];
+
+  Object.entries(scalars).forEach(([name, pts]) => {
+    if (!Array.isArray(pts) || !pts.length) return;
+    const byCtx = new Map();
+    pts.forEach(p => {
+      if (!p || typeof p !== 'object') return;
+      const ctx = (p.context && typeof p.context === 'object') ? p.context : {};
+      const ck = _runPageCtxKey(ctx);
+      const ts = Number(p.ts || 0);
+      const prev = byCtx.get(ck);
+      if (!prev || ts >= prev._ts) byCtx.set(ck, { value: p.value, context: ctx, _ts: ts });
+    });
+    byCtx.forEach((p, ck) => buckets.push({ name, ctx: p.context, ctxKey: ck, value: p.value }));
+  });
+
+  // Fallback for older runs that have scalar_latest but no scalars[] payload.
+  if (!buckets.length) {
+    const latest = _runPageState.metrics.scalar_latest || {};
+    Object.entries(latest).forEach(([name, p]) => {
+      if (!p || typeof p !== 'object') return;
+      const ctx = (p.context && typeof p.context === 'object') ? p.context : {};
+      buckets.push({ name, ctx, ctxKey: _runPageCtxKey(ctx), value: p.value });
+    });
+  }
+  if (!buckets.length) return '';
+
+  buckets.sort((a, b) => a.name.localeCompare(b.name) || a.ctxKey.localeCompare(b.ctxKey));
+
+  const LIMIT = 120;
+  const shown = buckets.slice(0, LIMIT);
+  const extra = Math.max(0, buckets.length - LIMIT);
+
+  const rows = shown.map(b => `
+    <div class="run-page-scalar-row">
+      <div class="run-page-scalar-key">
+        <span class="run-page-scalar-name">${_escHtml(b.name)}</span>
+        ${_runPageCtxChipHtml(b.ctx)}
+      </div>
+      <div class="run-page-scalar-val">${_escHtml(_formatMetricValue(b.value))}</div>
     </div>`).join('');
+
+  const tail = extra ? `<div class="run-page-muted">+ ${extra} more</div>` : '';
+
   return `<div class="run-params">
-    <div class="run-params-head">Latest Scalars</div>
-    <div class="run-params-grid">${rows}</div>
+    <div class="run-params-head">Latest Scalars (${buckets.length})</div>
+    <div class="run-page-scalar-list">${rows}</div>
+    ${tail}
   </div>`;
+}
+
+function _runPageCtxKey(ctx) {
+  const keys = Object.keys(ctx || {}).sort();
+  return keys.map(k => `${k}=${_runPageCtxStringify(ctx[k])}`).join('|');
+}
+
+function _runPageCtxStringify(v) {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try { return JSON.stringify(v); } catch (_) { return String(v); }
+}
+
+function _runPageCtxChipHtml(ctx) {
+  const keys = Object.keys(ctx || {}).sort();
+  if (!keys.length) return '';
+  const MAX = 4;
+  const parts = keys.slice(0, MAX).map(k => {
+    const val = _runPageCtxStringify(ctx[k]);
+    return `<span class="run-page-ctx-kv"><span class="run-page-ctx-k">${_escHtml(k)}</span>=<span class="run-page-ctx-v">${_escHtml(val)}</span></span>`;
+  });
+  const more = keys.length > MAX ? `<span class="run-page-ctx-more">+${keys.length - MAX}</span>` : '';
+  return `<span class="run-page-ctx-chip" title="${escAttr(keys.map(k => `${k}=${_runPageCtxStringify(ctx[k])}`).join(', '))}">${parts.join('')}${more}</span>`;
 }
 
 function _runPageKeyValueBlock(title, obj, limit) {
