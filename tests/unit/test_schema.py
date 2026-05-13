@@ -121,6 +121,8 @@ class TestSchemaInstallation:
 
         cols = {r["name"] for r in con.execute("PRAGMA table_info(logbook_entries)").fetchall()}
         assert "campaign" in cols
+        assert "board_json" in cols
+        assert "campaign_goal" in cols
 
         idx = con.execute(
             "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_logbook_entries_project_campaign'"
@@ -140,8 +142,8 @@ class TestAppSettingsRegistry:
             coercer(default)
 
     def test_no_unknown_types_in_defaults(self):
-        # Only str / int are used in the v4 defaults — surface drift loudly.
-        allowed = {str, int}
+        # str / int / bool are the only coercers we expect today — surface drift loudly.
+        allowed = {str, int, bool}
         for key, (_, coercer, _) in schema.APP_SETTINGS_DEFAULTS.items():
             assert coercer in allowed, f"{key} uses unexpected coercer {coercer}"
 

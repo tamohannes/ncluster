@@ -255,3 +255,7 @@ def get_backup_max_keep() -> int:
 
 def get_sdk_ingest_token() -> str:
     return get_setting("sdk_ingest_token")
+
+
+def get_custom_metrics_enabled() -> bool:
+    return get_setting("custom_metrics_enabled")
