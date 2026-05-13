@@ -121,7 +121,6 @@ describe('logbook present mode', () => {
       entryTitle: 'HLE entry',
       currentEntry: { id: 101, title: 'HLE entry' },
       editingId: null,
-      typeFilter: 'note',
       campaignFilter: 'eval',
       history: [{ type: 'entry', entryId: 101, project: 'hle', anchor: null }],
       mainHtml: '<div class="lb-detail">HLE content</div>',
@@ -157,7 +156,6 @@ describe('logbook present mode', () => {
 
     expect(_restoreLogbookTabState(capturedA.lbState)).toBe(true);
     expect((document.getElementById('lb-project-select') as HTMLSelectElement).value).toBe('hle');
-    expect((document.getElementById('lb-search') as HTMLInputElement).value).toBe('reasoning');
     expect(document.getElementById('lb-main')!.innerHTML).toContain('HLE content');
     expect(document.getElementById('lb-sidebar-list')!.innerHTML).toContain('HLE item');
   });

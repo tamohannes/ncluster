@@ -294,3 +294,121 @@ class TestLogbookApi:
         assert "text" in names
         mpsf = next(c for c in campaigns if c["name"] == "mpsf")
         assert mpsf["count"] == 2
+
+    def test_create_campaign_board_and_get(self, client):
+        board = {"version": 1, "sections": []}
+        r = client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({
+                "title": "Board title",
+                "body": "## Setup",
+                "entry_type": "campaign_board",
+                "campaign": "eval99",
+                "board_json": board,
+                "campaign_goal": "Sweep GPQA across three model sizes.",
+            }),
+            content_type="application/json",
+        )
+        d = r.get_json()
+        assert d["status"] == "ok"
+        eid = d["id"]
+
+        g = client.get("/api/logbook/testproj/campaign_board?campaign=eval99").get_json()
+        assert g.get("id") == eid
+        assert g.get("entry_type") == "campaign_board"
+        assert g.get("campaign") == "eval99"
+        assert "board_json" in g
+        assert g.get("campaign_goal") == "Sweep GPQA across three model sizes."
+
+        r2 = client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({
+                "title": "Dup",
+                "body": "",
+                "entry_type": "campaign_board",
+                "campaign": "eval99",
+            }),
+            content_type="application/json",
+        )
+        assert r2.status_code in (400, 409)
+        dup = r2.get_json()
+        assert dup.get("existing_id") == eid
+
+    def test_campaign_boards_list(self, client):
+        client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({
+                "title": "B1",
+                "entry_type": "campaign_board",
+                "campaign": "c1",
+            }),
+            content_type="application/json",
+        )
+        lst = client.get("/api/logbook/testproj/campaign_boards").get_json()
+        assert isinstance(lst, list)
+        assert any(x.get("campaign") == "c1" for x in lst)
+
+    def test_update_board_json_via_put(self, client):
+        client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({
+                "title": "B",
+                "entry_type": "campaign_board",
+                "campaign": "wx",
+            }),
+            content_type="application/json",
+        )
+        board = {
+            "version": 1,
+            "sections": [
+                {
+                    "title": "S",
+                    "columns": [{"id": "a", "label": "A"}],
+                    "rows": [{"cells": {"a": "1"}, "cluster": "dfw", "run_hash": "deadbeef"}],
+                }
+            ],
+        }
+        u = client.put(
+            "/api/logbook/testproj/campaign_board",
+            data=json.dumps({"campaign": "wx", "board_json": board}),
+            content_type="application/json",
+        )
+        assert u.status_code == 200
+        g = client.get("/api/logbook/testproj/campaign_board?campaign=wx").get_json()
+        assert "deadbeef" in g.get("board_json", "")
+
+    def test_list_filter_campaign_board_type(self, client):
+        client.post(
+            "/api/logbook/testproj/entries",
+            data={"title": "n", "body": "x"},
+            content_type="application/json",
+        )
+        client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({
+                "title": "cb",
+                "entry_type": "campaign_board",
+                "campaign": "zz",
+            }),
+            content_type="application/json",
+        )
+        resp = client.get("/api/logbook/testproj/entries?type=campaign_board")
+        entries = resp.get_json()
+        assert len(entries) == 1
+        assert entries[0]["entry_type"] == "campaign_board"
+
+    def test_list_campaigns_sorted_by_recent_activity(self, client):
+        client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({"title": "old", "body": "x", "campaign": "older"}),
+            content_type="application/json",
+        )
+        client.post(
+            "/api/logbook/testproj/entries",
+            data=json.dumps({"title": "new", "body": "y", "campaign": "newer"}),
+            content_type="application/json",
+        )
+        rows = client.get("/api/logbook/testproj/campaigns").get_json()
+        names = [r["name"] for r in rows]
+        assert names[0] == "newer"
+        assert names[1] == "older"

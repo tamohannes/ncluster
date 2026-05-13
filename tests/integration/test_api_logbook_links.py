@@ -1,12 +1,27 @@
-"""Integration tests for logbook map API and #id cross-reference links."""
+"""Integration tests for logbook_links (#id cross-references) and related APIs."""
 
 import json
+
 import pytest
+
+from server.db import get_db
+
+
+def _project_links(project: str) -> list[dict]:
+    con = get_db()
+    rows = con.execute(
+        """SELECT l.source_id, l.target_id FROM logbook_links l
+           JOIN logbook_entries e ON l.source_id = e.id
+           WHERE e.project = ?""",
+        (project,),
+    ).fetchall()
+    con.close()
+    return [{"source_id": r["source_id"], "target_id": r["target_id"]} for r in rows]
 
 
 @pytest.mark.integration
 class TestLogbookLinks:
-    """Verify that #id references in entry bodies create logbook_links."""
+    """Verify that #id references in entry bodies create logbook_links rows."""
 
     def _create(self, client, project, title, body="", entry_type="note"):
         r = client.post(
@@ -21,9 +36,7 @@ class TestLogbookLinks:
         id_a = self._create(client, "proj", "Plan A", entry_type="plan")
         id_b = self._create(client, "proj", "Note B", body=f"Follow-up to #{id_a}")
 
-        resp = client.get("/api/logbook/proj/map")
-        data = resp.get_json()
-        links = data["links"]
+        links = _project_links("proj")
         assert any(
             l["source_id"] == id_b and l["target_id"] == id_a for l in links
         ), f"Expected link from {id_b} -> {id_a}, got {links}"
@@ -33,8 +46,7 @@ class TestLogbookLinks:
         id_b = self._create(client, "proj", "Entry B")
         id_c = self._create(client, "proj", "Entry C", body=f"Refs #{id_a}")
 
-        resp = client.get("/api/logbook/proj/map")
-        links_before = resp.get_json()["links"]
+        links_before = _project_links("proj")
         assert any(l["source_id"] == id_c and l["target_id"] == id_a for l in links_before)
 
         client.put(
@@ -43,8 +55,7 @@ class TestLogbookLinks:
             content_type="application/json",
         )
 
-        resp = client.get("/api/logbook/proj/map")
-        links_after = resp.get_json()["links"]
+        links_after = _project_links("proj")
         assert not any(l["source_id"] == id_c and l["target_id"] == id_a for l in links_after)
         assert any(l["source_id"] == id_c and l["target_id"] == id_b for l in links_after)
 
@@ -55,67 +66,19 @@ class TestLogbookLinks:
             data=json.dumps({"body": f"Self ref #{id_a}"}),
             content_type="application/json",
         )
-        resp = client.get("/api/logbook/proj/map")
-        links = resp.get_json()["links"]
+        links = _project_links("proj")
         assert not any(l["source_id"] == id_a and l["target_id"] == id_a for l in links)
 
     def test_no_refs_no_links(self, client):
         self._create(client, "proj", "No refs", body="Plain body text")
-        resp = client.get("/api/logbook/proj/map")
-        assert resp.get_json()["links"] == []
+        assert _project_links("proj") == []
 
     def test_delete_entry_removes_links(self, client):
         id_a = self._create(client, "proj", "Parent")
         id_b = self._create(client, "proj", "Child", body=f"Refs #{id_a}")
         client.delete(f"/api/logbook/proj/entries/{id_b}")
-        resp = client.get("/api/logbook/proj/map")
-        links = resp.get_json()["links"]
+        links = _project_links("proj")
         assert not any(l["source_id"] == id_b for l in links)
-
-
-@pytest.mark.integration
-class TestLogbookMapApi:
-    """Verify /api/logbook/<project>/map returns correct structure."""
-
-    def _create(self, client, project, title, body="", entry_type="note"):
-        r = client.post(
-            f"/api/logbook/{project}/entries",
-            data=json.dumps({"title": title, "body": body, "entry_type": entry_type}),
-            content_type="application/json",
-        )
-        return r.get_json()["id"]
-
-    def test_map_empty_project(self, client):
-        resp = client.get("/api/logbook/empty/map")
-        data = resp.get_json()
-        assert data["nodes"] == []
-        assert data["links"] == []
-
-    def test_map_returns_all_nodes(self, client):
-        self._create(client, "proj", "A")
-        self._create(client, "proj", "B")
-        self._create(client, "proj", "C")
-        resp = client.get("/api/logbook/proj/map")
-        data = resp.get_json()
-        assert len(data["nodes"]) == 3
-
-    def test_map_node_fields(self, client):
-        self._create(client, "proj", "Test Node", entry_type="plan")
-        resp = client.get("/api/logbook/proj/map")
-        node = resp.get_json()["nodes"][0]
-        assert "id" in node
-        assert node["title"] == "Test Node"
-        assert node["entry_type"] == "plan"
-        assert "created_at" in node
-        assert "edited_at" in node
-
-    def test_map_cross_project_isolation(self, client):
-        id_a = self._create(client, "alpha", "Alpha entry")
-        self._create(client, "beta", "Beta entry", body=f"Ref #{id_a}")
-        resp_a = client.get("/api/logbook/alpha/map")
-        resp_b = client.get("/api/logbook/beta/map")
-        assert len(resp_a.get_json()["nodes"]) == 1
-        assert len(resp_b.get_json()["nodes"]) == 1
 
 
 @pytest.mark.integration
