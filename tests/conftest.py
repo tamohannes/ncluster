@@ -43,6 +43,24 @@ def _first_real_cluster():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def _allow_legacy_runs_in_tests(monkeypatch):
+    """Re-enable legacy run row creation for the test suite.
+
+    Production refuses to materialise ``source='legacy'`` rows unless the
+    operator explicitly sets ``CLAUSIUS_ALLOW_LEGACY_RUNS=1`` — the
+    escape hatch for environments that haven't yet migrated to the SDK.
+    Many test helpers (`_seed_sdk_run`, etc.) seed rows via
+    ``upsert_run()`` for setup convenience; toggling the flag on by
+    default in tests keeps those helpers working without rewriting them
+    to call ``upsert_run_from_sdk()`` with a full provenance dict.
+
+    Tests that specifically want to assert the legacy-disabled behavior
+    can override with ``monkeypatch.delenv("CLAUSIUS_ALLOW_LEGACY_RUNS")``.
+    """
+    monkeypatch.setenv("CLAUSIUS_ALLOW_LEGACY_RUNS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _isolate_db(monkeypatch):
     """Redirect every DB read/write to a per-test temp file.
 
