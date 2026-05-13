@@ -445,7 +445,7 @@ pytest -m live               # real cluster tests (requires running app)
 | Layer | Directory | What it covers |
 |-------|-----------|----------------|
 | Unit | `tests/unit/` | Bootstrap, schema, CRUD (clusters, team, paths, settings), parsers, DB ops, cache, mount resolution, config proxies, entry refs |
-| Integration | `tests/integration/` | All Flask routes via test client (including new per-namespace endpoints), logbook map, storage quota, CLI |
+| Integration | `tests/integration/` | All Flask routes via test client (including new per-namespace endpoints), logbook links, storage quota, CLI |
 | MCP | `tests/mcp/` | Tool contracts, bulk read, config management, transport errors, edge cases |
 | Live | `tests/live/` | Real SSH/Slurm reads + job cancel |
 

@@ -266,8 +266,13 @@ async function openLog(cluster, jobId, jobName, force) {
   document.getElementById('modal-content').className = 'log-loading';
   document.getElementById('modal-content').textContent = 'Discovering log directories…';
   document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
+  const cmEnabled = typeof isCustomMetricsEnabled === 'function' && isCustomMetricsEnabled();
+  const clBar = document.getElementById('custom-log-bar');
+  const mcBar = document.getElementById('metrics-config-bar');
+  if (clBar) clBar.style.display = cmEnabled ? '' : 'none';
+  if (mcBar) mcBar.style.display = cmEnabled ? '' : 'none';
   _syncCustomLogInput('');
-  _loadMetricsConfig();
+  if (cmEnabled) _loadMetricsConfig();
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
   try {
@@ -362,6 +367,11 @@ async function openDir(cluster, dirPath, label) {
   document.getElementById('modal-content').className = 'log-loading';
   document.getElementById('modal-content').textContent = 'Loading directory…';
   document.getElementById('tree-pane').innerHTML = '<div class="tree-loading">loading…</div>';
+  const cmEnabled = typeof isCustomMetricsEnabled === 'function' && isCustomMetricsEnabled();
+  const clBar = document.getElementById('custom-log-bar');
+  const mcBar = document.getElementById('metrics-config-bar');
+  if (clBar) clBar.style.display = cmEnabled ? '' : 'none';
+  if (mcBar) mcBar.style.display = cmEnabled ? '' : 'none';
   _syncCustomLogInput('');
   _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
   _renderMetricsConfigRows();

@@ -303,7 +303,7 @@ let _statsChartInstances = [];
 
 async function _loadCustomMetricsForStats(cluster, jobId) {
   const el = document.getElementById('custom-metrics-section');
-  if (!el) return;
+  if (!el || !isCustomMetricsEnabled()) return;
 
   const refreshBtn = `<button onclick="_loadCustomMetricsForStats('${cluster}','${jobId}')" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px;vertical-align:middle" title="refresh">↻</button>`;
   el.innerHTML = `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
@@ -919,6 +919,10 @@ async function loadSettingsPanel() {
     document.getElementById('set-backup-interval').value = cfg.backup_interval_hours || 24;
     document.getElementById('set-backup-max').value = cfg.backup_max_keep || 7;
 
+    _customMetricsEnabled = cfg.custom_metrics_enabled !== false;
+    const cmEl = document.getElementById('set-custom-metrics');
+    if (cmEl) cmEl.checked = _customMetricsEnabled;
+
     const inc = (cfg.local_process_filters || {}).include || [];
     const exc = (cfg.local_process_filters || {}).exclude || [];
     document.getElementById('set-proc-include').value = inc.join(', ');
@@ -1453,12 +1457,15 @@ async function _saveProjectCard(card) {
 
 async function saveAdvancedSettings() {
   // v4: each app_setting key has its own /api/settings/<key> endpoint.
+  const cmChecked = document.getElementById('set-custom-metrics')?.checked ?? true;
+  _customMetricsEnabled = cmChecked;
   const updates = {
     ssh_timeout: parseInt(document.getElementById('set-ssh-timeout').value) || 8,
     cache_fresh_sec: parseInt(document.getElementById('set-cache-fresh').value) || 30,
     stats_interval_sec: parseInt(document.getElementById('set-stats-interval').value) || 1800,
     backup_interval_hours: parseInt(document.getElementById('set-backup-interval').value) || 24,
     backup_max_keep: parseInt(document.getElementById('set-backup-max').value) || 7,
+    custom_metrics_enabled: cmChecked,
   };
   let failed = 0;
   for (const [key, value] of Object.entries(updates)) {
