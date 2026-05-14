@@ -8750,3 +8750,286 @@ main,
   background-image: none !important;
   box-shadow: none !important;
 }
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Mind map (logbook entry_type === 'mind_map')
+
+   Static DAG renderer; node status colors are CSS-variable driven so dark
+   mode and theme overrides "just work".
+   ─────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --mm-status-planned-fg:   var(--text-muted, #6b7280);
+  --mm-status-planned-bg:   color-mix(in srgb, var(--surface2) 78%, var(--bg));
+  --mm-status-planned-bd:   color-mix(in srgb, var(--text-muted, #6b7280) 35%, transparent);
+
+  --mm-status-active-fg:    var(--accent);
+  --mm-status-active-bg:    var(--accent-bg);
+  --mm-status-active-bd:    var(--accent);
+
+  --mm-status-blocked-fg:   var(--amber, #d97706);
+  --mm-status-blocked-bg:   var(--amber-bg, color-mix(in srgb, var(--amber, #d97706) 14%, var(--bg)));
+  --mm-status-blocked-bd:   color-mix(in srgb, var(--amber, #d97706) 65%, transparent);
+
+  --mm-status-done-fg:      #1b873d;
+  --mm-status-done-bg:      color-mix(in srgb, #1b873d 12%, var(--bg));
+  --mm-status-done-bd:      color-mix(in srgb, #1b873d 55%, transparent);
+
+  --mm-status-failed-fg:    #c2353f;
+  --mm-status-failed-bg:    color-mix(in srgb, #c2353f 14%, var(--bg));
+  --mm-status-failed-bd:    color-mix(in srgb, #c2353f 60%, transparent);
+
+  --mm-status-abandoned-fg: color-mix(in srgb, var(--text-muted, #6b7280) 80%, var(--bg));
+  --mm-status-abandoned-bg: color-mix(in srgb, var(--surface2) 60%, var(--bg));
+  --mm-status-abandoned-bd: color-mix(in srgb, var(--text-muted, #6b7280) 25%, transparent);
+
+  --mm-edge:               color-mix(in srgb, var(--text-muted, #6b7280) 55%, transparent);
+  --mm-edge-success:       color-mix(in srgb, #1b873d 75%, transparent);
+  --mm-edge-failure:       color-mix(in srgb, #c2353f 80%, transparent);
+  --mm-edge-branch:        color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+.lb-badge-mind-map {
+  display: inline-block; font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px; margin-right: 4px;
+  background: var(--mm-status-active-bg); color: var(--mm-status-active-fg); border: none;
+  vertical-align: middle;
+}
+
+.lb-sidebar-item.lb-type-mind-map {
+  background: color-mix(in srgb, var(--mm-status-active-bg) 35%, var(--bg));
+  border: none;
+  border-left: 3px solid var(--mm-status-active-bd);
+}
+.lb-mind-map-glyph { color: var(--mm-status-active-fg); }
+
+.lb-main-mind-map { background: var(--bg); }
+.lb-mind-map-shell {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 0;
+}
+.lb-mind-map-ribbon {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  color: var(--mm-status-active-fg); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.lb-mind-map-canvas {
+  background: var(--surface, var(--bg));
+  border: 1px solid var(--border, color-mix(in srgb, var(--text-muted, #6b7280) 18%, transparent));
+  border-radius: 10px;
+  padding: 12px;
+  min-height: 360px;
+  overflow: auto;
+  position: relative;
+}
+
+.mm-empty {
+  padding: 36px 24px;
+  text-align: center;
+  color: var(--text-muted, #6b7280);
+  font-size: 13px;
+  display: flex; flex-direction: column; gap: 6px; align-items: center;
+}
+.mm-empty-title { font-weight: 600; color: var(--text); font-size: 14px; }
+.mm-empty-sub { max-width: 520px; line-height: 1.5; }
+.mm-empty-error { color: var(--mm-status-failed-fg); }
+
+.mm-shell { display: flex; flex-direction: column; gap: 10px; }
+.mm-legend {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding-bottom: 4px;
+}
+.mm-legend-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  padding: 3px 8px; border-radius: 12px;
+  background: var(--surface2);
+  color: var(--text-muted, #6b7280);
+  border: 1px solid color-mix(in srgb, var(--text-muted, #6b7280) 18%, transparent);
+}
+.mm-legend-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: currentColor;
+  display: inline-block;
+}
+.mm-legend-chip.mm-status-planned   { color: var(--mm-status-planned-fg); }
+.mm-legend-chip.mm-status-active    { color: var(--mm-status-active-fg);  border-color: var(--mm-status-active-bd); }
+.mm-legend-chip.mm-status-blocked   { color: var(--mm-status-blocked-fg); border-color: var(--mm-status-blocked-bd); }
+.mm-legend-chip.mm-status-done      { color: var(--mm-status-done-fg);    border-color: var(--mm-status-done-bd); }
+.mm-legend-chip.mm-status-failed    { color: var(--mm-status-failed-fg);  border-color: var(--mm-status-failed-bd); }
+.mm-legend-chip.mm-status-abandoned { color: var(--mm-status-abandoned-fg); }
+
+.mm-canvas-wrap {
+  width: 100%; overflow: auto;
+  display: flex; justify-content: center;
+}
+.mm-canvas {
+  width: 100%; height: auto; max-width: 100%;
+  font-family: var(--sans);
+}
+.mm-canvas .mm-arrow-head { fill: var(--mm-edge); }
+.mm-canvas .mm-edge {
+  stroke: var(--mm-edge);
+  stroke-width: 1.6;
+  fill: none;
+}
+.mm-canvas .mm-edge-success { stroke: var(--mm-edge-success); }
+.mm-canvas .mm-edge-failure { stroke: var(--mm-edge-failure); stroke-dasharray: 6 4; }
+.mm-canvas .mm-edge-branch  { stroke: var(--mm-edge-branch);  stroke-dasharray: 2 3; }
+
+.mm-canvas .mm-edge-label {
+  font-size: 10px;
+  font-family: var(--mono);
+  fill: var(--text-muted, #6b7280);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+.mm-canvas .mm-edge-label-success { fill: var(--mm-status-done-fg); }
+.mm-canvas .mm-edge-label-failure { fill: var(--mm-status-failed-fg); }
+.mm-canvas .mm-edge-label-branch  { fill: var(--mm-status-active-fg); }
+
+.mm-canvas .mm-node { cursor: pointer; outline: none; }
+.mm-canvas .mm-node:hover .mm-node-rect,
+.mm-canvas .mm-node:focus-visible .mm-node-rect {
+  filter: brightness(0.97);
+  stroke-width: 2;
+}
+.mm-canvas .mm-node-rect {
+  fill: var(--mm-status-planned-bg);
+  stroke: var(--mm-status-planned-bd);
+  stroke-width: 1.4;
+  transition: filter 90ms ease;
+}
+.mm-canvas .mm-node-status-dot {
+  fill: var(--mm-status-planned-fg);
+  stroke: var(--bg);
+  stroke-width: 1.5;
+}
+.mm-canvas .mm-node-title {
+  fill: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.mm-canvas .mm-node-summary {
+  fill: var(--text-muted, #6b7280);
+  font-size: 11px;
+}
+.mm-canvas .mm-node-summary-muted {
+  font-family: var(--mono);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-size: 9.5px;
+}
+
+.mm-canvas .mm-status-planned   .mm-node-rect      { fill: var(--mm-status-planned-bg);   stroke: var(--mm-status-planned-bd); }
+.mm-canvas .mm-status-planned   .mm-node-status-dot{ fill: var(--mm-status-planned-fg); }
+.mm-canvas .mm-status-active    .mm-node-rect      { fill: var(--mm-status-active-bg);    stroke: var(--mm-status-active-bd); stroke-width: 1.8; }
+.mm-canvas .mm-status-active    .mm-node-status-dot{ fill: var(--mm-status-active-fg); }
+.mm-canvas .mm-status-blocked   .mm-node-rect      { fill: var(--mm-status-blocked-bg);   stroke: var(--mm-status-blocked-bd); }
+.mm-canvas .mm-status-blocked   .mm-node-status-dot{ fill: var(--mm-status-blocked-fg); }
+.mm-canvas .mm-status-done      .mm-node-rect      { fill: var(--mm-status-done-bg);      stroke: var(--mm-status-done-bd); }
+.mm-canvas .mm-status-done      .mm-node-status-dot{ fill: var(--mm-status-done-fg); }
+.mm-canvas .mm-status-failed    .mm-node-rect      { fill: var(--mm-status-failed-bg);    stroke: var(--mm-status-failed-bd); }
+.mm-canvas .mm-status-failed    .mm-node-status-dot{ fill: var(--mm-status-failed-fg); }
+.mm-canvas .mm-status-abandoned .mm-node-rect      { fill: var(--mm-status-abandoned-bg); stroke: var(--mm-status-abandoned-bd); }
+.mm-canvas .mm-status-abandoned .mm-node-status-dot{ fill: var(--mm-status-abandoned-fg); }
+.mm-canvas .mm-status-abandoned .mm-node-title     { text-decoration: line-through; opacity: 0.85; }
+.mm-canvas .mm-status-abandoned .mm-node-summary   { opacity: 0.75; }
+
+/* Click popover */
+.mm-popover-backdrop {
+  position: fixed; inset: 0;
+  background: color-mix(in srgb, var(--bg) 70%, rgba(0,0,0,0.35));
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 9000;
+  padding: 24px;
+}
+.mm-popover-backdrop.visible { display: flex; }
+.mm-popover {
+  background: var(--surface, var(--bg));
+  border: 1px solid var(--border, color-mix(in srgb, var(--text-muted, #6b7280) 18%, transparent));
+  border-radius: 12px;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.18);
+  max-width: 680px;
+  width: min(680px, 100%);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 18px 22px 22px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.mm-popover-head {
+  display: flex; justify-content: space-between; align-items: center;
+}
+.mm-popover-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  padding: 3px 9px; border-radius: 12px;
+  background: var(--surface2);
+  color: var(--text-muted, #6b7280);
+  border: 1px solid color-mix(in srgb, var(--text-muted, #6b7280) 18%, transparent);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.mm-popover-status.mm-status-planned   { color: var(--mm-status-planned-fg); }
+.mm-popover-status.mm-status-active    { color: var(--mm-status-active-fg);  border-color: var(--mm-status-active-bd); background: var(--mm-status-active-bg); }
+.mm-popover-status.mm-status-blocked   { color: var(--mm-status-blocked-fg); border-color: var(--mm-status-blocked-bd); background: var(--mm-status-blocked-bg); }
+.mm-popover-status.mm-status-done      { color: var(--mm-status-done-fg);    border-color: var(--mm-status-done-bd);    background: var(--mm-status-done-bg); }
+.mm-popover-status.mm-status-failed    { color: var(--mm-status-failed-fg);  border-color: var(--mm-status-failed-bd);  background: var(--mm-status-failed-bg); }
+.mm-popover-status.mm-status-abandoned { color: var(--mm-status-abandoned-fg); }
+.mm-popover-close {
+  background: transparent; border: none; cursor: pointer;
+  font-size: 22px; line-height: 1; color: var(--text-muted, #6b7280);
+  padding: 4px 8px; border-radius: 6px;
+}
+.mm-popover-close:hover { background: var(--surface2); color: var(--text); }
+.mm-popover-title {
+  margin: 0;
+  font-family: var(--sans); font-size: 18px; font-weight: 700; color: var(--text);
+  line-height: 1.3;
+}
+.mm-popover-id {
+  font-family: var(--mono); font-size: 11px; color: var(--text-muted, #6b7280);
+}
+.mm-popover-id code {
+  background: var(--surface2); padding: 1px 6px; border-radius: 4px;
+}
+.mm-popover-summary {
+  font-size: 13px; line-height: 1.45; color: var(--text);
+  padding: 8px 12px; border-left: 3px solid var(--mm-status-active-bd);
+  background: var(--surface2); border-radius: 0 6px 6px 0;
+}
+.mm-popover-body {
+  font-size: 13.5px; line-height: 1.55;
+}
+.mm-popover-body pre {
+  background: var(--surface2);
+  padding: 10px 12px; border-radius: 8px;
+  overflow-x: auto; font-size: 12.5px;
+}
+.mm-popover-body code { font-family: var(--mono); }
+
+.mm-aimql-open {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  padding: 4px 10px; margin-top: -6px; margin-bottom: 10px;
+  border-radius: 6px; text-decoration: none;
+  background: var(--mm-status-active-bg);
+  color: var(--mm-status-active-fg);
+  border: 1px solid var(--mm-status-active-bd);
+}
+.mm-aimql-open:hover {
+  background: color-mix(in srgb, var(--mm-status-active-bg) 65%, var(--accent));
+  color: var(--mm-status-active-fg);
+}
+
+.lb-editor-graph-shell {
+  border-left: 3px solid var(--mm-status-active-bd);
+}
