@@ -1235,6 +1235,27 @@ async def get_cluster_config(name: str) -> dict:
 
 
 @mcp.tool()
+async def resolve_cluster_name(name: str, host: Optional[str] = None) -> dict:
+    """Resolve a cluster name (canonical or alias) to its canonical form.
+
+    Use this when an external system (NeMo-Skills YAML, custom launcher,
+    third-party tool) refers to a cluster by a name that may be an alias
+    of a canonical Clausius cluster, e.g. ``aws-cmh-science`` -> ``aws-cmh``.
+    Resolution checks canonical names first, then per-cluster aliases,
+    then (optionally) the SSH host as a fallback signal.
+
+    Returns ``{"canonical", "source", "matched_alias"?}`` on a hit, where
+    ``source`` is ``"canonical"``, ``"alias"``, or ``"host"``. Returns
+    ``{"error": "no_match", "name": <input>}`` when nothing matches —
+    the tool never invents a canonical name by guessing. Read-only.
+    """
+    params = {"name": name}
+    if host:
+        params["host"] = host
+    return await _api_async("GET", "/api/cluster_resolve", query_string=params)
+
+
+@mcp.tool()
 async def add_cluster_config(
     name: str,
     host: str,
