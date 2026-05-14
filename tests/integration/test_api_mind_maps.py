@@ -167,6 +167,26 @@ class TestMindMapValidator:
         resp = _create_mind_map(client, "mmproj", "v6", graph_json=bad)
         assert resp.status_code == 400
 
+    def test_blocker_and_verification_kinds_accepted(self, client):
+        graph = {
+            "version": 1,
+            "nodes": [
+                {"id": "feat", "title": "feature", "status": "active"},
+                {"id": "dep", "title": "blocking dep", "status": "blocked"},
+                {"id": "ci", "title": "passing CI", "status": "done"},
+            ],
+            "edges": [
+                {"id": "e-block", "from": "dep", "to": "feat", "kind": "blocker"},
+                {"id": "e-verify", "from": "ci", "to": "feat", "kind": "verification"},
+            ],
+        }
+        resp = _create_mind_map(client, "mmproj", "kinds", graph_json=graph)
+        assert resp.status_code == 200
+        got = _get_mind_map(client, "mmproj", "kinds").get_json()
+        gj = json.loads(got["graph_json"])
+        kinds = {e["id"]: e["kind"] for e in gj["edges"]}
+        assert kinds == {"e-block": "blocker", "e-verify": "verification"}
+
 
 @pytest.mark.integration
 class TestMindMapUpdate:
