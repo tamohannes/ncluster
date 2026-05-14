@@ -257,30 +257,45 @@ function _renderSidebarList(entries) {
 
   _pinnedEntryIds = new Set(entries.filter(e => e.pinned).map(e => e.id));
   const cf = (_lbCampaignFilter || '').trim().toLowerCase();
-  let heroBoard = null;
+  let heroEntry = null;
+  let heroLabel = '';
   if (cf) {
-    heroBoard = entries.find(
-      e => e.entry_type === 'campaign_board'
+    heroEntry = entries.find(
+      e => e.entry_type === 'mind_map'
         && String(e.campaign || '').trim().toLowerCase() === cf
     ) || null;
+    if (heroEntry) {
+      heroLabel = 'Mind map';
+    } else {
+      heroEntry = entries.find(
+        e => e.entry_type === 'campaign_board'
+          && String(e.campaign || '').trim().toLowerCase() === cf
+      ) || null;
+      if (heroEntry) heroLabel = 'Campaign board';
+    }
   }
-  const rest = heroBoard ? entries.filter(e => e.id !== heroBoard.id) : entries;
+  const rest = heroEntry ? entries.filter(e => e.id !== heroEntry.id) : entries;
 
+  const _campaignRoot = (e) => {
+    if (e.entry_type === 'mind_map') return 0;
+    if (e.entry_type === 'campaign_board') return 1;
+    return 2;
+  };
   const pinned = rest.filter(e => e.pinned);
   const unpinned = rest.filter(e => !e.pinned);
   const unpinnedRanked = [...unpinned].sort((a, b) => {
-    const ra = a.entry_type === 'campaign_board' ? 0 : 1;
-    const rb = b.entry_type === 'campaign_board' ? 0 : 1;
+    const ra = _campaignRoot(a);
+    const rb = _campaignRoot(b);
     if (ra !== rb) return ra - rb;
     return String(b.edited_at || '').localeCompare(String(a.edited_at || ''));
   });
   const sorted = [...pinned, ...unpinnedRanked];
 
   let html = '';
-  if (heroBoard) {
+  if (heroEntry) {
     html += '<div class="lb-sidebar-hero-board">';
-    html += '<div class="lb-sidebar-hero-board-label">Campaign board</div>';
-    html += _renderSidebarItems([heroBoard], false, { heroBoard: true });
+    html += `<div class="lb-sidebar-hero-board-label">${heroLabel}</div>`;
+    html += _renderSidebarItems([heroEntry], false, { heroBoard: true });
     html += '</div>';
   }
   if (pinned.length && unpinned.length) {
@@ -323,9 +338,16 @@ function _renderSidebarItems(items, showPinIcon, opts) {
     const preview = e.snippet ? _renderSnippet(rawPreview) : _cleanSidebarPreview(rawPreview).replace(/</g, '&lt;');
     const isPlan = e.entry_type === 'plan';
     const isBoard = e.entry_type === 'campaign_board';
+    const isMindMap = e.entry_type === 'mind_map';
     const heroCls = hero ? ' lb-sidebar-item--hero-board' : '';
-    const typeCls = hero ? '' : (isBoard ? ' lb-type-board' : (isPlan ? ' lb-type-plan' : ''));
-    const boardGlyph = isBoard ? '<span class="lb-sidebar-board-glyph" title="Campaign board">▦</span>' : '';
+    const typeCls = hero
+      ? ''
+      : (isMindMap ? ' lb-type-mind-map'
+         : (isBoard ? ' lb-type-board'
+            : (isPlan ? ' lb-type-plan' : '')));
+    const boardGlyph = isMindMap
+      ? '<span class="lb-sidebar-board-glyph lb-mind-map-glyph" title="Mind map">◈</span>'
+      : (isBoard ? '<span class="lb-sidebar-board-glyph" title="Campaign board">▦</span>' : '');
     const pinned = _isEntryPinned(e.id);
     const pinCls = pinned ? ' lb-pinned' : '';
     const pinBtn = `<span class="lb-pin-btn${pinned ? ' active' : ''}" onclick="event.stopPropagation();togglePinEntry(${e.id})" title="${pinned ? 'Unpin' : 'Pin'}">📌</span>`;
@@ -512,18 +534,36 @@ async function openLogbookEntry(entryId, opts = {}) {
     const edited = _formatDate(entry.edited_at);
     const isPlan = entry.entry_type === 'plan';
     const isBoard = entry.entry_type === 'campaign_board';
-    el.classList.toggle('lb-main-plan', isPlan && !isBoard);
+    const isMindMap = entry.entry_type === 'mind_map';
+    el.classList.toggle('lb-main-plan', isPlan && !isBoard && !isMindMap);
     el.classList.toggle('lb-main-board', isBoard);
+    el.classList.toggle('lb-main-mind-map', isMindMap);
     let typeBadge = '<span class="lb-badge-note">note</span>';
     if (isPlan) typeBadge = '<span class="lb-badge-plan">plan</span>';
     if (isBoard) typeBadge = '<span class="lb-badge-board">campaign board</span>';
+    if (isMindMap) typeBadge = '<span class="lb-badge-mind-map">mind map</span>';
     const campChip = entry.campaign ? `<span class="lb-detail-campaign-chip">${String(entry.campaign).replace(/</g, '&lt;')}</span>` : '';
     const goalTxt = ((entry.campaign_goal || '') + '').trim();
-    const goalBlock = isBoard && goalTxt
+    const goalHolder = isBoard || isMindMap;
+    const goalBlock = goalHolder && goalTxt
       ? `<div class="lb-board-goal"><h2 class="lb-board-setup-heading">Campaign goal</h2><div class="lb-board-goal-body">${goalTxt.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div></div>`
       : '';
-    const mainContent = isBoard
-      ? `<div class="lb-board-shell">
+    let mainContent;
+    if (isMindMap) {
+      mainContent = `<div class="lb-mind-map-shell">
+          <div class="lb-board-ribbon lb-mind-map-ribbon">
+            <span class="lb-board-ribbon-label">Mind map</span>
+            ${campChip}
+          </div>
+          ${goalBlock}
+          <div class="lb-mind-map-canvas" id="lb-mind-map-canvas"></div>
+          ${bodyHtml ? `<div class="lb-board-setup">
+            <h2 class="lb-board-setup-heading">Notes &amp; setup</h2>
+            <div class="lb-board-setup-body lb-detail-body">${bodyHtml}</div>
+          </div>` : ''}
+        </div>`;
+    } else if (isBoard) {
+      mainContent = `<div class="lb-board-shell">
           <div class="lb-board-ribbon">
             <span class="lb-board-ribbon-label">Campaign board</span>
             ${campChip}
@@ -534,8 +574,10 @@ async function openLogbookEntry(entryId, opts = {}) {
             <div class="lb-board-setup-body lb-detail-body">${bodyHtml}</div>
           </div>
           <div class="lb-board-grids">${_renderBoardJsonHtml(entry.board_json, false, entry.board_runtime)}</div>
-        </div>`
-      : `<div class="lb-detail-body">${bodyHtml}</div>`;
+        </div>`;
+    } else {
+      mainContent = `<div class="lb-detail-body">${bodyHtml}</div>`;
+    }
     const topbarEl = document.getElementById('lb-topbar');
     if (topbarEl) {
       const titleSafe = String(entry.title || 'Untitled').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -569,6 +611,10 @@ async function openLogbookEntry(entryId, opts = {}) {
         <h1 class="lb-detail-title">${title} <span class="lb-detail-id">#${entry.id}</span></h1>
         ${mainContent}
       </div>`;
+    if (isMindMap && typeof renderMindMap === 'function') {
+      const canvas = document.getElementById('lb-mind-map-canvas');
+      if (canvas) renderMindMap(canvas, entry);
+    }
     _resolveEntryRefs();
     const scrollContainer = document.getElementById('lb-main');
     if (opts.anchor) {
@@ -970,10 +1016,27 @@ function _lbSyncEditorTypeRow() {
   const sel = document.getElementById('lb-edit-type');
   const row = document.getElementById('lb-edit-board-row');
   const shell = document.getElementById('lb-editor-board-shell');
-  if (!sel || !row) return;
+  const graphRow = document.getElementById('lb-edit-graph-row');
+  const graphShell = document.getElementById('lb-editor-graph-shell');
+  if (!sel) return;
   const isBoard = sel.value === 'campaign_board';
-  row.style.display = isBoard ? 'block' : 'none';
+  const isMindMap = sel.value === 'mind_map';
+  if (row) row.style.display = isBoard ? 'block' : 'none';
   if (shell) shell.style.display = isBoard ? 'block' : 'none';
+  if (graphRow) graphRow.style.display = isMindMap ? 'block' : 'none';
+  if (graphShell) graphShell.style.display = isMindMap ? 'block' : 'none';
+}
+
+function _lbFormatGraphJson() {
+  const ta = document.getElementById('lb-edit-graph-json');
+  if (!ta) return;
+  try {
+    const o = JSON.parse(ta.value.trim() || '{}');
+    ta.value = JSON.stringify(o, null, 2);
+    toast('Formatted JSON', 'ok');
+  } catch (e) {
+    toast('Invalid JSON — fix before formatting', 'error');
+  }
 }
 
 function _lbFormatBoardJson() {
@@ -1023,12 +1086,12 @@ function _lbInsertSmartMetricGridTemplate() {
   toast('Inserted run_metric_grid — edit scalar names, cluster, and run_hash for each cell', 'ok');
 }
 
-function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson, campaignGoal) {
+function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson, campaignGoal, graphJson) {
   if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _lbEditingId = entryId || null;
   const el = document.getElementById('lb-main');
   if (!el) return;
-  el.classList.remove('lb-main-plan', 'lb-main-board');
+  el.classList.remove('lb-main-plan', 'lb-main-board', 'lb-main-mind-map');
   const titleVal = (title || '').replace(/"/g, '&quot;');
   const bodyVal = (body || '').replace(/</g, '&lt;');
   const typeVal = entryType || 'note';
@@ -1036,21 +1099,34 @@ function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson,
   let bj = boardJson;
   if (bj == null || bj === '') bj = '{"version":1,"sections":[]}';
   const bjStr = typeof bj === 'string' ? bj : JSON.stringify(bj, null, 2);
+  let gj = graphJson;
+  if (gj == null || gj === '') gj = '{"version":1,"nodes":[],"edges":[]}';
+  const gjStr = typeof gj === 'string' ? gj : JSON.stringify(gj, null, 2);
+  const showBoardOption = typeVal === 'campaign_board';
+  const boardOptionHtml = showBoardOption
+    ? `<option value="campaign_board" selected>Campaign board (legacy)</option>`
+    : '';
   el.innerHTML = `
     <div class="lb-editor">
       <div class="lb-editor-type-row">
         <select id="lb-edit-type" class="lb-editor-type-select" onchange="_lbSyncEditorTypeRow()">
           <option value="note" ${typeVal === 'note' ? 'selected' : ''}>Note</option>
           <option value="plan" ${typeVal === 'plan' ? 'selected' : ''}>Plan</option>
-          <option value="campaign_board" ${typeVal === 'campaign_board' ? 'selected' : ''}>Campaign board</option>
+          <option value="mind_map" ${typeVal === 'mind_map' ? 'selected' : ''}>Mind map</option>
+          ${boardOptionHtml}
         </select>
-        <input type="text" class="lb-editor-campaign" id="lb-edit-campaign" list="lb-campaign-suggest" placeholder="campaign (required for board)" value="${campVal}">
+        <input type="text" class="lb-editor-campaign" id="lb-edit-campaign" list="lb-campaign-suggest" placeholder="campaign (required for mind map / board)" value="${campVal}">
         <datalist id="lb-campaign-suggest"></datalist>
       </div>
       <div id="lb-editor-board-shell" class="lb-editor-board-shell" style="display:${typeVal === 'campaign_board' ? 'block' : 'none'}">
         <div class="lb-editor-board-banner">Campaign board — canonical team surface. <strong>Table</strong> sections: each row needs <code>cluster</code> + <code>run_hash</code>; optional <code>"type":"run_status"</code> column (max one per section) shows live Slurm/SDK aggregate state. <strong>run_metric_grid</strong> (smart metric table): pick which SDK stats appear in each column — optional <code>scalar</code> on a column is the default <code>scalar_latest</code> metric name for that column; each <code>cells["row_id:col_id"]</code> entry sets <code>cluster</code> + <code>run_hash</code> and may override with its own <code>scalar</code>. Every row×column pair is required. On save/read, Clausius fills <code>board_runtime</code> with live status, numeric values, and <code>malfunctioned</code> flags (no external services). Use <strong>insert template</strong> below to scaffold a grid, then replace metric keys and run hashes.</div>
         <label class="lb-editor-board-label" for="lb-edit-campaign-goal">Campaign goal</label>
         <textarea class="lb-editor-campaign-goal" id="lb-edit-campaign-goal" rows="4" placeholder="What this campaign is trying to achieve (plain text, a few sentences)…"></textarea>
+      </div>
+      <div id="lb-editor-graph-shell" class="lb-editor-board-shell lb-editor-graph-shell" style="display:${typeVal === 'mind_map' ? 'block' : 'none'}">
+        <div class="lb-editor-board-banner">Mind map — single source of truth for this campaign. Add tasks, bugs, failures, and successful runs as <strong>nodes</strong>; encode "what happens next" as <strong>edges</strong>. Status enum: <code>planned</code> / <code>active</code> / <code>blocked</code> / <code>done</code> / <code>failed</code> / <code>abandoned</code>. Edge kind enum: <code>default</code> / <code>success</code> / <code>failure</code> / <code>branch</code>. <strong>Prefer editing via the MCP <code>patch_mind_map</code> tool</strong> after discussing with the user — the JSON editor here is a fallback.</div>
+        <label class="lb-editor-board-label" for="lb-edit-campaign-goal-mm">Campaign goal</label>
+        <textarea class="lb-editor-campaign-goal" id="lb-edit-campaign-goal-mm" rows="4" placeholder="What this campaign is trying to achieve (plain text, a few sentences)…"></textarea>
       </div>
       <input type="text" class="lb-editor-title" id="lb-edit-title" placeholder="Entry title" value="${titleVal}">
       <textarea class="lb-editor-body" id="lb-edit-body" placeholder="Setup &amp; conventions (markdown)…&#10;&#10;Use @run-name to reference jobs.&#10;Drag/drop or paste images to attach." rows="14">${bodyVal}</textarea>
@@ -1062,6 +1138,13 @@ function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson,
           <button type="button" class="btn" onclick="_lbInsertSmartMetricGridTemplate()" title="Append a run_metric_grid section with column-level scalar keys">insert smart table template</button>
         </div>
       </div>
+      <div id="lb-edit-graph-row" style="display:${typeVal === 'mind_map' ? 'block' : 'none'}">
+        <label class="lb-editor-board-label" for="lb-edit-graph-json">graph_json</label>
+        <textarea class="lb-editor-board-json" id="lb-edit-graph-json" rows="18" spellcheck="false"></textarea>
+        <div class="lb-editor-board-json-actions">
+          <button type="button" class="btn" onclick="_lbFormatGraphJson()">format JSON</button>
+        </div>
+      </div>
       <div class="lb-editor-hint">drag &amp; drop or paste images into the body field</div>
       <div class="lb-editor-actions">
         <button class="btn" onclick="saveLogbookEntry()">save</button>
@@ -1070,8 +1153,13 @@ function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson,
     </div>`;
   const bjEl = document.getElementById('lb-edit-board-json');
   if (bjEl) bjEl.value = bjStr;
+  const gjEl = document.getElementById('lb-edit-graph-json');
+  if (gjEl) gjEl.value = gjStr;
+  const cgVal = (campaignGoal != null && campaignGoal !== '') ? String(campaignGoal) : '';
   const cgEl = document.getElementById('lb-edit-campaign-goal');
-  if (cgEl) cgEl.value = (campaignGoal != null && campaignGoal !== '') ? String(campaignGoal) : '';
+  if (cgEl) cgEl.value = cgVal;
+  const cgEl2 = document.getElementById('lb-edit-campaign-goal-mm');
+  if (cgEl2) cgEl2.value = cgVal;
   _setupImageHandlers();
   _loadCampaignSuggestions();
   _lbSyncEditorTypeRow();
@@ -1168,7 +1256,7 @@ async function editLogbookEntry(entryId) {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`);
     const entry = await res.json();
     if (entry.status === 'error') { toast(entry.error, 'error'); return; }
-    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type, entry.campaign, entry.board_json, entry.campaign_goal);
+    showLogbookEditor(entryId, entry.title, entry.body, entry.entry_type, entry.campaign, entry.board_json, entry.campaign_goal, entry.graph_json);
   } catch (e) {
     toast('Failed to load entry for editing', 'error');
   }
@@ -1189,6 +1277,10 @@ async function saveLogbookEntry() {
     toast('Campaign is required for a campaign board', 'error');
     return;
   }
+  if (entry_type === 'mind_map' && !campaign) {
+    toast('Campaign is required for a mind map', 'error');
+    return;
+  }
 
   const payload = { title, body, entry_type, campaign };
   if (entry_type === 'campaign_board') {
@@ -1201,6 +1293,18 @@ async function saveLogbookEntry() {
       return;
     }
     const cgta = document.getElementById('lb-edit-campaign-goal');
+    payload.campaign_goal = cgta ? cgta.value.trim() : '';
+  }
+  if (entry_type === 'mind_map') {
+    const gjta = document.getElementById('lb-edit-graph-json');
+    const raw = gjta ? gjta.value.trim() : '';
+    try {
+      payload.graph_json = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      toast('graph_json is not valid JSON', 'error');
+      return;
+    }
+    const cgta = document.getElementById('lb-edit-campaign-goal-mm');
     payload.campaign_goal = cgta ? cgta.value.trim() : '';
   }
 
