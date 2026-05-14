@@ -49,6 +49,7 @@ HOOK_END_SENTINEL='# CLAUSIUS_SDK_HOOK_END'
 HOOK_BLOCK='
     # CLAUSIUS_SDK_HOOK_START
     try:
+        from clausius_sdk import resolve_cluster_name
         from clausius_sdk.hooks import maybe_start_session
         from nemo_skills.pipeline.utils.clausius_param_enrichment import build_run_params
         _cl_local = locals()
@@ -60,11 +61,20 @@ HOOK_BLOCK='
         # params through verbatim; we pass command="" so it does not parse
         # ctx args again on its own.
         _cl_params = build_run_params(_cl_local, _cl_args)
+        # ``cluster`` here is the NeMo-Skills YAML name the user passed on
+        # the CLI (e.g. ``aws-cmh-science``). Clausius stores only canonical
+        # physical cluster names (``aws-cmh``); ``resolve_cluster_name``
+        # asks the running Clausius server to map the YAML alias to its
+        # canonical form so the synthetic ``sdk-<hash>`` job row and the
+        # real Slurm jobs end up on the same cluster identity. Falls
+        # through to the original string on any failure (Clausius down,
+        # ``CLAUSIUS_URL`` unset, name not registered).
+        _cl_cluster = resolve_cluster_name(cluster or "")
         maybe_start_session(
             expname=expname,
             command="",
             output_dir=_cl_local.get("output_dir") or "",
-            cluster=cluster or "",
+            cluster=_cl_cluster,
             params=_cl_params,
         )
     except Exception:
