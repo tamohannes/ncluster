@@ -712,6 +712,47 @@ async def get_run_results(cluster: str, run_hash: str, benchmark: Optional[str] 
     return await _api_async("GET", f"/api/run_results_by_hash/{cluster}/{run_hash}", query_string=params)
 
 
+@mcp.tool()
+async def delete_run(
+    cluster: str,
+    run_hash: str,
+    confirm: bool = False,
+    delete_jobs: bool = False,
+) -> dict:
+    """Hard-delete a run and every SDK metric/event/alias tied to it.
+
+    Removes the ``runs`` row (env_vars, batch_script, scontrol_raw,
+    params_json, metadata_json, conda_state, notes, …) plus every
+    ``sdk_events`` / ``run_metrics`` / ``run_scalars`` / ``sdk_run_aliases``
+    entry for the canonical ``run_uuid`` and its resume aliases.
+
+    Parameters:
+      * ``cluster``, ``run_hash`` — identify the run.
+      * ``confirm=True`` — required guard, the tool refuses to delete
+        without it so an agent can't wipe data with a single misclick.
+      * ``delete_jobs=True`` — also drop the linked ``job_history`` rows
+        and their ``job_stats_snapshots`` so the run disappears from the
+        history board too. Default leaves the Slurm history rows in place
+        and only unlinks them from the run.
+
+    Returns ``{"status": "ok", "counts": {...}, "run_id", "run_uuid"}``.
+    """
+    if not confirm:
+        return {
+            "status": "error",
+            "error": "delete_run refused: pass confirm=True to acknowledge this is destructive",
+        }
+    info = await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
+    if not isinstance(info, dict) or info.get("status") != "ok":
+        return info if isinstance(info, dict) else {"status": "error", "error": "non-json run_info response"}
+    run = info.get("run") or {}
+    run_id = run.get("id")
+    if not run_id:
+        return {"status": "error", "error": "run id missing in run_info payload"}
+    query = {"delete_jobs": "1"} if delete_jobs else {}
+    return await _api_async("DELETE", f"/api/run/{run_id}", query_string=query)
+
+
 async def _mcp_load_run(cluster: str, run_hash: str) -> tuple[Optional[dict], Optional[dict]]:
     """Return (error_dict, run_dict). ``run_dict`` is None on error."""
     data = await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
