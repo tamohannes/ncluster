@@ -1623,25 +1623,34 @@ async def create_logbook_entry(
     campaign: Optional[str] = None,
     board_json: Optional[Any] = None,
     campaign_goal: Optional[str] = None,
+    graph_json: Optional[Any] = None,
 ) -> dict:
     """Create a new logbook entry. Supports markdown, #N cross-refs, @run-name refs, images.
 
     See the project-logbook workspace rule for full formatting guidelines.
-    entry_type: "note" (results/findings), "plan" (plans/designs), or
-        "campaign_board" (singleton per project+campaign; requires ``campaign``
-        and optionally ``board_json`` / ``campaign_goal``).
+    entry_type: "note" (results/findings), "plan" (plans/designs),
+        "campaign_board" (legacy singleton per project+campaign; ``board_json``),
+        or "mind_map" (singleton per project+campaign; static DAG in ``graph_json``;
+        the canonical per-campaign source of truth — see the mind-map workspace rule).
     campaign: Optional campaign name. Auto-detected from a [campaign] title
         prefix when omitted (the prefix is stripped from the stored title).
     board_json: Optional dict or JSON string; only used for ``entry_type`` =
         ``"campaign_board"`` (validated server-side).
-    campaign_goal: Short plain-text description of the campaign's goal; only
-        for ``campaign_board``.
+    graph_json: Optional dict or JSON string; only used for ``entry_type`` =
+        ``"mind_map"`` (validated server-side). Schema: ``{"version": 1,
+        "nodes": [...], "edges": [...]}``. See the mind-map workspace rule for
+        node/edge field details; prefer creating an empty graph here and using
+        ``patch_mind_map`` to grow it incrementally.
+    campaign_goal: Short plain-text description of the campaign's goal; valid
+        for ``campaign_board`` and ``mind_map``.
     """
     payload = {"title": title, "body": body, "entry_type": entry_type}
     if campaign is not None:
         payload["campaign"] = campaign
     if board_json is not None:
         payload["board_json"] = board_json
+    if graph_json is not None:
+        payload["graph_json"] = graph_json
     if campaign_goal is not None:
         payload["campaign_goal"] = campaign_goal
     return await _api_async("POST", f"/api/logbook/{project}/entries", json=payload)
@@ -1659,6 +1668,7 @@ async def update_logbook_entry(
     campaign: Optional[str] = None,
     board_json: Optional[Any] = None,
     campaign_goal: Optional[str] = None,
+    graph_json: Optional[Any] = None,
 ) -> dict:
     """Update any subset of a logbook entry's mutable attributes. Bumps edited_at.
 
@@ -1667,7 +1677,8 @@ async def update_logbook_entry(
         entry_id: Globally unique entry id.
         title: New title string.
         body: New markdown body. Re-parses #N references and rebuilds the link table.
-        entry_type: "note", "plan", or "campaign_board". Invalid values are silently ignored.
+        entry_type: "note", "plan", "campaign_board", or "mind_map".
+            Invalid values are silently ignored.
         pinned: True to pin, False to unpin. Pinned entries sort to the top
             of list_logbook_entries.
         new_project: Move the entry to a different project. Entry IDs are
@@ -1675,7 +1686,9 @@ async def update_logbook_entry(
             Pass the bare project name (e.g. "hle"), not a URL.
         campaign: Campaign name (lowercase). Pass "" to clear.
         board_json: For ``campaign_board`` entries only: dict or JSON string.
-        campaign_goal: For ``campaign_board`` only: short plain-text goal.
+        graph_json: For ``mind_map`` entries only: dict or JSON string.
+            **Prefer ``patch_mind_map`` for incremental edits** (see mind-map rule).
+        campaign_goal: For ``campaign_board`` and ``mind_map``: short plain-text goal.
 
     All fields except project/entry_id are optional; pass only the ones you
     want to change. Returns {"status": "ok", "id", "edited_at", "project"?}.
@@ -1695,6 +1708,8 @@ async def update_logbook_entry(
         payload["campaign"] = campaign
     if board_json is not None:
         payload["board_json"] = board_json
+    if graph_json is not None:
+        payload["graph_json"] = graph_json
     if campaign_goal is not None:
         payload["campaign_goal"] = campaign_goal
     return await _api_async("PUT", f"/api/logbook/{project}/entries/{entry_id}", json=payload)
@@ -1787,6 +1802,176 @@ async def update_campaign_board(
     if campaign_goal is not None:
         payload["campaign_goal"] = campaign_goal
     return await _api_async("PUT", f"/api/logbook/{project}/campaign_board", json=payload)
+
+
+# ── Mind-map tools (per-campaign source-of-truth DAG; replaces campaign_board) ─
+
+
+@mcp.tool()
+async def get_mind_map(project: str, campaign: str) -> dict:
+    """Read the canonical **mind map** for ``project`` + ``campaign``.
+
+    The mind map is the **single source of truth** for everything happening
+    inside a campaign — tasks, bugs, failures, successful runs, decisions.
+    **Call this first** before answering any "what are we doing", "what's
+    blocked", or "where are we" question for the campaign, and **always
+    before editing**.
+
+    Returns the full entry (``body`` markdown, ``graph_json`` with nodes/edges,
+    ``campaign_goal``, ``entry_type``, ``edited_at``, …) or
+    ``{"status": "not_found", ...}`` if none exists yet.
+
+    See the mind-map workspace rule for the consult-before-edit protocol.
+    """
+    camp = (campaign or "").strip().lower()
+    return await _api_async(
+        "GET", f"/api/logbook/{project}/mind_map", query_string={"campaign": camp}
+    )
+
+
+@mcp.tool()
+async def list_mind_maps(project: str) -> list[dict]:
+    """List every campaign in this project that already has a **mind map**.
+
+    Returns ``[{"campaign", "entry_id", "title", "edited_at"}, ...]`` sorted by
+    ``edited_at`` descending (most recently updated mind maps first). Use to
+    discover existing mind maps before ``get_mind_map``.
+    """
+    data = await _api_async("GET", f"/api/logbook/{project}/mind_maps")
+    return data if isinstance(data, list) else []
+
+
+@mcp.tool()
+async def create_mind_map(
+    project: str,
+    campaign: str,
+    title: str = "",
+    body: str = "",
+    graph_json: Optional[Any] = None,
+    campaign_goal: str = "",
+) -> dict:
+    """Create the singleton mind map for ``project`` + ``campaign``.
+
+    The mind map becomes the per-campaign source of truth. Fails with
+    ``existing_id`` if one already exists — use ``get_mind_map`` then
+    ``patch_mind_map`` instead. **Always discuss with the user before
+    creating**; prefer starting with an empty ``graph_json`` and growing
+    the graph incrementally via ``patch_mind_map`` so each addition is
+    reviewable.
+
+    ``graph_json`` schema (all fields validated server-side):
+
+    ```json
+    {
+      "version": 1,
+      "nodes": [
+        {"id": "slug-id", "title": "Short title", "status": "planned",
+         "summary": "1-2 line hover text (optional)",
+         "description": "Markdown for click popover (optional). May contain"
+                        " #N refs, @cluster/run_hash refs, and ```aimql blocks."}
+      ],
+      "edges": [
+        {"id": "e1", "from": "slug-a", "to": "slug-b", "kind": "default",
+         "label": "optional"}
+      ]
+    }
+    ```
+
+    Status enum: ``planned``, ``active``, ``blocked``, ``done``, ``failed``,
+    ``abandoned``. Edge kind enum: ``default``, ``success``, ``failure``,
+    ``branch`` (failure/branch render dashed).
+    """
+    payload: dict = {"campaign": (campaign or "").strip().lower()}
+    if title:
+        payload["title"] = title.strip()
+    if body is not None:
+        payload["body"] = body.strip()
+    if graph_json is not None:
+        payload["graph_json"] = graph_json
+    if campaign_goal:
+        payload["campaign_goal"] = campaign_goal.strip()
+    return await _api_async("POST", f"/api/logbook/{project}/mind_map", json=payload)
+
+
+@mcp.tool()
+async def update_mind_map(
+    project: str,
+    campaign: str,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    graph_json: Optional[Any] = None,
+    campaign_goal: Optional[str] = None,
+) -> dict:
+    """Whole-field update of the mind map for ``project`` + ``campaign``.
+
+    **High-friction path.** This replaces the entire ``graph_json`` blob with
+    what you provide — strongly prefer ``patch_mind_map`` for any edit
+    smaller than a full redesign. Use ``update_mind_map`` only when the user
+    explicitly asks to replace the graph wholesale.
+
+    **Read before write:** call ``get_mind_map`` immediately before editing.
+    Only fields you pass are updated (``None`` skips).
+    """
+    payload: dict = {"campaign": (campaign or "").strip().lower()}
+    if title is not None:
+        payload["title"] = title.strip()
+    if body is not None:
+        payload["body"] = body.strip()
+    if graph_json is not None:
+        payload["graph_json"] = graph_json
+    if campaign_goal is not None:
+        payload["campaign_goal"] = campaign_goal
+    return await _api_async("PUT", f"/api/logbook/{project}/mind_map", json=payload)
+
+
+@mcp.tool()
+async def patch_mind_map(
+    project: str,
+    campaign: str,
+    ops: list[dict],
+) -> dict:
+    """Apply structured patch operations to the mind map. **Preferred edit path.**
+
+    **Read before write:** call ``get_mind_map`` immediately before patching.
+    Each op is reviewable in isolation; never apply more than the minimum
+    number of ops needed to land a single user-confirmed change. See the
+    mind-map workspace rule for the consult-before-edit protocol.
+
+    Supported ops (each ``op`` is one dict in the ``ops`` list):
+
+    - ``{"op": "add_node", "node": {"id": "...", "title": "...", "status": "..."}}``
+    - ``{"op": "update_node", "id": "...", "patch": {"title": "...", "summary": "..."}}``
+    - ``{"op": "remove_node", "id": "..."}``  (also removes incident edges)
+    - ``{"op": "add_edge", "edge": {"id": "e1", "from": "a", "to": "b", "kind": "success", "label": "..."}}``
+    - ``{"op": "update_edge", "id": "e1", "patch": {"kind": "failure"}}``
+    - ``{"op": "remove_edge", "id": "e1"}``
+    - ``{"op": "set_status", "id": "...", "status": "done"}``
+
+    Returns the updated mind_map entry on success. On invalid ops or schema
+    violations the response is ``{"status": "error", "error": "..."}`` and
+    no changes are persisted (atomic).
+    """
+    camp = (campaign or "").strip().lower()
+    payload = {"campaign": camp, "ops": ops}
+    return await _api_async("PATCH", f"/api/logbook/{project}/mind_map", json=payload)
+
+
+@mcp.tool()
+async def convert_campaign_board_to_mind_map(project: str, campaign: str) -> dict:
+    """Seed a new mind map from an existing legacy campaign board.
+
+    Copies the campaign board's ``body`` markdown and ``campaign_goal`` into
+    a fresh ``mind_map`` entry with an empty ``graph_json``. Idempotent:
+    returns ``{"status": "exists", "existing_id": ...}`` if a mind map
+    already exists for that campaign, and ``{"status": "not_found", ...}``
+    if there is no campaign board to convert from. The original campaign
+    board is left intact — migrate structured grid content into nodes via
+    ``patch_mind_map`` (consult the user first), then delete the legacy board.
+    """
+    payload = {"campaign": (campaign or "").strip().lower()}
+    return await _api_async(
+        "POST", f"/api/logbook/{project}/mind_map/from_campaign_board", json=payload
+    )
 
 
 @mcp.tool()
