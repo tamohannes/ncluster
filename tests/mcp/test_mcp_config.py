@@ -42,6 +42,41 @@ class TestMcpClusterTools:
 
 
 @pytest.mark.mcp
+class TestMcpResolveClusterName:
+    """Contract tests for the read-only ``resolve_cluster_name`` tool.
+
+    Exercises the Flask route the MCP tool delegates to via the same
+    test client path the real MCP server uses.
+    """
+
+    def _seed(self, client):
+        client.post("/api/clusters", json={
+            "name": "aws-cmh",
+            "host": "aws-cmh-login.example.com",
+            "aliases": ["aws-cmh-science"],
+        })
+
+    def test_canonical(self, client):
+        self._seed(client)
+        resp = client.get("/api/cluster_resolve?name=aws-cmh")
+        assert resp.status_code == 200
+        assert resp.get_json()["source"] == "canonical"
+        assert resp.get_json()["canonical"] == "aws-cmh"
+
+    def test_alias(self, client):
+        self._seed(client)
+        body = client.get("/api/cluster_resolve?name=aws-cmh-science").get_json()
+        assert body["canonical"] == "aws-cmh"
+        assert body["matched_alias"] == "aws-cmh-science"
+
+    def test_no_match_404(self, client):
+        self._seed(client)
+        resp = client.get("/api/cluster_resolve?name=ghost")
+        assert resp.status_code == 404
+        assert resp.get_json() == {"error": "no_match", "name": "ghost"}
+
+
+@pytest.mark.mcp
 class TestMcpTeamTools:
     def test_add_list_remove_round_trip(self, client):
         resp = client.post("/api/team/members", json={"username": "alice", "display_name": "Alice"})
