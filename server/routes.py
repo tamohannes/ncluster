@@ -2377,6 +2377,28 @@ def api_update_run(run_id):
     return jsonify({"status": "ok"})
 
 
+@api.route("/api/run/<int:run_id>", methods=["DELETE"])
+def api_delete_run(run_id):
+    """Hard-delete a run row and every SDK metric/event/alias tied to it.
+
+    Query string:
+      - ``delete_jobs=1`` also removes the linked ``job_history`` rows and
+        their ``job_stats_snapshots``. Default (omitted) keeps the Slurm
+        history rows and only unlinks them from the run.
+
+    Returns ``{"status": "ok", "counts": {...}}`` with per-table delete
+    counts or ``{"status": "not_found"}`` (404) when the id is unknown.
+    """
+    from .db import delete_run_completely
+
+    delete_jobs = (request.args.get("delete_jobs") or "").strip().lower() in {"1", "true", "yes"}
+    result = delete_run_completely(run_id, delete_jobs=delete_jobs)
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    bump_version()
+    return jsonify(result)
+
+
 @api.route("/api/history")
 def api_history():
     def _csv_arg(name):
