@@ -8787,6 +8787,8 @@ main,
   --mm-edge-success:       color-mix(in srgb, #1b873d 75%, transparent);
   --mm-edge-failure:       color-mix(in srgb, #c2353f 80%, transparent);
   --mm-edge-branch:        color-mix(in srgb, var(--accent) 75%, transparent);
+  --mm-edge-blocker:       color-mix(in srgb, #c2353f 85%, transparent);
+  --mm-edge-verification:  color-mix(in srgb, #1b873d 75%, transparent);
 }
 
 .lb-badge-mind-map {
@@ -8874,6 +8876,7 @@ main,
   font-family: var(--sans);
 }
 .mm-canvas .mm-arrow-head { fill: var(--mm-edge); }
+.mm-canvas .mm-stop-bar { fill: var(--mm-edge-blocker); }
 .mm-canvas .mm-edge {
   stroke: var(--mm-edge);
   stroke-width: 1.6;
@@ -8882,6 +8885,17 @@ main,
 .mm-canvas .mm-edge-success { stroke: var(--mm-edge-success); }
 .mm-canvas .mm-edge-failure { stroke: var(--mm-edge-failure); stroke-dasharray: 6 4; }
 .mm-canvas .mm-edge-branch  { stroke: var(--mm-edge-branch);  stroke-dasharray: 2 3; }
+.mm-canvas .mm-edge-blocker {
+  stroke: var(--mm-edge-blocker);
+  stroke-width: 1.9;
+  stroke-dasharray: 4 3;
+}
+.mm-canvas .mm-edge-verification {
+  stroke: var(--mm-edge-verification);
+  stroke-width: 2.4;
+  stroke-dasharray: 0;
+  paint-order: stroke;
+}
 
 .mm-canvas .mm-edge-label {
   font-size: 10px;
@@ -8892,9 +8906,11 @@ main,
   stroke-width: 3;
   stroke-linejoin: round;
 }
-.mm-canvas .mm-edge-label-success { fill: var(--mm-status-done-fg); }
-.mm-canvas .mm-edge-label-failure { fill: var(--mm-status-failed-fg); }
-.mm-canvas .mm-edge-label-branch  { fill: var(--mm-status-active-fg); }
+.mm-canvas .mm-edge-label-success      { fill: var(--mm-status-done-fg); }
+.mm-canvas .mm-edge-label-failure      { fill: var(--mm-status-failed-fg); }
+.mm-canvas .mm-edge-label-branch       { fill: var(--mm-status-active-fg); }
+.mm-canvas .mm-edge-label-blocker      { fill: var(--mm-status-failed-fg); font-weight: 700; }
+.mm-canvas .mm-edge-label-verification { fill: var(--mm-status-done-fg); font-weight: 700; }
 
 .mm-canvas .mm-node { cursor: pointer; outline: none; }
 .mm-canvas .mm-node:hover .mm-node-rect,

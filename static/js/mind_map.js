@@ -26,6 +26,16 @@ const _MM_EDGE_KIND_LABEL = {
   success: 'on success',
   failure: 'on failure',
   branch: 'branch',
+  blocker: 'blocks',
+  verification: 'verifies',
+};
+
+// Edge kinds that should render with a distinct end-cap instead of the
+// default arrowhead. `blocker` gets a small stop bar (visually "stops
+// downstream until source clears"); `verification` keeps the arrowhead
+// but the stroke style (double line via CSS) signals validation.
+const _MM_EDGE_END_MARKER = {
+  blocker: 'mm-stop',
 };
 
 const _MM_NODE_WIDTH = 240;
@@ -125,6 +135,10 @@ function renderMindMap(container, entry) {
                     markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0,0 L10,5 L0,10 z" class="mm-arrow-head"></path>
             </marker>
+            <marker id="mm-stop" viewBox="0 0 10 10" refX="5" refY="5"
+                    markerWidth="9" markerHeight="9" orient="auto">
+              <rect x="3.5" y="0.5" width="3" height="9" class="mm-stop-bar"></rect>
+            </marker>
           </defs>
         </svg>
       </div>
@@ -145,7 +159,8 @@ function renderMindMap(container, entry) {
     polyline.setAttribute('points', points);
     polyline.setAttribute('class', `mm-edge mm-edge-${kind}`);
     polyline.setAttribute('fill', 'none');
-    polyline.setAttribute('marker-end', 'url(#mm-arrow)');
+    const endMarker = _MM_EDGE_END_MARKER[kind] || 'mm-arrow';
+    polyline.setAttribute('marker-end', `url(#${endMarker})`);
     svg.appendChild(polyline);
     const labelText = meta.label || _MM_EDGE_KIND_LABEL[kind] || '';
     if (labelText) {
