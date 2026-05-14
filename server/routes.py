@@ -2968,6 +2968,37 @@ def api_clusters_delete(name):
     return jsonify(result), code
 
 
+@api.route("/api/cluster_resolve", methods=["GET"])
+def api_cluster_resolve():
+    """Resolve a cluster name (canonical or alias) to its canonical form.
+
+    Query params:
+      - ``name`` (required, string): the cluster name as the caller knows
+        it. May be a canonical name, an alias, or an unknown string.
+      - ``host`` (optional, string): the SSH login hostname; used as a
+        fallback signal when ``name`` doesn't match.
+
+    Returns ``200`` with ``{"canonical", "source", "matched_alias"?}`` on
+    success or ``404`` with ``{"error": "no_match", "name": "<input>"}``
+    when nothing matches. The endpoint never invents a canonical name by
+    guessing: callers can rely on a positive response being authoritative.
+
+    No write side effects, no auth required (mirrors the other read-only
+    cluster endpoints).
+    """
+    from .clusters import resolve_canonical_cluster
+
+    name = (request.args.get("name") or "").strip()
+    host = (request.args.get("host") or "").strip()
+    if not name and not host:
+        return jsonify({"error": "no_match", "name": name}), 404
+
+    hit = resolve_canonical_cluster(name, host=host)
+    if hit is None:
+        return jsonify({"error": "no_match", "name": name}), 404
+    return jsonify(hit), 200
+
+
 # Team members ----------------------------------------------------------------
 
 @api.route("/api/team/members", methods=["GET"])
