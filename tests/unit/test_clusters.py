@@ -16,8 +16,10 @@ from server.clusters import (
     get_cluster,
     list_cluster_names,
     list_clusters,
+    normalize_cluster_name,
     remove_cluster,
     reorder_clusters,
+    resolve_canonical_cluster,
     update_cluster,
 )
 from server.db import init_db
@@ -332,3 +334,147 @@ class TestTeamGpuAllocations:
         add_cluster("alpha", host="x")
         out = build_team_gpu_allocations()
         assert "alpha" not in out
+
+
+@pytest.mark.unit
+class TestAliasesStorage:
+    def test_add_with_aliases_round_trip(self):
+        result = add_cluster(
+            "aws-cmh",
+            host="aws-cmh.example.com",
+            aliases=["aws-cmh-science"],
+        )
+        assert result["status"] == "ok"
+        assert get_cluster("aws-cmh")["aliases"] == ["aws-cmh-science"]
+
+    def test_add_without_aliases_defaults_empty(self):
+        add_cluster("alpha", host="x")
+        assert get_cluster("alpha")["aliases"] == []
+
+    def test_update_replaces_aliases(self):
+        add_cluster("alpha", host="x", aliases=["old"])
+        update_cluster("alpha", aliases=["new1", "new2"])
+        assert get_cluster("alpha")["aliases"] == ["new1", "new2"]
+
+    def test_update_can_clear_aliases(self):
+        add_cluster("alpha", host="x", aliases=["one"])
+        update_cluster("alpha", aliases=[])
+        assert get_cluster("alpha")["aliases"] == []
+
+    def test_aliases_dedup_within_input(self):
+        add_cluster("alpha", host="x", aliases=["a", "a", "b"])
+        assert get_cluster("alpha")["aliases"] == ["a", "b"]
+
+    def test_aliases_strip_whitespace_and_drop_empty(self):
+        add_cluster("alpha", host="x", aliases=["  a  ", "", " b "])
+        assert get_cluster("alpha")["aliases"] == ["a", "b"]
+
+    def test_aliases_must_be_strings(self):
+        result = add_cluster("alpha", host="x", aliases=[123])
+        assert result["status"] == "error"
+
+    def test_aliases_must_be_list(self):
+        result = add_cluster("alpha", host="x", aliases={"a": "b"})
+        assert result["status"] == "error"
+
+    def test_aliases_string_wrapped_in_list(self):
+        add_cluster("alpha", host="x", aliases="aws-cmh-science")
+        assert get_cluster("alpha")["aliases"] == ["aws-cmh-science"]
+
+    def test_alias_collision_across_clusters_rejected(self):
+        add_cluster("alpha", host="x", aliases=["shared"])
+        result = add_cluster("beta", host="y", aliases=["shared"])
+        assert result["status"] == "error"
+        assert "shared" in result["error"]
+        assert "alpha" in result["error"]
+
+    def test_alias_matching_other_cluster_name_rejected(self):
+        add_cluster("alpha", host="x")
+        result = add_cluster("beta", host="y", aliases=["alpha"])
+        assert result["status"] == "error"
+
+    def test_owner_can_keep_its_own_aliases(self):
+        add_cluster("alpha", host="x", aliases=["one", "two"])
+        result = update_cluster("alpha", aliases=["one", "two", "three"])
+        assert result["status"] == "ok"
+        assert get_cluster("alpha")["aliases"] == ["one", "two", "three"]
+
+
+@pytest.mark.unit
+class TestResolveCanonicalCluster:
+    def setup_method(self):
+        from server.clusters import _invalidate_resolver_cache
+        _invalidate_resolver_cache()
+
+    def test_canonical_match(self):
+        add_cluster("aws-cmh", host="aws-cmh.example.com")
+        hit = resolve_canonical_cluster("aws-cmh")
+        assert hit == {"canonical": "aws-cmh", "source": "canonical"}
+
+    def test_alias_match(self):
+        add_cluster("aws-cmh", host="aws-cmh.example.com", aliases=["aws-cmh-science"])
+        hit = resolve_canonical_cluster("aws-cmh-science")
+        assert hit == {
+            "canonical": "aws-cmh",
+            "source": "alias",
+            "matched_alias": "aws-cmh-science",
+        }
+
+    def test_host_fallback(self):
+        add_cluster("aws-cmh", host="aws-cmh-slurm-1-login-01.nvidia.com")
+        hit = resolve_canonical_cluster("unknown", host="aws-cmh-slurm-1-login-01.nvidia.com")
+        assert hit == {"canonical": "aws-cmh", "source": "host"}
+
+    def test_host_match_case_insensitive(self):
+        add_cluster("aws-cmh", host="Aws-Cmh.Example.COM")
+        hit = resolve_canonical_cluster("nope", host="aws-cmh.example.com")
+        assert hit == {"canonical": "aws-cmh", "source": "host"}
+
+    def test_name_takes_priority_over_host(self):
+        add_cluster("aws-cmh", host="aws-cmh.example.com")
+        add_cluster("beta", host="beta.example.com", aliases=["aws-cmh.example.com"])
+        hit = resolve_canonical_cluster("aws-cmh", host="beta.example.com")
+        assert hit["canonical"] == "aws-cmh"
+        assert hit["source"] == "canonical"
+
+    def test_unknown_returns_none(self):
+        add_cluster("aws-cmh", host="x")
+        assert resolve_canonical_cluster("ghost") is None
+
+    def test_empty_input_returns_none(self):
+        assert resolve_canonical_cluster("") is None
+        assert resolve_canonical_cluster("", host="") is None
+
+    def test_resolver_invalidated_after_write(self):
+        add_cluster("aws-cmh", host="x")
+        assert resolve_canonical_cluster("aws-cmh-science") is None
+        update_cluster("aws-cmh", aliases=["aws-cmh-science"])
+        hit = resolve_canonical_cluster("aws-cmh-science")
+        assert hit["canonical"] == "aws-cmh"
+
+    def test_resolver_invalidated_after_remove(self):
+        add_cluster("aws-cmh", host="x", aliases=["aws-cmh-science"])
+        assert resolve_canonical_cluster("aws-cmh-science")["canonical"] == "aws-cmh"
+        remove_cluster("aws-cmh")
+        assert resolve_canonical_cluster("aws-cmh-science") is None
+
+
+@pytest.mark.unit
+class TestNormalizeClusterName:
+    def setup_method(self):
+        from server.clusters import _invalidate_resolver_cache
+        _invalidate_resolver_cache()
+
+    def test_alias_normalized_to_canonical(self):
+        add_cluster("aws-cmh", host="x", aliases=["aws-cmh-science"])
+        assert normalize_cluster_name("aws-cmh-science") == "aws-cmh"
+
+    def test_canonical_round_trips(self):
+        add_cluster("aws-cmh", host="x")
+        assert normalize_cluster_name("aws-cmh") == "aws-cmh"
+
+    def test_unknown_returned_unchanged(self):
+        assert normalize_cluster_name("not-a-cluster") == "not-a-cluster"
+
+    def test_empty_returned_unchanged(self):
+        assert normalize_cluster_name("") == ""
