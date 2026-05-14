@@ -343,6 +343,7 @@ CREATE TABLE IF NOT EXISTS clusters (
     aihub_name        TEXT NOT NULL DEFAULT '',
     mount_paths_json  TEXT NOT NULL DEFAULT '[]',
     mount_aliases_json TEXT NOT NULL DEFAULT '{}',
+    aliases_json      TEXT NOT NULL DEFAULT '[]',
     team_gpu_alloc    TEXT NOT NULL DEFAULT '',
     enabled           INTEGER NOT NULL DEFAULT 1,
     position          INTEGER NOT NULL DEFAULT 0,
@@ -355,9 +356,13 @@ CREATE TABLE IF NOT EXISTS clusters (
 ``ssh_user`` and ``ssh_key`` are empty when the cluster should inherit
 the bootstrap defaults. ``mount_paths_json`` is a JSON array of remote
 paths (``$USER`` substituted at read time). ``mount_aliases_json`` is a
-JSON object mapping alias prefixes -> mount index. ``team_gpu_alloc``
-is the informal team GPU quota ('any' or an integer-as-string), the
-column type is TEXT to allow both representations naturally.
+JSON object mapping alias prefixes -> mount index. ``aliases_json`` is a
+JSON array of alternate cluster names that resolve back to this canonical
+row (e.g. NeMo-Skills' ``aws-cmh-science`` YAML alias of the physical
+``aws-cmh`` cluster); uniqueness across the registry is enforced in the
+application layer. ``team_gpu_alloc`` is the informal team GPU quota
+('any' or an integer-as-string), the column type is TEXT to allow both
+representations naturally.
 """
 
 TEAM_MEMBERS = """
@@ -550,6 +555,8 @@ MIGRATIONS = [
     ("wds_history", "occupancy_factor", "REAL"),
     # projects column added in v4 for sidebar visibility (active vs backlog)
     ("projects", "status", "TEXT NOT NULL DEFAULT 'active'"),
+    # cluster name aliases used by SDK ingest + /api/cluster_resolve (v4+)
+    ("clusters", "aliases_json", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
