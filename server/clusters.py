@@ -9,6 +9,15 @@ not need to change.
 The synthetic ``"local"`` cluster is **never** stored in the DB — it is
 injected at read time by :func:`list_clusters` so existing logic that
 checks ``cluster == "local"`` keeps working.
+
+Aliases
+-------
+Each row carries an ``aliases`` list — alternate names that resolve to
+the canonical cluster (e.g. NeMo-Skills' ``aws-cmh-science`` YAML name
+maps to physical ``aws-cmh``). The resolution logic itself lives in
+:func:`resolve_canonical_cluster`; aliases are read alongside the rest
+of the cluster record so SDK ingest and the public ``/api/cluster_resolve``
+endpoint share the same source of truth.
 """
 
 from __future__ import annotations
@@ -17,7 +26,9 @@ import json
 import os
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional
+import threading
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from .db import db_write, get_db
 
@@ -42,6 +53,7 @@ LOCAL_CLUSTER: Dict[str, Any] = {
     "aihub_name": "",
     "mount_paths": [],
     "mount_aliases": {},
+    "aliases": [],
     "team_gpu_alloc": "",
     "enabled": 1,
 }
@@ -74,6 +86,14 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     if not isinstance(mount_aliases, dict):
         mount_aliases = {}
 
+    try:
+        aliases = json.loads(row["aliases_json"] or "[]")
+    except (json.JSONDecodeError, IndexError):
+        aliases = []
+    if not isinstance(aliases, list):
+        aliases = []
+    aliases = [str(a) for a in aliases if isinstance(a, str) and a]
+
     return {
         "name": row["name"],
         "host": row["host"],
@@ -88,6 +108,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "aihub_name": row["aihub_name"] or "",
         "mount_paths": mount_paths,
         "mount_aliases": mount_aliases,
+        "aliases": aliases,
         "team_gpu_alloc": row["team_gpu_alloc"] or "",
         "enabled": int(row["enabled"]),
         "position": int(row["position"]),
@@ -197,6 +218,65 @@ def _normalize_mount_aliases(value) -> Dict[str, int]:
     return out
 
 
+def _normalize_aliases(value, *, owner: str = "") -> List[str]:
+    """Coerce ``value`` to a deduped list of valid alias strings.
+
+    Aliases must be non-empty, must not collide with the canonical name
+    of any cluster, and must be unique across the whole registry — that
+    invariant is the contract :func:`resolve_canonical_cluster` relies
+    on. ``owner`` is the cluster we're writing for; aliases already
+    owned by ``owner`` are allowed to round-trip.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("aliases must be a list of strings")
+    cleaned: List[str] = []
+    seen: set = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            raise ValueError("aliases entries must be strings")
+        s = entry.strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        cleaned.append(s)
+
+    if not cleaned:
+        return []
+
+    con = get_db()
+    rows = con.execute(
+        "SELECT name, aliases_json FROM clusters WHERE name != ?",
+        (owner,),
+    ).fetchall()
+    taken: Dict[str, str] = {}
+    for r in rows:
+        taken[r["name"]] = r["name"]
+        try:
+            row_aliases = json.loads(r["aliases_json"] or "[]")
+        except json.JSONDecodeError:
+            row_aliases = []
+        if isinstance(row_aliases, list):
+            for a in row_aliases:
+                if isinstance(a, str) and a:
+                    taken[a] = r["name"]
+    if owner:
+        taken[owner] = owner
+
+    for alias in cleaned:
+        owner_of = taken.get(alias)
+        if owner_of and owner_of != owner:
+            raise ValueError(
+                f"alias {alias!r} is already used by cluster {owner_of!r}"
+            )
+    return cleaned
+
+
 def add_cluster(
     name: str,
     *,
@@ -212,6 +292,7 @@ def add_cluster(
     aihub_name: str = "",
     mount_paths=None,
     mount_aliases=None,
+    aliases=None,
     team_gpu_alloc: str = "",
     enabled: bool = True,
     position: Optional[int] = None,
@@ -231,6 +312,7 @@ def add_cluster(
     try:
         mp_json = json.dumps(_normalize_mount_paths(mount_paths))
         ma_json = json.dumps(_normalize_mount_aliases(mount_aliases))
+        al_json = json.dumps(_normalize_aliases(aliases, owner=name))
     except ValueError as exc:
         return {"status": "error", "error": str(exc)}
 
@@ -246,21 +328,22 @@ def add_cluster(
                 INSERT INTO clusters
                     (name, host, data_host, port, ssh_user, ssh_key, account,
                      gpu_type, gpu_mem_gb, gpus_per_node, aihub_name,
-                     mount_paths_json, mount_aliases_json, team_gpu_alloc,
-                     enabled, position)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     mount_paths_json, mount_aliases_json, aliases_json,
+                     team_gpu_alloc, enabled, position)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     name, host, data_host or "", int(port),
                     ssh_user or "", ssh_key or "", account or "",
                     gpu_type or "", int(gpu_mem_gb or 0), int(gpus_per_node or 0),
-                    aihub_name or "", mp_json, ma_json, team_gpu_alloc or "",
-                    1 if enabled else 0, int(position),
+                    aihub_name or "", mp_json, ma_json, al_json,
+                    team_gpu_alloc or "", 1 if enabled else 0, int(position),
                 ),
             )
     except sqlite3.IntegrityError:
         return {"status": "error", "error": f"cluster {name!r} already exists"}
 
+    _invalidate_resolver_cache()
     return {"status": "ok", "cluster": get_cluster(name)}
 
 
@@ -320,6 +403,12 @@ def update_cluster(name: str, **fields) -> Dict[str, Any]:
             except ValueError as exc:
                 return {"status": "error", "error": str(exc)}
             cols.append("mount_aliases_json=?")
+        elif key == "aliases":
+            try:
+                vals.append(json.dumps(_normalize_aliases(value, owner=name)))
+            except ValueError as exc:
+                return {"status": "error", "error": str(exc)}
+            cols.append("aliases_json=?")
 
     if not cols:
         return {"status": "ok", "cluster": existing}
@@ -328,6 +417,7 @@ def update_cluster(name: str, **fields) -> Dict[str, Any]:
     vals.append(name)
     with db_write() as con:
         con.execute(f"UPDATE clusters SET {', '.join(cols)} WHERE name=?", vals)
+    _invalidate_resolver_cache()
     return {"status": "ok", "cluster": get_cluster(name)}
 
 
@@ -343,6 +433,7 @@ def remove_cluster(name: str) -> Dict[str, Any]:
         return {"status": "error", "error": f"cluster {name!r} not found"}
     with db_write() as con:
         con.execute("DELETE FROM clusters WHERE name=?", (name,))
+    _invalidate_resolver_cache()
     return {"status": "ok", "removed": name}
 
 
@@ -442,6 +533,117 @@ def build_mount_aliases(default_user: str) -> Dict[str, List[tuple]]:
                 for path, idx in aliases.items()
             ]
     return out
+
+
+# ─── Canonical-name resolution ──────────────────────────────────────────────
+
+_RESOLVER_CACHE_TTL_SEC = 60.0
+_resolver_cache_lock = threading.Lock()
+_resolver_cache: Dict[str, Any] = {"loaded_at": 0.0, "by_name": {}, "by_host": {}}
+
+
+def _invalidate_resolver_cache() -> None:
+    """Drop the in-memory alias/host index so the next resolve call rebuilds it.
+
+    Called from every write path on the ``clusters`` table. The resolver
+    also has a TTL so a missed invalidation degrades to ``<= 60 s`` of
+    stale-read, not permanent drift.
+    """
+    with _resolver_cache_lock:
+        _resolver_cache["loaded_at"] = 0.0
+        _resolver_cache["by_name"] = {}
+        _resolver_cache["by_host"] = {}
+
+
+def _resolver_index() -> Tuple[Dict[str, Tuple[str, str, Optional[str]]], Dict[str, str]]:
+    """Return ``(by_name, by_host)`` indexes for canonical-name resolution.
+
+    ``by_name`` maps every canonical name AND every alias to a tuple of
+    ``(canonical, source, matched_alias_or_None)``. ``by_host`` maps each
+    cluster's ``host`` (lowercased) to its canonical name.
+    """
+    now = time.monotonic()
+    with _resolver_cache_lock:
+        if now - _resolver_cache["loaded_at"] < _RESOLVER_CACHE_TTL_SEC and _resolver_cache["by_name"]:
+            return _resolver_cache["by_name"], _resolver_cache["by_host"]
+
+    con = get_db()
+    rows = con.execute("SELECT name, host, aliases_json FROM clusters").fetchall()
+
+    by_name: Dict[str, Tuple[str, str, Optional[str]]] = {}
+    by_host: Dict[str, str] = {}
+    for r in rows:
+        canonical = r["name"]
+        by_name[canonical] = (canonical, "canonical", None)
+        host = (r["host"] or "").strip().lower()
+        if host:
+            by_host.setdefault(host, canonical)
+        try:
+            row_aliases = json.loads(r["aliases_json"] or "[]")
+        except json.JSONDecodeError:
+            row_aliases = []
+        if isinstance(row_aliases, list):
+            for alias in row_aliases:
+                if isinstance(alias, str) and alias and alias not in by_name:
+                    by_name[alias] = (canonical, "alias", alias)
+
+    with _resolver_cache_lock:
+        _resolver_cache["loaded_at"] = now
+        _resolver_cache["by_name"] = by_name
+        _resolver_cache["by_host"] = by_host
+    return by_name, by_host
+
+
+def resolve_canonical_cluster(
+    name: str,
+    host: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Look up the canonical cluster name for an input name or host.
+
+    Resolution order:
+      1. Exact match on ``clusters.name`` -> ``source="canonical"``.
+      2. Exact match on any cluster's alias list -> ``source="alias"``.
+      3. (Optional) match on ``clusters.host`` -> ``source="host"``.
+
+    Returns ``{"canonical", "source", "matched_alias"?}`` on success or
+    ``None`` when nothing matches. Empty ``name`` plus empty ``host`` is
+    treated as a miss. The synthetic ``"local"`` cluster is never
+    returned because it is not stored in the registry.
+    """
+    needle = (name or "").strip()
+    host_needle = (host or "").strip().lower()
+    if not needle and not host_needle:
+        return None
+
+    by_name, by_host = _resolver_index()
+
+    if needle and needle in by_name:
+        canonical, source, matched_alias = by_name[needle]
+        out: Dict[str, Any] = {"canonical": canonical, "source": source}
+        if matched_alias is not None:
+            out["matched_alias"] = matched_alias
+        return out
+
+    if host_needle and host_needle in by_host:
+        return {"canonical": by_host[host_needle], "source": "host"}
+
+    return None
+
+
+def normalize_cluster_name(name: str, host: str = "") -> str:
+    """Internal convenience wrapper: returns the canonical name when
+    resolvable, otherwise the input ``name`` unchanged.
+
+    Used by the SDK ingest pipeline so non-canonical cluster names from
+    legacy clients still land on the canonical row that real Slurm jobs
+    write to.
+    """
+    if not name and not host:
+        return name or ""
+    hit = resolve_canonical_cluster(name, host=host)
+    if hit:
+        return hit["canonical"]
+    return name
 
 
 def build_team_gpu_allocations() -> Dict[str, Any]:
