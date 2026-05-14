@@ -3630,6 +3630,11 @@ from .logbooks import (
     get_campaign_board as _lb_get_campaign_board,
     list_campaign_boards as _lb_list_campaign_boards,
     update_campaign_board_by_campaign as _lb_update_campaign_board,
+    get_mind_map as _lb_get_mind_map,
+    list_mind_maps as _lb_list_mind_maps,
+    update_mind_map_by_campaign as _lb_update_mind_map,
+    patch_mind_map_by_campaign as _lb_patch_mind_map,
+    convert_campaign_board_to_mind_map as _lb_convert_board_to_mind_map,
     save_image as _lb_save_image,
     get_image_path as _lb_get_image_path,
     resolve_entry_refs as _lb_resolve_refs,
@@ -3717,6 +3722,108 @@ def api_logbook_campaign_board_put(project):
     return jsonify(result)
 
 
+# ── Mind-map routes (per-campaign DAG; replaces campaign_board) ──────────────
+
+
+@api.route("/api/logbook/<project>/mind_map")
+def api_logbook_mind_map_get(project):
+    campaign = request.args.get("campaign", "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign query parameter is required"}), 400
+    result = _lb_get_mind_map(project, campaign)
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    if result.get("status") == "error":
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/mind_maps")
+def api_logbook_mind_maps_list(project):
+    return jsonify(_lb_list_mind_maps(project))
+
+
+@api.route("/api/logbook/<project>/mind_map", methods=["POST"])
+def api_logbook_mind_map_create(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    title = (payload.get("title") or "").strip() or f"Mind map: {campaign}"
+    body = (payload.get("body") or "").strip()
+    graph_json = payload.get("graph_json")
+    campaign_goal = payload.get("campaign_goal")
+    result = _lb_create(
+        project, title, body,
+        entry_type="mind_map",
+        campaign=campaign,
+        graph_json=graph_json,
+        campaign_goal=campaign_goal,
+    )
+    if result.get("status") == "error_validation":
+        code = 409 if "already exists" in (result.get("error") or "") else 400
+        return jsonify(result), code
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/mind_map", methods=["PUT"])
+def api_logbook_mind_map_put(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or request.args.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    title = payload.get("title")
+    if title is not None:
+        title = title.strip()
+    body = payload.get("body")
+    if body is not None:
+        body = body.strip()
+    graph_json = payload.get("graph_json")
+    campaign_goal = payload.get("campaign_goal")
+    result = _lb_update_mind_map(
+        project, campaign, title=title, body=body, graph_json=graph_json, campaign_goal=campaign_goal
+    )
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    if result.get("status") == "error_validation":
+        return jsonify({"status": "error", "error": result.get("error", "")}), 400
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/mind_map", methods=["PATCH"])
+def api_logbook_mind_map_patch(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or request.args.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    ops = payload.get("ops")
+    if not isinstance(ops, list) or not ops:
+        return jsonify({"status": "error", "error": "ops must be a non-empty list"}), 400
+    result = _lb_patch_mind_map(project, campaign, ops)
+    if result.get("status") == "not_found":
+        return jsonify(result), 404
+    if result.get("status") == "error_validation":
+        return jsonify({"status": "error", "error": result.get("error", "")}), 400
+    return jsonify(result)
+
+
+@api.route("/api/logbook/<project>/mind_map/from_campaign_board", methods=["POST"])
+def api_logbook_mind_map_convert(project):
+    payload = request.get_json(silent=True) or {}
+    campaign = (payload.get("campaign") or "").strip().lower()
+    if not campaign:
+        return jsonify({"status": "error", "error": "campaign is required"}), 400
+    result = _lb_convert_board_to_mind_map(project, campaign)
+    status = result.get("status")
+    if status == "not_found":
+        return jsonify(result), 404
+    if status == "exists":
+        return jsonify(result), 409
+    if status == "error_validation":
+        return jsonify({"status": "error", "error": result.get("error", "")}), 400
+    return jsonify(result)
+
+
 @api.route("/api/logbook/<project>/entries", methods=["POST"])
 def api_logbook_create(project):
     payload = request.get_json(silent=True) or {}
@@ -3727,10 +3834,11 @@ def api_logbook_create(project):
     entry_type = (payload.get("entry_type") or "note").strip()
     campaign = payload.get("campaign")
     board_json = payload.get("board_json")
+    graph_json = payload.get("graph_json")
     campaign_goal = payload.get("campaign_goal")
     result = _lb_create(
         project, title, body, entry_type=entry_type, campaign=campaign,
-        board_json=board_json, campaign_goal=campaign_goal,
+        board_json=board_json, graph_json=graph_json, campaign_goal=campaign_goal,
     )
     if result.get("status") == "error_validation":
         code = 409 if "already exists" in (result.get("error") or "") else 400
@@ -3773,12 +3881,13 @@ def api_logbook_update(project, entry_id):
     new_project = payload.get("new_project")
     campaign = payload.get("campaign")
     board_json = payload.get("board_json")
+    graph_json = payload.get("graph_json")
     campaign_goal = payload.get("campaign_goal")
     result = _lb_update(
         project, entry_id,
         title=title, body=body, entry_type=entry_type,
         pinned=pinned, new_project=new_project, campaign=campaign,
-        board_json=board_json, campaign_goal=campaign_goal,
+        board_json=board_json, graph_json=graph_json, campaign_goal=campaign_goal,
     )
     status = result.get("status")
     if status == "error":
@@ -3844,8 +3953,8 @@ def api_logbook_bulk_read():
 
     if sort not in ("edited_at", "created_at", "title"):
         return jsonify({"status": "error", "error": "sort must be one of: edited_at, created_at, title"}), 400
-    if entry_type and entry_type not in ("note", "plan", "campaign_board"):
-        return jsonify({"status": "error", "error": "entry_type must be 'note', 'plan', 'campaign_board', or omitted"}), 400
+    if entry_type and entry_type not in ("note", "plan", "campaign_board", "mind_map"):
+        return jsonify({"status": "error", "error": "entry_type must be 'note', 'plan', 'campaign_board', 'mind_map', or omitted"}), 400
 
     projects = [project] if project else list_logbook_projects()
     if not projects:
