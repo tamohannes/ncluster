@@ -57,6 +57,15 @@ In a single bulleted list, one bullet per op, in the order they will be applied.
 - `remove_edge {id}`
 - `set_status {id, status}`
 
+Edge `kind` values:
+
+- `default` — generic dependency
+- `success` — downstream runs when source finishes successfully (solid green)
+- `failure` — downstream is the failure branch (dashed red)
+- `branch` — exploratory fork off the source (dotted accent)
+- `blocker` — source is currently blocking downstream; rendered with a stop bar end-cap and a dashed red stroke. Use when something must be cleared before progress resumes (failing dep, missing data, manual approval pending).
+- `verification` — source validates / proves the destination (e.g. a passing test "verifies" the feature node). Rendered with a thicker double-style green stroke.
+
 Example output:
 
 > Proposed ops on `mcp-tools/mcpv2`:
