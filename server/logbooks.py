@@ -55,7 +55,9 @@ GRAPH_EDGE_LABEL_MAX = 120
 GRAPH_NODE_STATUSES = frozenset({
     "planned", "active", "blocked", "done", "failed", "abandoned"
 })
-GRAPH_EDGE_KINDS = frozenset({"default", "success", "failure", "branch"})
+GRAPH_EDGE_KINDS = frozenset({
+    "default", "success", "failure", "branch", "blocker", "verification",
+})
 _NODE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_\-]{0,63}$")
 _EDGE_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,63}$")
 
