@@ -26,7 +26,8 @@ Manual metric logging from eval/training code:
     run.close()
 """
 
+from clausius_sdk.cluster import resolve_cluster_name
 from clausius_sdk.run import Run
 from clausius_sdk.session import ClausiusSession
 
-__all__ = ["ClausiusSession", "Run"]
+__all__ = ["ClausiusSession", "Run", "resolve_cluster_name"]

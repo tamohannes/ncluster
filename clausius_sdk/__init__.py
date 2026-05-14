@@ -10,7 +10,8 @@ from pathlib import Path
 _SDK_DIR = Path(__file__).resolve().parent.parent / "sdk"
 __path__ = [str(_SDK_DIR), *list(__path__)]
 
+from clausius_sdk.cluster import resolve_cluster_name  # noqa: E402
 from clausius_sdk.run import Run  # noqa: E402
 from clausius_sdk.session import ClausiusSession  # noqa: E402
 
-__all__ = ["ClausiusSession", "Run"]
+__all__ = ["ClausiusSession", "Run", "resolve_cluster_name"]
