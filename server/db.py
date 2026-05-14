@@ -1572,6 +1572,121 @@ def update_run_fields(run_id, starred=None, notes=None, malfunctioned=None):
         con.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params)
 
 
+def delete_run_completely(run_id, delete_jobs=False):
+    """Hard-delete a run row and every SDK/metric artifact tied to it.
+
+    Removes:
+      - the ``runs`` row itself (env_vars, batch_script, scontrol_raw,
+        params_json, metadata_json, conda_state, notes, …)
+      - every metric/event for the canonical ``run_uuid`` and its aliases
+        across ``sdk_events``, ``run_metrics``, ``run_scalars``
+      - the ``sdk_run_aliases`` entries pointing at this run
+      - the ``runs.run_id`` link on every ``job_history`` row that pointed
+        at this run (or the rows themselves when ``delete_jobs`` is True,
+        including their ``job_stats_snapshots``)
+
+    Returns a dict of per-table delete counts plus the run identifier so
+    the API / MCP layer can report what was wiped. ``runs`` will be ``0``
+    when ``run_id`` does not exist (no-op delete).
+    """
+    counts = {
+        "runs": 0,
+        "sdk_events": 0,
+        "run_metrics": 0,
+        "run_scalars": 0,
+        "sdk_run_aliases": 0,
+        "job_history_unlinked": 0,
+        "job_history_deleted": 0,
+        "job_stats_snapshots": 0,
+    }
+    con = get_db()
+    row = con.execute(
+        "SELECT id, cluster, root_job_id, run_uuid FROM runs WHERE id=?",
+        (run_id,),
+    ).fetchone()
+    if not row:
+        con.close()
+        return {"status": "not_found", "run_id": run_id, "counts": counts}
+    cluster = row["cluster"]
+    root_job_id = row["root_job_id"]
+    canonical_uuid = resolve_run_uuid(row["run_uuid"] or "", con=con)
+    alias_rows = con.execute(
+        "SELECT alias_uuid FROM sdk_run_aliases WHERE canonical_uuid=?",
+        (canonical_uuid,),
+    ).fetchall() if canonical_uuid else []
+    uuid_family = [canonical_uuid] + [r["alias_uuid"] for r in alias_rows]
+    uuid_family = [u for u in uuid_family if u]
+    con.close()
+
+    placeholders = ",".join("?" * len(uuid_family)) if uuid_family else ""
+
+    with db_write() as con:
+        if uuid_family:
+            cur = con.execute(
+                f"DELETE FROM sdk_events WHERE run_uuid IN ({placeholders})",
+                uuid_family,
+            )
+            counts["sdk_events"] = cur.rowcount or 0
+            cur = con.execute(
+                f"DELETE FROM run_metrics WHERE run_uuid IN ({placeholders})",
+                uuid_family,
+            )
+            counts["run_metrics"] = cur.rowcount or 0
+            cur = con.execute(
+                f"DELETE FROM run_scalars WHERE run_uuid IN ({placeholders})",
+                uuid_family,
+            )
+            counts["run_scalars"] = cur.rowcount or 0
+            cur = con.execute(
+                f"DELETE FROM sdk_run_aliases "
+                f"WHERE canonical_uuid IN ({placeholders}) "
+                f"   OR alias_uuid IN ({placeholders})",
+                uuid_family + uuid_family,
+            )
+            counts["sdk_run_aliases"] = cur.rowcount or 0
+
+        if delete_jobs:
+            job_rows = con.execute(
+                "SELECT cluster, job_id FROM job_history WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+            if job_rows:
+                stats_placeholders = ",".join("?" * len(job_rows))
+                cluster_vals = [j["cluster"] for j in job_rows]
+                job_id_vals = [j["job_id"] for j in job_rows]
+                cur = con.execute(
+                    f"DELETE FROM job_stats_snapshots "
+                    f"WHERE cluster IN ({stats_placeholders}) "
+                    f"  AND job_id IN ({stats_placeholders})",
+                    cluster_vals + job_id_vals,
+                )
+                counts["job_stats_snapshots"] = cur.rowcount or 0
+                cur = con.execute(
+                    "DELETE FROM job_history WHERE run_id=?",
+                    (run_id,),
+                )
+                counts["job_history_deleted"] = cur.rowcount or 0
+        else:
+            cur = con.execute(
+                "UPDATE job_history SET run_id=NULL WHERE run_id=?",
+                (run_id,),
+            )
+            counts["job_history_unlinked"] = cur.rowcount or 0
+
+        cur = con.execute("DELETE FROM runs WHERE id=?", (run_id,))
+        counts["runs"] = cur.rowcount or 0
+
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "cluster": cluster,
+        "root_job_id": root_job_id,
+        "run_uuid": canonical_uuid or "",
+        "uuid_family": uuid_family,
+        "counts": counts,
+    }
+
+
 def update_run_times(run_id, started_at=None, ended_at=None):
     with db_write() as con:
         if started_at:
