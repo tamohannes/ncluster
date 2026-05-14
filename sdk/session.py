@@ -385,48 +385,24 @@ def _resolve_existing_run_uuid(
     cluster: str = "",
     timeout_sec: float = 2.5,
 ) -> str | None:
-    """Ask the Clausius server whether an existing SDK run already covers
-    this submission's ``output_dir``. Returns the canonical run_uuid on
-    match, ``None`` otherwise (including any error path).
+    """Return the canonical run_uuid that already covers ``output_dir``.
 
-    This is the SDK-side half of the resume-aware dedup contract. The
-    fresh-run-IDs protocol guarantees that two *fresh* experiments use
-    distinct output_dirs, so a match means "this is a resume" — typically
-    ``ns eval ++skip_filled=True`` with the same expname, or a resubmission
-    after a launcher crash.
-
-    Fails open: timeouts, network errors, or a server-side ``exists=False``
-    all return ``None``, so a stale or unreachable Clausius never blocks
-    NeMo-Skills submissions.
-
-    Stdlib-only — the SDK ships standalone via ``integrate-sdk.sh`` and must
-    not introduce a pip-install dependency for callers.
+    Thin wrapper around :func:`clausius_sdk.runs.resolve_run_uuid` that
+    adapts the empty-string miss contract to the ``None`` shape the
+    session resume path expects. Delegating means launcher-side resume
+    detection picks up the DB-direct stability win automatically: a
+    gunicorn restart in the middle of a submission no longer prevents
+    the SDK from spotting the existing canonical run row.
     """
-    base = (os.environ.get("CLAUSIUS_URL", "") or "").strip().rstrip("/")
-    if not base or not output_dir:
-        return None
-    try:
-        import json as _json
-        from urllib.parse import urlencode
-        from urllib.request import Request, urlopen
+    from clausius_sdk.runs import resolve_run_uuid
 
-        params: dict[str, str] = {"output_dir": output_dir}
-        if run_name:
-            params["run_name"] = run_name
-        if cluster:
-            params["cluster"] = cluster
-        url = f"{base}/api/sdk/resolve_run?{urlencode(params)}"
-        req = Request(url, method="GET")
-        token = (os.environ.get("CLAUSIUS_TOKEN", "") or "").strip()
-        if token:
-            req.add_header("Authorization", f"Bearer {token}")
-        with urlopen(req, timeout=timeout_sec) as resp:  # nosec: trusted local URL
-            body = _json.loads(resp.read().decode("utf-8") or "{}")
-        if isinstance(body, dict) and body.get("exists") and body.get("run_uuid"):
-            return str(body["run_uuid"])
-    except Exception as exc:
-        LOG.debug("clausius: resolve_run lookup failed: %s", exc)
-    return None
+    uuid = resolve_run_uuid(
+        output_dir,
+        run_name=run_name,
+        cluster=cluster,
+        timeout_sec=timeout_sec,
+    )
+    return uuid or None
 
 
 def _build_transports(output_dir: str = "") -> list[Transport]:

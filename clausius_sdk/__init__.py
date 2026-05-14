@@ -12,6 +12,7 @@ __path__ = [str(_SDK_DIR), *list(__path__)]
 
 from clausius_sdk.cluster import resolve_cluster_name  # noqa: E402
 from clausius_sdk.run import Run  # noqa: E402
+from clausius_sdk.runs import resolve_run_uuid  # noqa: E402
 from clausius_sdk.session import ClausiusSession  # noqa: E402
 
-__all__ = ["ClausiusSession", "Run", "resolve_cluster_name"]
+__all__ = ["ClausiusSession", "Run", "resolve_cluster_name", "resolve_run_uuid"]
