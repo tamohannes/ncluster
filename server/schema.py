@@ -122,16 +122,20 @@ CREATE TABLE IF NOT EXISTS logbook_entries (
     pinned     INTEGER NOT NULL DEFAULT 0,
     campaign       TEXT NOT NULL DEFAULT '',
     board_json     TEXT NOT NULL DEFAULT '',
-    campaign_goal  TEXT NOT NULL DEFAULT ''
+    campaign_goal  TEXT NOT NULL DEFAULT '',
+    graph_json     TEXT NOT NULL DEFAULT ''
 )
 """
 """Per-project structured notes/plans with FTS5 search.
 
-``entry_type`` is ``'note'``, ``'plan'``, or ``'campaign_board'``.
-``campaign_board`` rows hold structured result grids in ``board_json``
-(JSON), optional ``campaign_goal`` prose, and at most one exists per ``(project, campaign)``.
-``pinned=1`` floats an entry to the top of list views. Entry IDs are
-globally unique across projects so ``#N`` cross-references work even
+``entry_type`` is ``'note'``, ``'plan'``, ``'campaign_board'`` (legacy), or
+``'mind_map'``. ``campaign_board`` rows hold structured result grids in
+``board_json`` (JSON) and at most one exists per ``(project, campaign)``;
+new content is authored as ``mind_map`` instead, which stores a static DAG
+of tasks/experiments/bugs/decisions in ``graph_json`` and is also singleton
+per ``(project, campaign)``. Both types share an optional ``campaign_goal``
+prose blurb. ``pinned=1`` floats an entry to the top of list views. Entry
+IDs are globally unique across projects so ``#N`` cross-references work even
 after a move.
 """
 
@@ -551,6 +555,8 @@ MIGRATIONS = [
     ("logbook_entries", "campaign", "TEXT NOT NULL DEFAULT ''"),
     ("logbook_entries", "board_json", "TEXT NOT NULL DEFAULT ''"),
     ("logbook_entries", "campaign_goal", "TEXT NOT NULL DEFAULT ''"),
+    # logbook_entries.graph_json: per-campaign mind_map DAG (v4+)
+    ("logbook_entries", "graph_json", "TEXT NOT NULL DEFAULT ''"),
     # wds_history column added later in v3
     ("wds_history", "occupancy_factor", "REAL"),
     # projects column added in v4 for sidebar visibility (active vs backlog)
