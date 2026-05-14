@@ -1533,6 +1533,22 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   color: var(--text);
   transform: translateY(-1px);
 }
+.run-delete-btn,
+.run-page-action-btn.run-delete-btn,
+.btn.run-delete-btn {
+  border-color: color-mix(in srgb, var(--tbl-rose-fg, #d33) 70%, transparent);
+  background: color-mix(in srgb, var(--tbl-rose, #fee) 70%, transparent);
+  color: var(--tbl-rose-fg, #b00);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tbl-rose-fg, #d33) 14%, transparent);
+}
+.run-delete-btn:hover,
+.run-page-action-btn.run-delete-btn:hover,
+.btn.run-delete-btn:hover {
+  background: color-mix(in srgb, var(--tbl-rose, #fdd) 90%, transparent);
+  border-color: var(--tbl-rose-fg, #b00);
+  color: var(--tbl-rose-fg, #800);
+  transform: translateY(-1px);
+}
 .run-notes-wrap {
   flex: 1; position: relative;
 }

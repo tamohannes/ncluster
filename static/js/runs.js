@@ -139,11 +139,17 @@ function _renderRunBody(run, cluster) {
   }
   const pageSlot = document.getElementById('run-page-action-slot');
   if (pageSlot) {
-    pageSlot.innerHTML = run.run_hash
+    const pageBtn = run.run_hash
       ? `<button type="button" class="run-page-action-btn"
             onclick="_openRunPageFromModal('${escAttr(cluster)}','${escAttr(run.run_hash)}')"
             title="Open the full run metrics page">Run page</button>`
       : '';
+    const deleteBtn = runId
+      ? `<button type="button" class="run-page-action-btn run-delete-btn"
+            onclick="_deleteRun(${runId}, '${escAttr(cluster)}', '${escAttr(run.run_hash || '')}', '${escAttr(run.run_name || run.name || '')}')"
+            title="Permanently delete this run and all its metrics/metadata">Delete run</button>`
+      : '';
+    pageSlot.innerHTML = `${pageBtn}${deleteBtn}`;
   }
 
   let overviewHtml = '';
@@ -1274,6 +1280,29 @@ async function _toggleRunMark(runId) {
     if (typeof syncRunMarkedBorders === 'function') {
       syncRunMarkedBorders(cluster, rootJobId, !!wasMarked);
     }
+  }
+}
+
+async function _deleteRun(runId, cluster, runHash, runLabel) {
+  const label = runLabel || runHash || `run ${runId}`;
+  const msg = `Permanently delete "${label}"?\n\nThis erases:\n  • the run row (params, metadata, batch script, env, conda)\n  • every SDK metric, scalar, event, and alias for this run\n\nLinked Slurm jobs stay in history (just unlinked).\nThis cannot be undone.`;
+  if (!window.confirm(msg)) return;
+  try {
+    const res = await fetch(`/api/run/${runId}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const c = data.counts || {};
+    if (typeof toast === 'function') {
+      toast(`Deleted run · metrics:${c.run_metrics || 0} scalars:${c.run_scalars || 0} events:${c.sdk_events || 0}`, 'ok');
+    }
+    if (typeof closeRunInfoDirect === 'function') closeRunInfoDirect();
+    if (typeof _forceRefreshAll === 'function') _forceRefreshAll();
+    if (typeof loadHistory === 'function') loadHistory();
+  } catch (e) {
+    if (typeof toast === 'function') toast(`Delete failed: ${e.message}`, 'error');
+    else alert(`Delete failed: ${e.message}`);
   }
 }
 

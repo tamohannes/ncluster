@@ -459,6 +459,7 @@ function _runPageRender() {
         <button class="btn" onclick="showTab('history')">Runs</button>
         <button class="btn" onclick="openRunInfoByHash('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}','${escAttr(title)}')">quick peek</button>
         <button class="btn" onclick="openRunPage('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}', true)">↻ refresh</button>
+        ${run.id ? `<button class="btn run-delete-btn" onclick="_runPageDelete()" title="Permanently delete this run and all its metrics/metadata">Delete run</button>` : ''}
       </div>
     </div>
     <div class="run-page-tabs">${tabButtons}</div>
@@ -1536,6 +1537,30 @@ function _runPageCustomMetricsHtml() {
 function _runPageOnNoteInput() {
   if (_runPageState.noteTimer) clearTimeout(_runPageState.noteTimer);
   _runPageState.noteTimer = setTimeout(_runPageSaveNotes, 1500);
+}
+
+async function _runPageDelete() {
+  const run = _runPageState.run;
+  if (!run || !run.id) return;
+  const label = run.run_name || run.name || _runPageState.runHash || `run ${run.id}`;
+  const msg = `Permanently delete "${label}"?\n\nThis erases:\n  • the run row (params, metadata, batch script, env, conda)\n  • every SDK metric, scalar, event, and alias for this run\n\nLinked Slurm jobs stay in history (just unlinked).\nThis cannot be undone.`;
+  if (!window.confirm(msg)) return;
+  try {
+    const res = await fetch(`/api/run/${run.id}`, { method: 'DELETE' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const c = data.counts || {};
+    if (typeof toast === 'function') {
+      toast(`Deleted run · metrics:${c.run_metrics || 0} scalars:${c.run_scalars || 0} events:${c.sdk_events || 0}`, 'ok');
+    }
+    if (typeof showTab === 'function') showTab('history');
+    if (typeof loadHistory === 'function') loadHistory();
+  } catch (e) {
+    if (typeof toast === 'function') toast(`Delete failed: ${e.message}`, 'error');
+    else alert(`Delete failed: ${e.message}`);
+  }
 }
 
 async function _runPageToggleMalfunctioned(checked) {
