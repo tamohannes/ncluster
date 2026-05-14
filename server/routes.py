@@ -4144,6 +4144,7 @@ def _adopt_matching_slurm_jobs(cluster, expname, sdk_run_id):
 def api_sdk_ingest():
     """Accept batched SDK events and persist runs/jobs/metrics immediately."""
     from .config import extract_project
+    from .clusters import normalize_cluster_name
     from .settings import get_sdk_ingest_token
     from .db import (
         upsert_run_from_sdk,
@@ -4186,7 +4187,7 @@ def api_sdk_ingest():
 
         if event_type == "run_started":
             expname = payload.get("expname", "")
-            cluster = payload.get("cluster", "")
+            cluster = normalize_cluster_name(payload.get("cluster", ""))
             project = extract_project(expname)
             run_id = upsert_run_from_sdk(run_uuid, cluster, expname, project, payload)
             _adopt_matching_slurm_jobs(cluster, expname, run_id)
@@ -4195,7 +4196,9 @@ def api_sdk_ingest():
         elif event_type in ("job_prepared", "job_submitted"):
             run = get_run_by_uuid(run_uuid)
             if run:
-                cluster = payload.get("cluster") or run.get("cluster", "")
+                cluster = normalize_cluster_name(
+                    payload.get("cluster") or run.get("cluster", "")
+                )
                 partition = payload.get("partition", "")
                 account = payload.get("account", "")
                 num_nodes = payload.get("num_nodes", 0)
@@ -4352,6 +4355,7 @@ def _ingest_job_state(run_uuid, payload):
     and finalizes the run if all jobs are done.
     """
     try:
+        from .clusters import normalize_cluster_name
         from .db import get_run_by_uuid, invalidate_pinned_cache
         from datetime import datetime
 
@@ -4364,7 +4368,7 @@ def _ingest_job_state(run_uuid, payload):
         run = get_run_by_uuid(run_uuid)
         if not run:
             return
-        cluster = run.get("cluster", "")
+        cluster = normalize_cluster_name(run.get("cluster", ""))
         now = datetime.now().isoformat(timespec="seconds")
 
         with db_write() as con:
