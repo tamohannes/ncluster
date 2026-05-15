@@ -264,11 +264,10 @@ function _mmOpenPopover(nodeId) {
   const status = (node.status || 'planned').toLowerCase();
   const statusLabel = _MM_STATUS_LABEL[status] || status;
   const description = (node.description || '').trim();
-  const descHtml = description && typeof _renderLogbookMarkdown === 'function'
-    ? _renderLogbookMarkdown(description)
-    : (description ? `<pre>${_escHtml(description)}</pre>` : '');
-  const summaryHtml = (node.summary || '').trim()
-    ? `<div class="mm-popover-summary">${_escHtml(node.summary.trim())}</div>`
+  const summary = (node.summary || '').trim();
+  const descHtml = description ? renderRichText(description) : '';
+  const summaryHtml = summary
+    ? `<div class="mm-popover-summary lb-detail-body">${renderRefs(_escHtml(summary))}</div>`
     : '';
 
   backdrop.innerHTML = `
@@ -287,7 +286,7 @@ function _mmOpenPopover(nodeId) {
       ${descHtml ? `<div class="mm-popover-body lb-detail-body">${descHtml}</div>` : ''}
     </div>`;
   backdrop.classList.add('visible');
-  if (typeof _resolveEntryRefs === 'function') _resolveEntryRefs();
+  hydrateRefs(backdrop);
   _mmDecorateAimqlBlocks(backdrop);
 }
 
