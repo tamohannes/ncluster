@@ -119,6 +119,9 @@ function renderMindMap(container, entry) {
   const gh = g.graph().height || 100;
 
   container.innerHTML = `
+    <button class="mm-fullscreen-toggle" type="button"
+            onclick="event.stopPropagation();toggleMindMapFullscreen(this)"
+            title="Open mind map in a fullscreen popup (Esc to close)">fullscreen</button>
     <div class="mm-shell" data-mm-shell="1">
       <div class="mm-legend">
         ${Object.keys(_MM_STATUS_LABEL).map(s => `
@@ -332,12 +335,64 @@ function buildMetricsUrlFromAimql(aimqlText) {
   return `/metrics?${p.toString()}`;
 }
 
+// Fullscreen popup mode: toggles `.mm-fullscreen-modal` on the outer
+// `.lb-mind-map-canvas` so the SVG (with its viewBox + preserveAspectRatio)
+// scales up to fill a centered overlay. The node-click popover keeps working
+// because `#mm-popover-backdrop` is still the same element in the DOM and its
+// z-index sits above the fullscreen modal.
+function toggleMindMapFullscreen(btn) {
+  const canvas = btn && btn.closest ? btn.closest('.lb-mind-map-canvas') : null;
+  if (!canvas) return;
+  if (canvas.classList.contains('mm-fullscreen-modal')) {
+    exitMindMapFullscreen();
+  } else {
+    enterMindMapFullscreen(canvas, btn);
+  }
+}
+
+function enterMindMapFullscreen(canvas, btn) {
+  if (!canvas) return;
+  canvas.classList.add('mm-fullscreen-modal');
+  document.body.classList.add('mm-fullscreen-active');
+  let veil = document.getElementById('mm-fullscreen-veil');
+  if (!veil) {
+    veil = document.createElement('div');
+    veil.id = 'mm-fullscreen-veil';
+    veil.className = 'mm-fullscreen-veil';
+    veil.addEventListener('click', exitMindMapFullscreen);
+    document.body.appendChild(veil);
+  }
+  if (btn) {
+    btn.textContent = 'exit';
+    btn.title = 'Exit fullscreen (Esc)';
+  }
+}
+
+function exitMindMapFullscreen() {
+  const canvas = document.querySelector('.lb-mind-map-canvas.mm-fullscreen-modal');
+  if (canvas) canvas.classList.remove('mm-fullscreen-modal');
+  document.body.classList.remove('mm-fullscreen-active');
+  const veil = document.getElementById('mm-fullscreen-veil');
+  if (veil) veil.remove();
+  const btn = document.querySelector('.lb-mind-map-canvas .mm-fullscreen-toggle');
+  if (btn) {
+    btn.textContent = 'fullscreen';
+    btn.title = 'Open mind map in a fullscreen popup (Esc to close)';
+  }
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('keydown', evt => {
     if (evt.key !== 'Escape') return;
+    // Popover takes priority over fullscreen so users can drill down into a
+    // node and pop back out one level at a time.
     const backdrop = document.getElementById('mm-popover-backdrop');
     if (backdrop && backdrop.classList.contains('visible')) {
       _mmClosePopover();
+      return;
+    }
+    if (document.body.classList.contains('mm-fullscreen-active')) {
+      exitMindMapFullscreen();
     }
   });
 }
