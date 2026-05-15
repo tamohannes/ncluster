@@ -1556,88 +1556,12 @@ function _renderBoardJsonHtml(boardJsonStr, forExport, boardRuntime) {
   }).join('');
 }
 
-function _renderLogbookMarkdown(raw) {
-  let html = markdownToHtml(raw);
-  html = html.replace(/(?<!\w)@([\w_-]+)/g, (match, name) =>
-    `<span class="run-ref" onclick="openLogByName('${name}')">${match}</span>`
-  );
-  const anchorRefs = [];
-  html = html.replace(/(?<!\w)#(\d+):(fig|tbl)-(\d+)/g, (match, id, kind, num) => {
-    const anchor = `${kind}-${num}`;
-    const label = kind === 'fig' ? `Figure ${num}` : `Table ${num}`;
-    const placeholder = `\x00ANCHOR${anchorRefs.length}\x00`;
-    anchorRefs.push(`<span class="anchor-ref" onclick="openLogbookEntry(${id},{anchor:'${anchor}'})" title="${label} in entry #${id}">${match}</span>`);
-    return placeholder;
-  });
-  html = html.replace(/(?<!\w)#(\d+)/g, (match, id) =>
-    `<span class="entry-ref" data-entry-ref="${id}" onclick="_openEntryRef(${id},_lbProject)" title="Open entry #${id}">${match}</span>`
-  );
-  anchorRefs.forEach((span, i) => {
-    html = html.replace(`\x00ANCHOR${i}\x00`, span);
-  });
-  return html;
-}
-
-function _resolveEntryRefs() {
-  const refs = document.querySelectorAll('.entry-ref[data-entry-ref]');
-  if (!refs.length) return;
-  const ids = new Set();
-  refs.forEach(el => ids.add(el.dataset.entryRef));
-  fetch(`/api/logbook/resolve_refs?ids=${Array.from(ids).join(',')}`)
-    .then(r => r.json())
-    .then(entries => {
-      for (const entry of entries) {
-        document.querySelectorAll(`.entry-ref[data-entry-ref="${entry.id}"]`).forEach(el => {
-          const escaped = (entry.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-          const crossProject = entry.project && entry.project !== _lbProject;
-          const projectBadge = crossProject
-            ? `<span class="entry-ref-project">${entry.project}</span>`
-            : '';
-          el.innerHTML = `<span class="entry-ref-id">#${entry.id}</span>${projectBadge}<span class="entry-ref-title">${escaped}</span>`;
-          el.title = entry.title;
-          el.dataset.entryProject = entry.project || '';
-          el.classList.add('resolved');
-          if (crossProject) el.classList.add('cross-project');
-          el.setAttribute('onclick', `_openEntryRef(${entry.id},'${(entry.project || '').replace(/'/g, "\\'")}')`);
-        });
-      }
-    })
-    .catch(() => {});
-}
-
-async function _openEntryRef(entryId, project, anchor) {
-  if (!project) {
-    try {
-      const res = await fetch(`/api/logbook/resolve_refs?ids=${entryId}`);
-      const entries = await res.json();
-      if (entries.length) project = entries[0].project;
-    } catch (_) {}
-  }
-  if (project && project !== _lbProject) {
-    _lbProject = project;
-    const sel = document.getElementById('lb-project-select');
-    if (sel) sel.value = project;
-    _loadEntries(project);
-    _loadRunNames(project);
-  }
-  openLogbookEntry(entryId, anchor ? { anchor } : {});
-}
-
-async function openLogByName(runName) {
-  if (!_lbProject) return;
-  try {
-    const res = await fetch(`/api/history?project=${encodeURIComponent(_lbProject)}&limit=500`);
-    const rows = await res.json();
-    const match = rows.find(r => (r.job_name || '').includes(runName));
-    if (match) {
-      openLog(match.cluster, match.job_id, match.job_name);
-    } else {
-      toast(`No job found matching "${runName}"`, 'error');
-    }
-  } catch (_) {
-    toast('Failed to search for run', 'error');
-  }
-}
+// _renderLogbookMarkdown / _resolveEntryRefs / openLogByName / _openEntryRef
+// live in static/js/refs.js — the universal reference renderer used by every
+// rich-text surface in Clausius (logbook bodies, mind map popovers, ...).
+// New code should call renderRichText / renderRefs / hydrateRefs / openRunRef /
+// openEntryRef directly; the underscored aliases are kept for inline onclick
+// strings that may still reference the legacy names.
 
 
 // ── @ autocomplete ──────────────────────────────────────────────────────────
