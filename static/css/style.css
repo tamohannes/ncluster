@@ -1363,7 +1363,11 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .run-section-body {
   padding: 12px 14px;
   border-top: 1px solid var(--border);
-  max-height: 300px; overflow-y: auto;
+  /* Inside the run popup the modal itself is up to ~870px tall; cap each
+     section so a giant env_vars/conda dump can't dominate the whole modal,
+     but keep the cap generous enough to show ~30 rows of params at once.
+     The run page overrides this to `none` so its sections expand fully. */
+  max-height: min(70vh, 640px); overflow-y: auto;
 }
 .run-section-body.hidden { display: none; }
 .run-plot-builder {
