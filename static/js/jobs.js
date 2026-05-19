@@ -765,8 +765,6 @@ function renderCard(name, data) {
     groupEntries.sort((a, b) => seenCampaigns.indexOf(campaignOf(a)) - seenCampaigns.indexOf(campaignOf(b)));
 
     const allGroupKeys = groupEntries.map(([gk]) => gk);
-    const groupKeyCounts = {};
-    for (const [gk] of groupEntries) groupKeyCounts[gk] = (groupKeyCounts[gk] || 0) + 1;
     const gkHL = computeNameHighlight(allGroupKeys);
     let _prevCampaign = null;
 
@@ -798,7 +796,6 @@ function renderCard(name, data) {
       if (runHash) runTitleParts.push(`run hash ${runHash}`);
       if (runUuid) runTitleParts.push(`UUID ${runUuid}`);
       if (rootJobId) runTitleParts.push(`root ${rootJobId}`);
-      const attemptBadge = groupKeyCounts[gk] > 1 && !hasRunIdentity ? runAttemptBadge(rootJob) : '';
       const legacyBadge = name !== 'local' ? nonSdkBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
@@ -835,7 +832,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${legacyBadge}${noProjectBtn}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${legacyBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);

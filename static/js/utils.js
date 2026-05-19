@@ -545,15 +545,6 @@ function fmtTime(s) {
        + ' ' + d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 
-function runAttemptBadge(job) {
-  const when = fmtTime(job?.submitted || job?.started || job?.ended_at || '');
-  const jid = String(job?.jobid || job?.job_id || '').trim();
-  if (when === '—' && !jid) return '';
-  const label = when !== '—' ? when : `#${jid}`;
-  const title = jid ? `Run root ${jid}` : 'Run attempt';
-  return `<span class="group-project-badge" title="${title}">${label}</span>`;
-}
-
 function nonSdkBadge(job) {
   if (!job) return '';
   const source = String(job.run_source || '').toLowerCase();
