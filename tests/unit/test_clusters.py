@@ -6,7 +6,6 @@ import os
 import pytest
 
 from server.clusters import (
-    LOCAL_CLUSTER,
     add_cluster,
     build_mount_aliases,
     build_mount_map,
@@ -478,3 +477,11 @@ class TestNormalizeClusterName:
 
     def test_empty_returned_unchanged(self):
         assert normalize_cluster_name("") == ""
+
+    def test_dict_payload_name_normalized(self):
+        add_cluster("aws-cmh", host="x", aliases=["aws-cmh-science"])
+        assert normalize_cluster_name({"name": "aws-cmh-science"}) == "aws-cmh"
+
+    def test_dict_payload_host_fallback(self):
+        add_cluster("aws-cmh", host="aws-cmh.example.com")
+        assert normalize_cluster_name({"host": "aws-cmh.example.com"}) == "aws-cmh"

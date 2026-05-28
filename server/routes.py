@@ -62,6 +62,9 @@ from .jobs import (
     create_run_on_demand,
     fetch_team_jobs,
     fetch_team_usage,
+    parse_dependency,
+    _group_jobs_for_runs,
+    _group_key_for_job,
 )
 from .poller import get_poller, get_version, bump_version, touch_demand
 from .db import (
@@ -1009,8 +1012,17 @@ def api_team_jobs():
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
 def api_cancel(cluster, job_id):
+    """Cancel one job.
+
+    Optional JSON body field ``reason`` (string) attaches a structured
+    waste-reason tag to the job's ``job_history`` row. Used by the
+    WasteWatcher MCP tool and by agents that want to record *why* they
+    cancelled a job alongside the scancel.
+    """
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    payload = request.get_json(silent=True) or {}
+    reason = (payload.get("reason") or "").strip()
     if str(job_id).startswith("sdk-"):
         from .db import cancel_sdk_job
         cancel_sdk_job(str(job_id))
@@ -1024,6 +1036,17 @@ def api_cancel(cluster, job_id):
         result = cancel_jobs_with_report(cluster, [job_id], timeout_sec=10, chunk_size=1)
         if result["cancelled_ids"]:
             bump_version()
+            if reason:
+                try:
+                    from .db import update_job_waste_fields
+                    from datetime import datetime as _dt
+                    update_job_waste_fields(
+                        cluster, str(job_id),
+                        waste_reason=reason,
+                        waste_cancelled_at=_dt.now().isoformat(timespec="seconds"),
+                    )
+                except Exception:
+                    _log.exception("waste_reason stamp failed for %s/%s", cluster, job_id)
             return jsonify({"status": "ok"})
         error = result["errors"][0]["error"] if result["errors"] else "Cancel failed"
         return jsonify({"status": "error", "error": error})
@@ -1034,10 +1057,17 @@ def api_cancel(cluster, job_id):
 
 @api.route("/api/cancel_jobs/<cluster>", methods=["POST"])
 def api_cancel_jobs(cluster):
+    """Batch cancel.
+
+    Optional body field ``reason`` (string) applies the same structured
+    waste-reason tag to every successfully cancelled job (see
+    ``/api/cancel/<cluster>/<job_id>``).
+    """
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     payload = request.get_json(silent=True) or {}
     job_ids = payload.get("job_ids", [])
+    reason = (payload.get("reason") or "").strip()
     if not job_ids or not isinstance(job_ids, list):
         return jsonify({"status": "error", "error": "job_ids list required"}), 400
     sdk_ids = [str(jid).strip() for jid in job_ids if str(jid).strip().startswith("sdk-")]
@@ -1076,6 +1106,19 @@ def api_cancel_jobs(cluster):
         cancelled = len(result["cancelled_ids"]) + sdk_cancelled
         if result["cancelled_ids"]:
             bump_version()
+            if reason:
+                try:
+                    from .db import update_job_waste_fields
+                    from datetime import datetime as _dt
+                    stamp = _dt.now().isoformat(timespec="seconds")
+                    for jid in result["cancelled_ids"]:
+                        update_job_waste_fields(
+                            cluster, str(jid),
+                            waste_reason=reason,
+                            waste_cancelled_at=stamp,
+                        )
+                except Exception:
+                    _log.exception("waste_reason batch stamp failed for %s", cluster)
         errors = [
             f'{err["job_id"]}: {err["error"]}'
             for err in result["errors"]
@@ -1093,6 +1136,239 @@ def api_cancel_jobs(cluster):
         _log.exception("cancel_jobs %s failed", cluster)
         return jsonify({"status": "error", "error": str(e)})
 
+
+# ─── WasteWatcher routes ────────────────────────────────────────────────────
+#
+# All routes are read-mostly except ``/api/waste/pause``,
+# ``/api/waste/exempt_job``, and ``/api/waste/cancel`` which mutate the
+# watcher state. Mutations only flip per-job/per-cluster flags that the
+# watcher loop reads on its next tick; they do not race with the loop
+# because the loop's tick is bounded and uses ``upsert_state`` (last
+# write wins per (cluster, job_id)).
+
+
+@api.route("/api/waste/candidates", methods=["GET"])
+def api_waste_candidates():
+    """List jobs currently flagged suspicious or wasteful.
+
+    Query params:
+      - ``cluster``: filter to one cluster
+      - ``min_confidence``: ``high`` | ``medium`` (default: any)
+
+    Returns ``{"status": "ok", "candidates": [{...}, ...]}``. Each
+    candidate exposes the state-machine row plus a few derived fields
+    (minutes_in_state, minutes_since_log_change) so dashboards don't
+    need to compute them client-side.
+    """
+    from .waste_watcher_state import list_candidates, STATE_SUSPICIOUS, STATE_WASTEFUL
+    from .waste_watcher_rules import CONFIDENCE_HIGH
+
+    only_cluster = (request.args.get("cluster") or "").strip()
+    min_conf = (request.args.get("min_confidence") or "").strip().lower()
+
+    rows = list_candidates(min_states=(STATE_SUSPICIOUS, STATE_WASTEFUL))
+    candidates = []
+    now = datetime.now()
+    for r in rows:
+        if only_cluster and r.cluster != only_cluster:
+            continue
+        if min_conf == "high" and r.suspected_confidence != CONFIDENCE_HIGH:
+            continue
+        minutes_in_state = (now - r.state_entered_at).total_seconds() / 60.0
+        minutes_since_log = (
+            (now - r.last_log_change_at).total_seconds() / 60.0
+            if r.last_log_change_at else None
+        )
+        candidates.append({
+            "cluster": r.cluster,
+            "job_id": r.job_id,
+            "state": r.state,
+            "suspected_reason": r.suspected_reason,
+            "suspected_confidence": r.suspected_confidence,
+            "minutes_in_state": round(minutes_in_state, 1),
+            "minutes_since_log_change": (
+                round(minutes_since_log, 1) if minutes_since_log is not None else None
+            ),
+            "consecutive_zero_util_samples": r.consecutive_zero_util_samples,
+            "last_notes": r.last_notes,
+            "last_probe_at": r.last_probe_at.isoformat(timespec="seconds") if r.last_probe_at else None,
+            "next_probe_due": r.next_probe_due.isoformat(timespec="seconds"),
+        })
+    return jsonify({"status": "ok", "candidates": candidates})
+
+
+@api.route("/api/waste/runs", methods=["GET"])
+def api_waste_runs():
+    """List runs currently flagged ``wasteful``.
+
+    Query params:
+      - ``project``: filter to one project
+      - ``days``: limit to runs whose ``waste_detected_at`` is within N days
+        (default: 7)
+      - ``cancelled_only``: ``1`` to limit to runs auto-cancelled by the
+        watcher
+    """
+    project = (request.args.get("project") or "").strip()
+    cancelled_only = (request.args.get("cancelled_only") or "").strip() in {"1", "true", "yes"}
+    try:
+        days = max(1, int(request.args.get("days") or 7))
+    except (TypeError, ValueError):
+        days = 7
+
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    con = get_db()
+    sql = (
+        "SELECT id, cluster, root_job_id, run_name, project, run_uuid, "
+        "       wasteful, waste_reason, waste_detected_at, waste_cancelled_by_watcher "
+        "FROM runs WHERE wasteful = 1 AND waste_detected_at >= ?"
+    )
+    params = [cutoff]
+    if project:
+        sql += " AND project = ?"
+        params.append(project)
+    if cancelled_only:
+        sql += " AND waste_cancelled_by_watcher = 1"
+    sql += " ORDER BY waste_detected_at DESC LIMIT 500"
+    rows = con.execute(sql, params).fetchall()
+    con.close()
+
+    from .db import get_run_hash as _get_run_hash
+    runs = []
+    for r in rows:
+        d = dict(r)
+        d["run_hash"] = _get_run_hash(d["cluster"], d["root_job_id"], d.get("run_uuid") or "")
+        d["wasteful"] = bool(int(d.get("wasteful") or 0))
+        d["waste_cancelled_by_watcher"] = bool(int(d.get("waste_cancelled_by_watcher") or 0))
+        runs.append(d)
+    return jsonify({"status": "ok", "runs": runs})
+
+
+@api.route("/api/waste/pause", methods=["POST"])
+def api_waste_pause():
+    """Temporarily pause the WasteWatcher on one cluster or globally.
+
+    Body JSON:
+      - ``cluster`` (optional): cluster name, or omit for global pause
+      - ``duration_min`` (default: 60)
+    """
+    from . import waste_watcher
+
+    payload = request.get_json(silent=True) or {}
+    cluster_arg = (payload.get("cluster") or "").strip() or None
+    try:
+        duration_min = max(1, int(payload.get("duration_min") or 60))
+    except (TypeError, ValueError):
+        duration_min = 60
+    if cluster_arg and cluster_arg not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    result = waste_watcher.pause(cluster_arg, duration_min)
+    return jsonify({"status": "ok", **result})
+
+
+@api.route("/api/waste/resume", methods=["POST"])
+def api_waste_resume():
+    """Clear a pause window early. Body: ``{cluster?}``."""
+    from . import waste_watcher
+
+    payload = request.get_json(silent=True) or {}
+    cluster_arg = (payload.get("cluster") or "").strip() or None
+    waste_watcher.clear_pause(cluster_arg)
+    return jsonify({"status": "ok"})
+
+
+@api.route("/api/waste/exempt_job", methods=["POST"])
+def api_waste_exempt_job():
+    """Pin a single job into the ``exempt`` state for a window.
+
+    Body JSON: ``{cluster, job_id, duration_min?, note?}``. Used after a
+    false-positive cancellation candidate is reviewed by the operator
+    and confirmed healthy. The job re-enters ``cold`` automatically
+    once the window elapses.
+    """
+    from .waste_watcher_state import set_exempt
+
+    payload = request.get_json(silent=True) or {}
+    cluster = (payload.get("cluster") or "").strip()
+    job_id = (payload.get("job_id") or "").strip()
+    if not cluster or not job_id:
+        return jsonify({"status": "error", "error": "cluster and job_id required"}), 400
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    try:
+        duration_min = max(1, int(payload.get("duration_min") or 60))
+    except (TypeError, ValueError):
+        duration_min = 60
+    note = (payload.get("note") or "").strip()
+    state = set_exempt(cluster, job_id, duration_min=duration_min, note=note)
+    return jsonify({
+        "status": "ok",
+        "state": state.state,
+        "exempt_until": state.exempt_until.isoformat(timespec="seconds") if state.exempt_until else None,
+    })
+
+
+@api.route("/api/waste/cancel", methods=["POST"])
+def api_waste_cancel():
+    """Manually trigger a structured WasteWatcher cancel.
+
+    Body JSON: ``{cluster, job_ids: [...], reason, summary?, evidence?}``.
+    Always runs through the verification burst first (so even manual
+    triggers respect the 3-probe / log-hash / SDK-heartbeat checks).
+    Used by the agent when it wants the structured audit trail without
+    waiting for the daemon's adaptive cadence to find the job on its own.
+    """
+    from . import waste_watcher
+    from .waste_watcher_rules import ALL_WASTE_REASONS
+
+    payload = request.get_json(silent=True) or {}
+    cluster = (payload.get("cluster") or "").strip()
+    job_ids = payload.get("job_ids") or []
+    reason = (payload.get("reason") or "").strip()
+    summary = (payload.get("summary") or "").strip() or "Manual WasteWatcher cancel"
+    evidence = payload.get("evidence") or {}
+    if not cluster or not job_ids or not reason:
+        return jsonify({"status": "error", "error": "cluster, job_ids, reason required"}), 400
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if reason not in ALL_WASTE_REASONS:
+        return jsonify({
+            "status": "error",
+            "error": f"reason must be one of {sorted(ALL_WASTE_REASONS)}",
+        }), 400
+    cfg = waste_watcher._settings_snapshot()
+    verified: list[str] = []
+    notes: dict[str, str] = {}
+    for jid in job_ids:
+        ok, note = waste_watcher.verify_wasteful(
+            cluster=cluster, job_id=str(jid), reason=reason, cfg=cfg,
+        )
+        notes[str(jid)] = note
+        if ok:
+            verified.append(str(jid))
+    if not verified:
+        result = waste_watcher.flag_only(
+            cluster=cluster,
+            job_ids=[str(j) for j in job_ids],
+            reason=reason,
+            confidence="high",
+            summary=f"{summary} (manual; verification rejected all)",
+            evidence={**evidence, "verification": notes},
+            audit_project=cfg["audit_project"],
+        )
+        return jsonify({"status": "ok", "verified": False, **result})
+
+    result = waste_watcher.cancel_with_reason(
+        cluster=cluster,
+        job_ids=verified,
+        reason=reason,
+        confidence="high",
+        summary=f"{summary} (manual)",
+        evidence={**evidence, "verification": notes},
+        by_watcher=False,
+        audit_project=cfg["audit_project"],
+    )
+    bump_version()
+    return jsonify({"status": "ok", "verified": True, **result})
 
 
 @api.route("/api/run_script/<cluster>", methods=["POST"])
@@ -1375,6 +1651,102 @@ def _resolve_run_via_job(cluster, job_id):
     return None
 
 
+def _load_job_history_run_fallback(cluster, root_job_id):
+    """Build a read-only run-like payload directly from job_history.
+
+    Production no longer materializes legacy ``runs`` rows for submissions that
+    were not tracked by the SDK. The live board can still group those Slurm jobs
+    by name/dependency, so the run popup needs a non-persistent fallback instead
+    of returning a 404.
+    """
+    con = get_db()
+    root_row = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(root_job_id)),
+    ).fetchone()
+    if not root_row:
+        con.close()
+        return None
+
+    root_job = dict(root_row)
+    run_name = _group_key_for_job(root_job.get("job_name", ""))
+    project = root_job.get("project", "") or extract_project(root_job.get("job_name", ""))
+    related_rows = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND project=? AND job_name LIKE ?",
+        (cluster, project, f"%{run_name}%"),
+    ).fetchall()
+    con.close()
+    if not related_rows:
+        related_rows = [root_row]
+
+    job_dicts = []
+    for row in related_rows:
+        job = dict(row)
+        job["jobid"] = job["job_id"]
+        job["name"] = job.get("job_name", "")
+        deps = parse_dependency(job.get("dependency", ""))
+        job["depends_on"] = [dep["job_id"] for dep in deps]
+        job["dep_details"] = deps
+        job_dicts.append(job)
+
+    target_group = None
+    for group_name, group_root_id, group_job_ids in _group_jobs_for_runs(job_dicts):
+        if str(root_job_id) in {str(jid) for jid in group_job_ids}:
+            target_group = (group_name, group_root_id, group_job_ids)
+            break
+    if not target_group:
+        target_group = (run_name, str(root_job_id), [str(root_job_id)])
+
+    group_name, actual_root, job_ids = target_group
+    selected_ids = {str(jid) for jid in job_ids}
+    selected_jobs = [job for job in job_dicts if str(job.get("job_id")) in selected_ids]
+
+    from .db import normalize_job_times_local, _restore_dependency_fields
+    jobs = [normalize_job_times_local(job) for job in selected_jobs]
+    _restore_dependency_fields(jobs, parse_dependency)
+
+    started_candidates = [
+        job.get("started") or job.get("submitted")
+        for job in jobs
+        if job.get("started") or job.get("submitted")
+    ]
+    ended_candidates = [job.get("ended_at") for job in jobs if job.get("ended_at")]
+
+    return {
+        "id": None,
+        "cluster": cluster,
+        "root_job_id": str(root_job_id),
+        "group_root_job_id": str(actual_root),
+        "run_name": group_name,
+        "project": project,
+        "source": "job_history",
+        "read_only": True,
+        "starred": 0,
+        "notes": "",
+        "run_uuid": "",
+        "meta_fetched": 0,
+        "started_at": min(started_candidates) if started_candidates else "",
+        "ended_at": max(ended_candidates) if ended_candidates else "",
+        "submit_command": "",
+        "submit_cwd": "",
+        "git_commit": "",
+        "launcher_hostname": "",
+        "primary_output_dir": "",
+        "params_json": "",
+        "metadata_json": "",
+        "batch_script": "",
+        "scontrol_raw": "",
+        "env_vars": "",
+        "conda_state": "",
+        "malfunctioned": 0,
+        "wasteful": 0,
+        "waste_reason": "",
+        "waste_detected_at": "",
+        "waste_cancelled_by_watcher": 0,
+        "jobs": jobs,
+    }
+
+
 def _inherit_sdk_by_run_uuid(run):
     """Hydrate a SLURM-detected child row with provenance from its SDK
     orchestrator sibling (matched by shared run_uuid).
@@ -1466,12 +1838,16 @@ def _load_run_by_ref(cluster, run_ref, *, allow_on_demand=True):
         actual_root = create_run_on_demand(cluster, run_ref)
         if actual_root:
             run = get_run_with_jobs(cluster, actual_root)
+            if not run:
+                run = _load_job_history_run_fallback(cluster, run_ref)
     if not run:
         run = _resolve_run_via_job(cluster, run_ref)
     if not run:
         run_row = get_run_by_hash(cluster, run_ref)
         if run_row:
             run = get_run_with_jobs(cluster, run_row["root_job_id"])
+    if not run and allow_on_demand:
+        run = _load_job_history_run_fallback(cluster, run_ref)
     return run
 
 
@@ -1535,6 +1911,10 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
         run["metadata"] = {}
 
     run["malfunctioned"] = bool(int(run.get("malfunctioned") or 0))
+    run["wasteful"] = bool(int(run.get("wasteful") or 0))
+    run["waste_reason"] = run.get("waste_reason") or ""
+    run["waste_detected_at"] = run.get("waste_detected_at") or ""
+    run["waste_cancelled_by_watcher"] = bool(int(run.get("waste_cancelled_by_watcher") or 0))
 
     from .resubmit import eligibility as _resubmit_eligibility
     _can_resubmit, _resubmit_reason = _resubmit_eligibility(run)
@@ -2366,14 +2746,35 @@ def api_resubmit_log(filename):
 
 @api.route("/api/run/<int:run_id>", methods=["PATCH"])
 def api_update_run(run_id):
-    """Partial update of user-editable run fields (starred, notes, malfunctioned)."""
+    """Partial update of user-editable run fields.
+
+    Accepts: ``starred`` (bool), ``notes`` (str),
+    ``malfunctioned`` (bool), ``wasteful`` (bool), ``waste_reason`` (str).
+    Pass ``waste_reason=""`` to clear the reason. Setting ``wasteful=true``
+    via this endpoint records the run as manually flagged
+    (``waste_cancelled_by_watcher=False``).
+    """
+    from datetime import datetime as _dt
     data = request.get_json(force=True, silent=True) or {}
     starred = data.get("starred")
     notes = data.get("notes")
     malfunctioned = data.get("malfunctioned")
-    if starred is None and notes is None and malfunctioned is None:
+    wasteful = data.get("wasteful")
+    waste_reason = data.get("waste_reason")
+    if (starred is None and notes is None and malfunctioned is None
+            and wasteful is None and waste_reason is None):
         return jsonify({"status": "error", "error": "No fields to update"}), 400
-    update_run_fields(run_id, starred=starred, notes=notes, malfunctioned=malfunctioned)
+    kwargs = dict(starred=starred, notes=notes, malfunctioned=malfunctioned)
+    if wasteful is not None:
+        kwargs["wasteful"] = wasteful
+        kwargs["waste_cancelled_by_watcher"] = False
+        if wasteful and waste_reason is None:
+            kwargs["waste_reason"] = "manual"
+        if wasteful:
+            kwargs["waste_detected_at"] = _dt.now().isoformat(timespec="seconds")
+    if waste_reason is not None:
+        kwargs["waste_reason"] = waste_reason
+    update_run_fields(run_id, **kwargs)
     return jsonify({"status": "ok"})
 
 

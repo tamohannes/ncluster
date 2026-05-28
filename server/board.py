@@ -86,7 +86,8 @@ def _fill_starred(cluster, jobs):
     con = get_db()
     placeholders = ",".join("?" for _ in run_ids)
     rows = con.execute(
-        f"""SELECT id, root_job_id, run_name, run_uuid, starred, source
+        f"""SELECT id, root_job_id, run_name, run_uuid, starred, source,
+                   wasteful, waste_reason
             FROM runs WHERE id IN ({placeholders})""",
         list(run_ids),
     ).fetchall()
@@ -102,6 +103,13 @@ def _fill_starred(cluster, jobs):
             j["run_uuid"] = row["run_uuid"]
             j["run_source"] = row["source"] or "legacy"
             j["run_hash"] = get_run_hash(cluster, row["root_job_id"], row["run_uuid"])
+            # Surface the WasteWatcher flag at the job level so the board UI
+            # can render a warning glyph on the run badge without an extra
+            # /api/run lookup per row.  ``wasteful`` defaults to 0 in the
+            # schema and only flips when the watcher (or a manual PATCH)
+            # marks the run as wasted compute.
+            j["run_wasteful"] = bool(row["wasteful"]) if "wasteful" in row.keys() else False
+            j["run_waste_reason"] = row["waste_reason"] if "waste_reason" in row.keys() else ""
 
 
 _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)

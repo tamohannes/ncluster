@@ -804,6 +804,14 @@ function renderCard(name, data) {
       const runBadge = name !== 'local'
         ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
         : highlightedGk;
+      // WasteWatcher: if any job in this run is flagged ``run_wasteful``
+      // (board.py decorates jobs from runs.wasteful), show a small warning
+      // glyph next to the run badge. Hover reveals the reason.
+      // Auto-cancel may already have acted; this glyph marks the audited run.
+      const _wastefulJob = groupJobs.find(j => j.run_wasteful);
+      const _wasteBadge = (name !== 'local' && _wastefulJob)
+        ? `<span class="run-waste-badge" title="WasteWatcher: ${escAttr(_wastefulJob.run_waste_reason || 'idle GPU / wasted compute')}">⚠</span>`
+        : '';
       const noProjectBtn = (!_proj && name !== 'local' && /^[a-zA-Z][a-zA-Z0-9-]*_/.test(gk))
         ? `<button class="no-project-btn" type="button" onclick="event.stopPropagation();openNewProjectPopover('${escAttr(gk)}', this)" title="No project matches this run — click to create one">+ project</button>`
         : '';
@@ -832,7 +840,7 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${legacyBadge}${noProjectBtn}</span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_wasteBadge}${legacyBadge}${noProjectBtn}</span>`;
 
       // Aggregate values for the group head row columns.
       const _grpGpuTotal = groupJobs.reduce((s, j) => s + jobGpuCount(j.nodes, j.gres), 0);
@@ -1574,4 +1582,3 @@ async function refreshCluster(name, force) {
     grid.classList.remove('grid-loading');
   }
 }
-

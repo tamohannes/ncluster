@@ -226,6 +226,63 @@ def test_api_run_info_handles_corrupt_params_json(client, db_path):
     assert info.get_json()["run"]["params"] == {}
 
 
+def test_api_run_info_falls_back_to_job_history_without_legacy_run(
+    client, db_path, monkeypatch
+):
+    """Live grouped jobs can be clicked before/without an SDK run row.
+
+    Production has legacy run creation disabled, so the popup should still
+    return a read-only run-like payload from job_history instead of 404ing.
+    """
+    from server.db import get_db, upsert_job
+
+    monkeypatch.delenv("CLAUSIUS_ALLOW_LEGACY_RUNS", raising=False)
+    base = "mpsf_v15_v1-5-hle-phy-nem120b-turn1-test5-r3"
+    jobs = [
+        ("4148623", f"{base}-path_server", ""),
+        ("4148628", f"{base}-path-analytical", ""),
+        ("4148629", f"{base}-path-computational", ""),
+        ("4148636", f"{base}-path-knowledge", ""),
+        (
+            "4148638",
+            f"{base}-gate",
+            "afterany:4148628,afterany:4148629,afterany:4148636",
+        ),
+    ]
+    for idx, (jobid, name, dependency) in enumerate(jobs):
+        upsert_job(
+            "mock-cluster",
+            {
+                "jobid": jobid,
+                "name": name,
+                "state": "RUNNING" if idx < 4 else "PENDING",
+                "reason": "None",
+                "elapsed": "1:00",
+                "nodes": "1",
+                "gres": "gpu:4" if name.endswith("path_server") else "gpu:0",
+                "partition": "pool0" if name.endswith("path_server") else "cpu",
+                "submitted": f"2026-05-26T17:30:{idx:02d}",
+                "started": f"2026-05-26T17:30:{idx:02d}" if idx < 4 else "",
+                "dependency": dependency,
+                "project": "mpsf",
+            },
+        )
+
+    info = client.get("/api/run_info/mock-cluster/4148623")
+    assert info.status_code == 200, info.data
+    run = info.get_json()["run"]
+    assert run["read_only"] is True
+    assert run["source"] == "job_history"
+    assert run["root_job_id"] == "4148623"
+    assert run["run_name"] == base
+    assert {j["job_id"] for j in run["jobs"]} == {jobid for jobid, _, _ in jobs}
+
+    con = get_db()
+    rows = con.execute("SELECT id FROM runs").fetchall()
+    con.close()
+    assert rows == []
+
+
 # ---------------------------------------------------------------------------
 # 3. SDK-level sanitizer (loaded directly from the source file, outside the
 # `clausius_sdk` package import path — clausius's own Python env doesn't

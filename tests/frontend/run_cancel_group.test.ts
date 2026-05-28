@@ -63,3 +63,39 @@ describe('run cancel button uses merged board group ids', () => {
     expect(onclick).toContain('103');
   });
 });
+
+describe('read-only job-history run popups', () => {
+  it('hide run edit actions when there is no persistent run id', () => {
+    (globalThis as any).fetch = async () => ({
+      async json() {
+        return { status: 'error', error: 'Run not found' };
+      },
+    });
+
+    _renderRunBody({
+      id: null,
+      read_only: true,
+      root_job_id: '4148623',
+      run_name: 'mpsf_v15_v1-5-hle-phy-nem120b-turn1-test5-r3',
+      source: 'job_history',
+      params: {},
+      metadata: {},
+      jobs: [
+        {
+          job_id: '4148623',
+          job_name: 'mpsf_v15_v1-5-hle-phy-nem120b-turn1-test5-r3-path_server',
+          state: 'RUNNING',
+          nodes: '1',
+          gres: 'gpu:4',
+        },
+      ],
+    }, 'dfw');
+
+    expect(document.querySelector('#run-mark-btn')).toBeNull();
+    expect(document.querySelector('#run-notes-textarea')).toBeNull();
+    expect(document.querySelector('#run-malfunction-checkbox')).toBeNull();
+    expect(document.querySelector('.run-delete-btn')).toBeNull();
+    expect(document.querySelector('.run-page-action-btn')).toBeNull();
+    expect(document.getElementById('run-body')!.textContent).toContain('No SDK metadata is attached');
+  });
+});

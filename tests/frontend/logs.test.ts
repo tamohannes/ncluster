@@ -275,6 +275,33 @@ describe('live log viewer defaults', () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain('/api/log/h100/123');
     expect(String(fetchMock.mock.calls[1][0])).toContain('force=1');
   });
+
+  it('shows a browse hint when discovery finds directories but no direct logs', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          files: [],
+          dirs: [{ label: 'nemo-run', path: '/remote/nemo-run/demo' }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'nemo-run_sbatch.sh', path: '/remote/nemo-run/demo/nemo-run_sbatch.sh', is_dir: false, size: 10 },
+          ],
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openLog('h100', '357999', 'demo job');
+
+    expect(document.getElementById('modal-content')?.textContent).toContain('No direct log file found');
+    expect(document.getElementById('content-path')?.textContent).toBe('/remote/nemo-run/demo');
+    expect(document.getElementById('tree-pane')?.textContent).toContain('nemo-run_sbatch.sh');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/ls/h100');
+  });
 });
 
 describe('jsonl lazy record loading', () => {

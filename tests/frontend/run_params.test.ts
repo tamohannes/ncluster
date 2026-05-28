@@ -38,8 +38,12 @@ describe('_renderRunParams', () => {
     expect(_renderRunParams({})).toBe('');
   });
 
-  it('returns empty string when no known keys are present', () => {
-    expect(_renderRunParams({ unrelated: 'x' })).toBe('');
+  it('renders the all-params tree when no curated keys are present', () => {
+    const host = render({ unrelated: 'x' });
+    expect(host.querySelector('.run-params-grid')).toBeFalsy();
+    expect(host.querySelector('.run-params-subhead')?.textContent).toContain('All params (1)');
+    expect(host.querySelector('.rpt-key')?.textContent).toBe('unrelated');
+    expect(host.querySelector('.rpt-val')?.textContent).toBe('x');
   });
 
   it('renders the model row with a copy button', () => {

@@ -594,9 +594,27 @@ def _resolver_index() -> Tuple[Dict[str, Tuple[str, str, Optional[str]]], Dict[s
     return by_name, by_host
 
 
+def _coerce_cluster_lookup_inputs(name: Any, host: Any = "") -> tuple[str, str]:
+    """Normalize SDK/route cluster lookup inputs to ``(name, host)`` strings."""
+    if isinstance(name, dict):
+        data = name
+        name = (
+            data.get("name")
+            or data.get("cluster")
+            or data.get("cluster_name")
+            or data.get("canonical")
+            or data.get("aihub_name")
+            or ""
+        )
+        host = host or data.get("host") or data.get("hostname") or data.get("data_host") or ""
+    if isinstance(host, dict):
+        host = host.get("host") or host.get("hostname") or host.get("data_host") or ""
+    return str(name or ""), str(host or "")
+
+
 def resolve_canonical_cluster(
-    name: str,
-    host: str = "",
+    name: Any,
+    host: Any = "",
 ) -> Optional[Dict[str, Any]]:
     """Look up the canonical cluster name for an input name or host.
 
@@ -610,8 +628,9 @@ def resolve_canonical_cluster(
     treated as a miss. The synthetic ``"local"`` cluster is never
     returned because it is not stored in the registry.
     """
-    needle = (name or "").strip()
-    host_needle = (host or "").strip().lower()
+    name, host = _coerce_cluster_lookup_inputs(name, host)
+    needle = name.strip()
+    host_needle = host.strip().lower()
     if not needle and not host_needle:
         return None
 
@@ -630,7 +649,7 @@ def resolve_canonical_cluster(
     return None
 
 
-def normalize_cluster_name(name: str, host: str = "") -> str:
+def normalize_cluster_name(name: Any, host: Any = "") -> str:
     """Internal convenience wrapper: returns the canonical name when
     resolvable, otherwise the input ``name`` unchanged.
 
@@ -638,8 +657,9 @@ def normalize_cluster_name(name: str, host: str = "") -> str:
     legacy clients still land on the canonical row that real Slurm jobs
     write to.
     """
+    name, host = _coerce_cluster_lookup_inputs(name, host)
     if not name and not host:
-        return name or ""
+        return ""
     hit = resolve_canonical_cluster(name, host=host)
     if hit:
         return hit["canonical"]

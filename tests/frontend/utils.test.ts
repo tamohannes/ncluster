@@ -95,6 +95,67 @@ describe('groupKeyForJob', () => {
   it('empty returns misc', () => expect(groupKeyForJob('')).toBe('misc'));
 });
 
+describe('groupJobsByDependency', () => {
+  it('keeps same-wave MPSF stages together even with per-stage output dirs', () => {
+    const base = 'mpsf_v15_v1-5-hle-phy-nem120b-turn1-test5-r3';
+    const jobs = [
+      {
+        jobid: '4148623',
+        name: `${base}-path_server`,
+        depends_on: [],
+        dependents: [],
+        submitted: '2026-05-26T17:29:43',
+        output_dir: `/nemo-run/${base}-path_server/${base}-path_server_1`,
+      },
+      {
+        jobid: '4148628',
+        name: `${base}-path-analytical`,
+        depends_on: [],
+        dependents: ['4148638'],
+        submitted: '2026-05-26T17:29:57',
+        output_dir: `/nemo-run/${base}-path-analytical/${base}-path-analytical_1`,
+      },
+      {
+        jobid: '4148629',
+        name: `${base}-path-computational`,
+        depends_on: [],
+        dependents: ['4148638'],
+        submitted: '2026-05-26T17:30:13',
+        output_dir: `/nemo-run/${base}-path-computational/${base}-path-computational_1`,
+      },
+      {
+        jobid: '4148636',
+        name: `${base}-path-knowledge`,
+        depends_on: [],
+        dependents: ['4148638'],
+        submitted: '2026-05-26T17:30:27',
+        output_dir: `/nemo-run/${base}-path-knowledge/${base}-path-knowledge_1`,
+      },
+      {
+        jobid: '4148638',
+        name: `${base}-gate`,
+        depends_on: ['4148628', '4148629', '4148636'],
+        dependents: [],
+        submitted: '2026-05-26T17:30:48',
+      },
+    ];
+
+    const groups = groupJobsByDependency(jobs);
+    expect(groups).toHaveLength(1);
+    expect(groups[0][0]).toBe(base);
+    expect(groups[0][1].map(j => j.jobid).sort()).toEqual(['4148623', '4148628', '4148629', '4148636', '4148638']);
+  });
+
+  it('does not merge distinct authoritative run ids just because names match', () => {
+    const groups = groupJobsByDependency([
+      { jobid: '1', name: 'hle_eval_math', run_id: '101', depends_on: [], submitted: '2026-05-26T17:00:00' },
+      { jobid: '2', name: 'hle_eval_math', run_id: '102', depends_on: [], submitted: '2026-05-26T17:00:10' },
+    ]);
+
+    expect(groups).toHaveLength(2);
+  });
+});
+
 describe('topoSortJobs', () => {
   it('single job unchanged', () => {
     const jobs = [{ jobid: '1', depends_on: [], dependents: [], state: 'RUNNING' }];

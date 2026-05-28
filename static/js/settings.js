@@ -887,7 +887,9 @@ function _routeAutoSave(input) {
     }
     case 'sec-advanced':
       if (['set-ssh-timeout', 'set-cache-fresh', 'set-stats-interval',
-           'set-backup-interval', 'set-backup-max'].includes(input.id)) {
+           'set-backup-interval', 'set-backup-max', 'set-custom-metrics',
+           'set-waste-enabled', 'set-waste-cancel', 'set-waste-disabled-clusters'].includes(input.id)) {
+        if (input.id && input.id.startsWith('set-waste-')) _syncWasteWatcherSettingsUi();
         _autoSaveDebounce('advanced', saveAdvancedSettings);
       } else if (input.id === 'set-bg-suffixes') {
         _autoSaveDebounce('bg-suffixes', saveBgSuffixes);
@@ -922,6 +924,13 @@ async function loadSettingsPanel() {
     _customMetricsEnabled = cfg.custom_metrics_enabled !== false;
     const cmEl = document.getElementById('set-custom-metrics');
     if (cmEl) cmEl.checked = _customMetricsEnabled;
+    const wwEnabled = document.getElementById('set-waste-enabled');
+    const wwCancel = document.getElementById('set-waste-cancel');
+    const wwDisabledClusters = document.getElementById('set-waste-disabled-clusters');
+    if (wwEnabled) wwEnabled.checked = cfg.waste_watcher_enabled !== false;
+    if (wwCancel) wwCancel.checked = cfg.waste_watcher_cancel_enabled !== false;
+    if (wwDisabledClusters) wwDisabledClusters.value = cfg.waste_watcher_cancel_disabled_clusters || '';
+    _syncWasteWatcherSettingsUi();
 
     const inc = (cfg.local_process_filters || {}).include || [];
     const exc = (cfg.local_process_filters || {}).exclude || [];
@@ -937,6 +946,15 @@ async function loadSettingsPanel() {
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
+}
+
+function _syncWasteWatcherSettingsUi() {
+  const enabled = document.getElementById('set-waste-enabled');
+  const cancel = document.getElementById('set-waste-cancel');
+  const disabledClusters = document.getElementById('set-waste-disabled-clusters');
+  const on = enabled ? enabled.checked : true;
+  if (cancel) cancel.disabled = !on;
+  if (disabledClusters) disabledClusters.disabled = !on;
 }
 
 async function loadProjectEditor() {
@@ -1466,6 +1484,9 @@ async function saveAdvancedSettings() {
     backup_interval_hours: parseInt(document.getElementById('set-backup-interval').value) || 24,
     backup_max_keep: parseInt(document.getElementById('set-backup-max').value) || 7,
     custom_metrics_enabled: cmChecked,
+    waste_watcher_enabled: document.getElementById('set-waste-enabled')?.checked ?? true,
+    waste_watcher_cancel_enabled: document.getElementById('set-waste-cancel')?.checked ?? true,
+    waste_watcher_cancel_disabled_clusters: document.getElementById('set-waste-disabled-clusters')?.value.trim() || '',
   };
   let failed = 0;
   for (const [key, value] of Object.entries(updates)) {

@@ -123,28 +123,29 @@ function _renderRunBody(run, cluster) {
   const starred = run.starred ? 1 : 0;
   const notes = run.notes || '';
   const runId = run.id;
+  const editableRun = !!runId && !run.read_only;
 
   const markSlot = document.getElementById('run-mark-slot');
   if (markSlot) {
     const dc = escAttr(cluster);
     const dr = escAttr(String(run.root_job_id));
-    const hashChip = run.run_hash
+    const hashChip = run.run_hash && !run.read_only
       ? `<span class="run-hash-chip" title="Run hash">run hash: ${_escHtml(run.run_hash)}</span>`
       : '';
-    markSlot.innerHTML = `<button type="button" class="run-mark-btn${starred ? ' active' : ''}" id="run-mark-btn"
+    markSlot.innerHTML = editableRun ? `<button type="button" class="run-mark-btn${starred ? ' active' : ''}" id="run-mark-btn"
             data-run-cluster="${dc}" data-run-root="${dr}"
             onclick="_toggleRunMark(${runId})" title="${starred ? 'Unmark this run' : 'Mark this run'}">
       ${starred ? 'Marked' : 'Mark'}
-    </button>${hashChip}`;
+    </button>${hashChip}` : hashChip;
   }
   const pageSlot = document.getElementById('run-page-action-slot');
   if (pageSlot) {
-    const pageBtn = run.run_hash
+    const pageBtn = run.run_hash && !run.read_only
       ? `<button type="button" class="run-page-action-btn"
             onclick="_openRunPageFromModal('${escAttr(cluster)}','${escAttr(run.run_hash)}')"
             title="Open the full run metrics page">Run page</button>`
       : '';
-    const deleteBtn = runId
+    const deleteBtn = editableRun
       ? `<button type="button" class="run-page-action-btn run-delete-btn"
             onclick="_deleteRun(${runId}, '${escAttr(cluster)}', '${escAttr(run.run_hash || '')}', '${escAttr(run.run_name || run.name || '')}')"
             title="Permanently delete this run and all its metrics/metadata">Delete run</button>`
@@ -157,23 +158,25 @@ function _renderRunBody(run, cluster) {
   let metricsHtml = '';
   let jobsHtml = '';
 
-  overviewHtml += `<div class="run-notes-block">
-    <div class="run-notes-wrap">
-      <textarea class="run-notes-textarea" id="run-notes-textarea"
-                placeholder="Add notes about this run…"
-                oninput="_onRunNoteInput(${runId})"
-                onblur="_saveRunNotes(${runId})">${_escHtml(notes)}</textarea>
-      <span class="run-notes-saved" id="run-notes-saved">saved</span>
-    </div>
-  </div>`;
-  const malfunctioned = !!(run.malfunctioned);
-  overviewHtml += `<div class="run-malfunction-block">
-    <label class="run-malfunction-label">
-      <input type="checkbox" id="run-malfunction-checkbox" ${malfunctioned ? 'checked' : ''}
-             onchange="_toggleRunMalfunctioned(${runId}, this.checked)">
-      <span>Malfunctioned — treat results as unreliable; redo experiment</span>
-    </label>
-  </div>`;
+  if (editableRun) {
+    overviewHtml += `<div class="run-notes-block">
+      <div class="run-notes-wrap">
+        <textarea class="run-notes-textarea" id="run-notes-textarea"
+                  placeholder="Add notes about this run…"
+                  oninput="_onRunNoteInput(${runId})"
+                  onblur="_saveRunNotes(${runId})">${_escHtml(notes)}</textarea>
+        <span class="run-notes-saved" id="run-notes-saved">saved</span>
+      </div>
+    </div>`;
+    const malfunctioned = !!(run.malfunctioned);
+    overviewHtml += `<div class="run-malfunction-block">
+      <label class="run-malfunction-label">
+        <input type="checkbox" id="run-malfunction-checkbox" ${malfunctioned ? 'checked' : ''}
+               onchange="_toggleRunMalfunctioned(${runId}, this.checked)">
+        <span>Malfunctioned — treat results as unreliable; redo experiment</span>
+      </label>
+    </div>`;
+  }
 
   const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
   const _durationRing = _runDurationRing(earliest, latest);
@@ -274,8 +277,12 @@ function _renderRunBody(run, cluster) {
 
   if (!metadataHtml) {
     metadataHtml += '<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:12px 0">';
-    metadataHtml += 'No metadata captured yet. ';
-    metadataHtml += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';
+    metadataHtml += run.read_only
+      ? 'No SDK metadata is attached to this job-history view.'
+      : 'No metadata captured yet. ';
+    if (!run.read_only) {
+      metadataHtml += '<a href="#" onclick="retryMetadata(\'' + _escHtml(cluster) + '\',\'' + _escHtml(String(run.root_job_id)) + '\');return false" style="color:var(--accent)">Retry</a>';
+    }
     metadataHtml += '</div>';
   }
 

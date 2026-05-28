@@ -1035,15 +1035,205 @@ async def get_history(
 
 
 @mcp.tool()
-async def cancel_job(cluster: str, job_id: str) -> dict:
-    """Cancel a running or pending job. Destructive — only when user explicitly asks."""
-    return await _api_async("POST", f"/api/cancel/{cluster}/{job_id}")
+async def cancel_job(cluster: str, job_id: str, reason: Optional[str] = None) -> dict:
+    """Cancel a running or pending job. Destructive — only when user explicitly asks.
+
+    Args:
+        cluster: Target cluster name.
+        job_id: Slurm job ID.
+        reason: Optional structured waste-reason tag stamped on the
+            ``job_history`` row alongside the scancel. Use one of the
+            ``WASTE_REASON_*`` values (``port_mismatch_hang``,
+            ``dead_server_before_client``, ``dependency_cascade``,
+            ``qos_self_deadlock``, ``idle_gpu_sustained``,
+            ``gpu_allocation_mismatch``, ``manifest_only_failure``,
+            ``manual``) when you want the cancel to count toward
+            WasteWatcher dashboards.
+    """
+    payload = {"reason": reason} if reason else None
+    return await _api_async(
+        "POST", f"/api/cancel/{cluster}/{job_id}",
+        json=payload,
+    )
 
 
 @mcp.tool()
-async def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
-    """Cancel multiple jobs on a cluster. Destructive — only when user explicitly asks."""
-    return await _api_async("POST", f"/api/cancel_jobs/{cluster}", json={"job_ids": job_ids})
+async def cancel_jobs(
+    cluster: str, job_ids: list[str], reason: Optional[str] = None,
+) -> dict:
+    """Cancel multiple jobs on a cluster. Destructive — only when user explicitly asks.
+
+    ``reason`` (optional) applies the same structured waste-reason tag
+    to every successfully cancelled job (see :func:`cancel_job`).
+    """
+    body: dict = {"job_ids": job_ids}
+    if reason:
+        body["reason"] = reason
+    return await _api_async("POST", f"/api/cancel_jobs/{cluster}", json=body)
+
+
+# ── WasteWatcher tools ────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def list_waste_candidates(
+    cluster: Optional[str] = None,
+    min_confidence: Optional[str] = None,
+) -> dict:
+    """List jobs the WasteWatcher currently considers suspicious or wasteful.
+
+    Args:
+        cluster: Restrict to one cluster (omit for all).
+        min_confidence: ``"high"`` or ``"medium"`` (omit for any).
+
+    Each candidate row exposes the state machine state, suspected
+    reason, and derived ``minutes_in_state`` / ``minutes_since_log_change``
+    so the agent can audit what the auto-cancel loop is currently watching
+    or would cancel when the global/per-cluster settings allow it.
+    """
+    params: list[str] = []
+    if cluster:
+        params.append(f"cluster={cluster}")
+    if min_confidence:
+        params.append(f"min_confidence={min_confidence}")
+    qs = ("?" + "&".join(params)) if params else ""
+    return await _api_async("GET", f"/api/waste/candidates{qs}")
+
+
+@mcp.tool()
+async def list_wasteful_runs(
+    project: Optional[str] = None,
+    days: int = 7,
+    cancelled_only: bool = False,
+) -> dict:
+    """List runs flagged ``wasteful`` within the last ``days`` days.
+
+    Args:
+        project: Filter to one project (default: all).
+        days: Look-back window in days (default 7).
+        cancelled_only: True to limit to runs auto-cancelled by the
+            WasteWatcher (vs. flag-only or manually marked).
+    """
+    params: list[str] = [f"days={int(days)}"]
+    if project:
+        params.append(f"project={project}")
+    if cancelled_only:
+        params.append("cancelled_only=1")
+    qs = "?" + "&".join(params)
+    return await _api_async("GET", f"/api/waste/runs{qs}")
+
+
+@mcp.tool()
+async def pause_waste_watcher(
+    cluster: Optional[str] = None, duration_min: int = 60,
+) -> dict:
+    """Temporarily silence WasteWatcher detection on one cluster (or globally).
+
+    Use when running an experiment with unusual idle patterns (e.g. long
+    sandbox warm-up, deliberate sleep stages) that would trip the
+    rules. Auto-resume after ``duration_min``; call
+    :func:`resume_waste_watcher` to end early.
+    """
+    body: dict = {"duration_min": int(duration_min)}
+    if cluster:
+        body["cluster"] = cluster
+    return await _api_async("POST", "/api/waste/pause", json=body)
+
+
+@mcp.tool()
+async def resume_waste_watcher(cluster: Optional[str] = None) -> dict:
+    """Cancel an active WasteWatcher pause window."""
+    body = {"cluster": cluster} if cluster else None
+    return await _api_async("POST", "/api/waste/resume", json=body)
+
+
+@mcp.tool()
+async def exempt_job_from_waste_watcher(
+    cluster: str, job_id: str, duration_min: int = 60, note: str = "",
+) -> dict:
+    """Pin one job into the WasteWatcher ``exempt`` state.
+
+    Use this after reviewing a false-positive candidate when the
+    underlying job is actually healthy (e.g. legitimate long sandbox
+    warm-up, deliberate sleep). The job re-enters ``cold`` automatically
+    once ``duration_min`` minutes elapse.
+    """
+    body = {
+        "cluster": cluster,
+        "job_id": job_id,
+        "duration_min": int(duration_min),
+        "note": note,
+    }
+    return await _api_async("POST", "/api/waste/exempt_job", json=body)
+
+
+@mcp.tool()
+async def mark_run_wasteful(
+    cluster: str,
+    run_hash: str,
+    reason: str = "manual",
+    cancel: bool = False,
+) -> dict:
+    """Flag (and optionally cancel) a run as ``wasteful``.
+
+    Args:
+        cluster: Target cluster name.
+        run_hash: 8-12 character run hash (the user-facing identifier).
+        reason: One of ``port_mismatch_hang``, ``dead_server_before_client``,
+            ``dependency_cascade``, ``qos_self_deadlock``,
+            ``idle_gpu_sustained``, ``gpu_allocation_mismatch``,
+            ``manifest_only_failure``, ``manual``.
+        cancel: True to also issue ``scancel`` against every RUNNING /
+            PENDING job in the run (each goes through the verification
+            burst first).
+
+    Without ``cancel`` this is purely a flag — useful when the agent has
+    determined a run was wasted after the fact and wants the
+    dashboards / logbook audit trail without touching live jobs.
+    """
+    # Resolve the run via the existing route, then update flag + optionally cancel.
+    resolved = await _api_async(
+        "GET", f"/api/resolve_run_hash/{run_hash}?cluster={cluster}",
+    )
+    if resolved.get("status") != "ok":
+        return resolved
+    run = resolved.get("run") or (resolved.get("matches") or [{}])[0]
+    run_id = run.get("id")
+    if not run_id:
+        return {"status": "error", "error": "run id not found for given hash"}
+
+    # Flag the run.
+    flag_resp = await _api_async(
+        "PATCH", f"/api/run/{run_id}",
+        json={"wasteful": True, "waste_reason": reason},
+    )
+    if not cancel:
+        return {"status": "ok", "flagged": True, "patch": flag_resp}
+
+    # Gather job IDs for the run from /api/run_info.
+    info = await _api_async("GET", f"/api/run_info_by_hash/{cluster}/{run_hash}")
+    if info.get("status") != "ok":
+        return {"status": "ok", "flagged": True, "patch": flag_resp,
+                "note": "could not fetch run jobs; flag-only"}
+    jobs = info.get("run", {}).get("jobs") or []
+    job_ids = [
+        str(j.get("jobid") or j.get("job_id") or "")
+        for j in jobs
+        if str(j.get("state", "")).upper() in {"RUNNING", "PENDING", "COMPLETING"}
+    ]
+    job_ids = [j for j in job_ids if j and not j.startswith("sdk-")]
+    if not job_ids:
+        return {"status": "ok", "flagged": True, "patch": flag_resp,
+                "note": "no running/pending jobs to cancel"}
+    cancel_resp = await _api_async(
+        "POST", "/api/waste/cancel",
+        json={
+            "cluster": cluster,
+            "job_ids": job_ids,
+            "reason": reason,
+            "summary": f"mark_run_wasteful({run_hash}, reason={reason})",
+        },
+    )
+    return {"status": "ok", "flagged": True, "patch": flag_resp, "cancel": cancel_resp}
 
 
 @mcp.tool()

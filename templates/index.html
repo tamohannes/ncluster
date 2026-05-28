@@ -585,6 +585,20 @@
             </div>
           </details>
 
+          <details class="set-group" open>
+            <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">WasteWatcher</span></summary>
+            <div class="set-group-body">
+              <label class="set-row"><span>Detect wasted GPU jobs</span><input type="checkbox" id="set-waste-enabled" checked></label>
+              <label class="set-row set-row-danger"><span>Auto-cancel verified waste</span><input type="checkbox" id="set-waste-cancel" checked></label>
+              <div class="set-help">Auto-cancel only runs after WasteWatcher marks a high-confidence pattern and passes its verification burst. Turn this off for flag-only mode.</div>
+              <div class="set-field">
+                <label for="set-waste-disabled-clusters">Auto-cancel disabled clusters</label>
+                <input type="text" id="set-waste-disabled-clusters" placeholder="dfw, eos, ...">
+                <div class="set-help">Comma-separated cluster names that stay flag-only even when auto-cancel is enabled globally.</div>
+              </div>
+            </div>
+          </details>
+
           <details class="set-group">
             <summary class="set-group-head"><span class="set-group-chevron">▸</span><span class="set-group-title">Local process filters</span></summary>
             <div class="set-group-body">

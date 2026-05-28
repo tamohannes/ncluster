@@ -142,13 +142,22 @@ def _shared_init():
 
 def _run_init():
     """Full gunicorn init: shared bits plus everything that owns external
-    state (backups, mounts, WDS, progress scraper, the cluster poller, and
-    the systemd watchdog notifier)."""
+    state (backups, mounts, WDS, progress scraper, cluster poller, the
+    WasteWatcher, and the systemd watchdog notifier).
+
+    The WasteWatcher daemon is intentionally gunicorn-only — it mutates
+    ``waste_watcher_state`` + ``job_history`` and issues ``scancel`` over
+    SSH, both of which must run from a single writer. The MCP follower
+    process never starts the watcher; if gunicorn is down the watcher
+    pauses with it, which is the desired behaviour (no auto-cancels
+    when the primary process can't audit them).
+    """
     from server.backup import backup_loop
     from server.mounts import mount_health_loop
     from server.wds import wds_snapshot_loop
     from server.poller import start_poller
     from server.progress_scraper import start_progress_scraper
+    from server.waste_watcher import start_waste_watcher
 
     _shared_init()
     threading.Thread(target=backup_loop, daemon=True).start()
@@ -157,6 +166,7 @@ def _run_init():
     threading.Thread(target=_watchdog_notify_loop, daemon=True).start()
     start_poller()
     start_progress_scraper()
+    start_waste_watcher()
 
 
 def mcp_init():

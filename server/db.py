@@ -1553,8 +1553,23 @@ def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="",
             )
 
 
-def update_run_fields(run_id, starred=None, notes=None, malfunctioned=None):
-    """Partial update of user-editable run fields (starred, notes, malfunctioned)."""
+def update_run_fields(
+    run_id,
+    starred=None,
+    notes=None,
+    malfunctioned=None,
+    wasteful=None,
+    waste_reason=None,
+    waste_detected_at=None,
+    waste_cancelled_by_watcher=None,
+):
+    """Partial update of user/agent-editable run fields.
+
+    Supports ``starred``, ``notes``, ``malfunctioned`` (user-facing flags)
+    and the WasteWatcher fields (``wasteful``, ``waste_reason``,
+    ``waste_detected_at``, ``waste_cancelled_by_watcher``). Pass ``None``
+    to skip a field. Empty string for ``waste_reason`` clears the reason.
+    """
     sets, params = [], []
     if starred is not None:
         sets.append("starred = ?")
@@ -1565,11 +1580,46 @@ def update_run_fields(run_id, starred=None, notes=None, malfunctioned=None):
     if malfunctioned is not None:
         sets.append("malfunctioned = ?")
         params.append(int(bool(malfunctioned)))
+    if wasteful is not None:
+        sets.append("wasteful = ?")
+        params.append(int(bool(wasteful)))
+    if waste_reason is not None:
+        sets.append("waste_reason = ?")
+        params.append(str(waste_reason))
+    if waste_detected_at is not None:
+        sets.append("waste_detected_at = ?")
+        params.append(str(waste_detected_at))
+    if waste_cancelled_by_watcher is not None:
+        sets.append("waste_cancelled_by_watcher = ?")
+        params.append(int(bool(waste_cancelled_by_watcher)))
     if not sets:
         return
     params.append(run_id)
     with db_write() as con:
         con.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def update_job_waste_fields(cluster, job_id, *, waste_reason=None, waste_cancelled_at=None):
+    """Stamp WasteWatcher reason/cancel timestamp on a job_history row.
+
+    Used by both the WasteWatcher daemon and the cancel API when an
+    agent/user provides a structured reason. Either field is optional.
+    """
+    sets, params = [], []
+    if waste_reason is not None:
+        sets.append("waste_reason = ?")
+        params.append(str(waste_reason))
+    if waste_cancelled_at is not None:
+        sets.append("waste_cancelled_at = ?")
+        params.append(str(waste_cancelled_at))
+    if not sets:
+        return
+    params.extend([cluster, str(job_id)])
+    with db_write() as con:
+        con.execute(
+            f"UPDATE job_history SET {', '.join(sets)} WHERE cluster = ? AND job_id = ?",
+            params,
+        )
 
 
 def delete_run_completely(run_id, delete_jobs=False):

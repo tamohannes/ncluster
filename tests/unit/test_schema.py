@@ -21,6 +21,7 @@ _EXPECTED_TABLES = {
     "logbook_fts",
     "logbook_links",
     "job_stats_snapshots",
+    "waste_watcher_state",
     "wds_history",
     "live_jobs",
     "cluster_state",

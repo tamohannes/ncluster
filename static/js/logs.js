@@ -333,6 +333,9 @@ async function openLog(cluster, jobId, jobName, force) {
         await viewFile(first.path);
       }
     } else if (dirs.length) {
+      document.getElementById('modal-content').className = 'placeholder';
+      document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
+      document.getElementById('content-path').textContent = dirs[0].path || 'browse discovered directory';
       await expandDir(dirs[0].path, tree.querySelector('.tree-items'));
     } else {
       document.getElementById('modal-content').className = 'placeholder';
@@ -1188,7 +1191,7 @@ function _renderTableRows(tableLines, tblNum) {
     html += row.html;
   }
   html += '</tbody></table>';
-  return `<div class="md-table-wrap"><button class="md-table-expand" onclick="event.stopPropagation();toggleExpandedTable(this)" title="Fit table to page width">wide</button>${html}</div>`;
+  return `<div class="md-table-wrap"><button class="md-table-expand" onclick="event.stopPropagation();toggleExpandedTable(this)" title="Open table fullscreen">full</button>${html}</div>`;
 }
 
 function _isFigureCaption(text) {
@@ -1679,4 +1682,3 @@ async function _liveTick() {
   }
   _scheduleLiveTick();
 }
-

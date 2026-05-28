@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS job_history (
     account       TEXT DEFAULT '',
     custom_log_dir TEXT DEFAULT '',
     custom_metrics_config TEXT DEFAULT '',
+    waste_reason  TEXT NOT NULL DEFAULT '',
+    waste_cancelled_at TEXT NOT NULL DEFAULT '',
     UNIQUE(cluster, job_id)
 )
 """
@@ -100,6 +102,10 @@ CREATE TABLE IF NOT EXISTS runs (
     params_json        TEXT DEFAULT '',
     metadata_json      TEXT DEFAULT '',
     malfunctioned    INTEGER NOT NULL DEFAULT 0,
+    wasteful           INTEGER NOT NULL DEFAULT 0,
+    waste_reason       TEXT NOT NULL DEFAULT '',
+    waste_detected_at  TEXT NOT NULL DEFAULT '',
+    waste_cancelled_by_watcher INTEGER NOT NULL DEFAULT 0,
     UNIQUE(cluster, root_job_id)
 )
 """
@@ -176,6 +182,37 @@ CREATE TABLE IF NOT EXISTS job_stats_snapshots (
 )
 """
 """Periodic resource snapshots for running jobs (powers the stats charts)."""
+
+WASTE_WATCHER_STATE = """
+CREATE TABLE IF NOT EXISTS waste_watcher_state (
+    cluster                       TEXT NOT NULL,
+    job_id                        TEXT NOT NULL,
+    state                         TEXT NOT NULL,
+    state_entered_at              TEXT NOT NULL,
+    last_probe_at                 TEXT,
+    next_probe_due                TEXT NOT NULL,
+    consecutive_zero_util_samples INTEGER NOT NULL DEFAULT 0,
+    last_log_hash                 TEXT NOT NULL DEFAULT '',
+    last_log_change_at            TEXT,
+    last_sdk_heartbeat_at         TEXT,
+    suspected_reason              TEXT NOT NULL DEFAULT '',
+    suspected_confidence          TEXT NOT NULL DEFAULT '',
+    exempt_until                  TEXT,
+    last_notes                    TEXT NOT NULL DEFAULT '',
+    updated_at                    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (cluster, job_id)
+)
+"""
+"""Per-job adaptive-sampling state for the WasteWatcher.
+
+``state`` is one of ``cold``, ``warm``, ``suspicious``, ``wasteful``,
+``exempt``. ``next_probe_due`` is the ISO-8601 timestamp the watcher loop
+should not re-probe before. ``consecutive_zero_util_samples`` and the
+log-hash freshness fields drive the cold->suspicious->wasteful
+escalation. ``suspected_reason`` records which detection rule fired
+(one of the ``WASTE_REASON_*`` constants in ``server/waste_watcher.py``).
+``exempt_until`` is a timestamp; rows past it auto-re-enter ``cold``.
+"""
 
 WDS_HISTORY = """
 CREATE TABLE IF NOT EXISTS wds_history (
@@ -489,6 +526,11 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_path_bases_kind ON path_bases(kind, position)",
     "CREATE INDEX IF NOT EXISTS idx_process_filters_mode ON process_filters(mode, position)",
     "CREATE INDEX IF NOT EXISTS idx_logbook_entries_project_campaign ON logbook_entries(project, campaign)",
+    # WasteWatcher: fast lookup by state, fast 'is this job due for probe?' scans
+    "CREATE INDEX IF NOT EXISTS idx_waste_state ON waste_watcher_state(state)",
+    "CREATE INDEX IF NOT EXISTS idx_waste_due ON waste_watcher_state(next_probe_due)",
+    "CREATE INDEX IF NOT EXISTS idx_jh_waste_reason ON job_history(waste_reason) WHERE waste_reason != ''",
+    "CREATE INDEX IF NOT EXISTS idx_runs_wasteful ON runs(wasteful) WHERE wasteful = 1",
 ]
 
 
@@ -548,6 +590,14 @@ MIGRATIONS = [
     ("runs", "params_json", "TEXT DEFAULT ''"),
     ("runs", "metadata_json", "TEXT DEFAULT ''"),
     ("runs", "malfunctioned", "INTEGER NOT NULL DEFAULT 0"),
+    # WasteWatcher run-level flags (v4+)
+    ("runs", "wasteful", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "waste_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("runs", "waste_detected_at", "TEXT NOT NULL DEFAULT ''"),
+    ("runs", "waste_cancelled_by_watcher", "INTEGER NOT NULL DEFAULT 0"),
+    # WasteWatcher job-level audit columns (v4+)
+    ("job_history", "waste_reason", "TEXT NOT NULL DEFAULT ''"),
+    ("job_history", "waste_cancelled_at", "TEXT NOT NULL DEFAULT ''"),
     # logbook_entries columns added in v3
     ("logbook_entries", "entry_type", "TEXT NOT NULL DEFAULT 'note'"),
     ("logbook_entries", "pinned", "INTEGER NOT NULL DEFAULT 0"),
@@ -575,6 +625,7 @@ SCHEMA = [
     LOGBOOK_FTS,
     LOGBOOK_LINKS,
     JOB_STATS_SNAPSHOTS,
+    WASTE_WATCHER_STATE,
     WDS_HISTORY,
     LIVE_JOBS,
     CLUSTER_STATE,
@@ -665,5 +716,86 @@ APP_SETTINGS_DEFAULTS: Dict[str, tuple[Any, Callable[[Any], Any], str]] = {
         True,
         bool,
         "Show the custom metrics UI (log dir, extractors, stats panel). Disable to hide it globally.",
+    ),
+    # ── WasteWatcher tunables ────────────────────────────────────────────────
+    "waste_watcher_enabled": (
+        True,
+        bool,
+        "Master switch for the WasteWatcher daemon. Disable to stop detection entirely.",
+    ),
+    "waste_watcher_cancel_enabled": (
+        True,
+        bool,
+        "When True, WasteWatcher auto-cancels verified-wasteful jobs after verification.",
+    ),
+    "waste_watcher_cancel_disabled_clusters": (
+        "",
+        str,
+        "Comma-separated cluster names where auto-cancel is disabled even when cancel_enabled=True.",
+    ),
+    "waste_watcher_tick_sec": (
+        30,
+        int,
+        "Seconds between WasteWatcher loop ticks (governs how often we evaluate due jobs).",
+    ),
+    "waste_watcher_cold_probe_sec": (
+        60,
+        int,
+        "Probe cadence (seconds) for jobs that have not yet shown any GPU activity.",
+    ),
+    "waste_watcher_warm_probe_sec": (
+        900,
+        int,
+        "Probe cadence (seconds) for jobs that have shown healthy GPU activity (back-off).",
+    ),
+    "waste_watcher_suspicious_probe_sec": (
+        30,
+        int,
+        "Probe cadence (seconds) once a job is flagged suspicious (aggressive verification).",
+    ),
+    "waste_watcher_cold_grace_min": (
+        15,
+        int,
+        "Minutes a job may sit cold (0% util) before transitioning to suspicious (vLLM weight-load tolerance).",
+    ),
+    "waste_watcher_warm_idle_min": (
+        10,
+        int,
+        "Minutes a warm job must sit idle before re-entering suspicious.",
+    ),
+    "waste_watcher_suspicious_confirm_min": (
+        5,
+        int,
+        "Minutes of continued idleness while suspicious before promotion to wasteful.",
+    ),
+    "waste_watcher_log_quiet_min": (
+        5,
+        int,
+        "Minutes the log tail hash must be unchanged before counting toward waste verification.",
+    ),
+    "waste_watcher_sdk_heartbeat_stale_min": (
+        5,
+        int,
+        "Minutes since last SDK heartbeat (when SDK-tracked) before considered stale.",
+    ),
+    "waste_watcher_util_busy_threshold": (
+        5,
+        int,
+        "GPU utilization percentage above which a job is considered busy (resets idle streaks).",
+    ),
+    "waste_watcher_exempt_name_regex": (
+        r"(judge-aggregate|manifest|summarize-results|wait-.*-sentinels)",
+        str,
+        "Regex matched against job names; matching jobs skip WasteWatcher entirely.",
+    ),
+    "waste_watcher_min_runtime_min": (
+        5,
+        int,
+        "Skip jobs younger than this many minutes (avoid noise during job startup).",
+    ),
+    "waste_watcher_audit_project": (
+        "compute",
+        str,
+        "Logbook project where WasteWatcher cancellation audit entries are recorded.",
     ),
 }

@@ -364,7 +364,7 @@ class TestLogbookApi:
                 {
                     "title": "S",
                     "columns": [{"id": "a", "label": "A"}],
-                    "rows": [{"cells": {"a": "1"}, "cluster": "dfw", "run_hash": "deadbeef"}],
+                    "rows": [{"cells": {"a": "1"}}],
                 }
             ],
         }
@@ -375,7 +375,8 @@ class TestLogbookApi:
         )
         assert u.status_code == 200
         g = client.get("/api/logbook/testproj/campaign_board?campaign=wx").get_json()
-        assert "deadbeef" in g.get("board_json", "")
+        assert '"a":"1"' in g.get("board_json", "")
+        assert "board_runtime" not in g
 
     def test_list_filter_campaign_board_type(self, client):
         client.post(

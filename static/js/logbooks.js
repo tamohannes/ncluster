@@ -573,7 +573,7 @@ async function openLogbookEntry(entryId, opts = {}) {
             <h2 class="lb-board-setup-heading">Setup &amp; conventions</h2>
             <div class="lb-board-setup-body lb-detail-body">${bodyHtml}</div>
           </div>
-          <div class="lb-board-grids">${_renderBoardJsonHtml(entry.board_json, false, entry.board_runtime)}</div>
+          <div class="lb-board-grids">${_renderBoardJsonHtml(entry.board_json, false)}</div>
         </div>`;
     } else {
       mainContent = `<div class="lb-detail-body">${bodyHtml}</div>`;
@@ -688,45 +688,39 @@ function openHtmlLightbox(src) {
   });
 }
 
-function _layoutExpandedTable(wrap) {
-  const main = wrap && wrap.closest ? wrap.closest('.lb-main') : null;
-  if (!wrap || !main) return;
+function openTableLightbox(btn) {
+  const wrap = btn && btn.closest ? btn.closest('.md-table-wrap, .lb-board-table-scroll') : null;
+  if (!wrap) return;
+  const table = wrap.querySelector('table');
+  if (!table) return;
 
-  wrap.style.width = '';
-  wrap.style.marginLeft = '';
+  const overlay = document.createElement('div');
+  overlay.className = 'lb-lightbox lb-table-lightbox';
+  const close = document.createElement('button');
+  close.className = 'lb-lightbox-close';
+  close.textContent = '✕';
+  close.onclick = () => _dismissLightbox(overlay);
 
-  const mainStyle = window.getComputedStyle(main);
-  const padLeft = parseFloat(mainStyle.paddingLeft) || 0;
-  const padRight = parseFloat(mainStyle.paddingRight) || 0;
-  const mainRect = main.getBoundingClientRect();
-  const wrapRect = wrap.getBoundingClientRect();
-  const targetLeft = mainRect.left + padLeft;
-  const targetWidth = Math.max(320, mainRect.width - padLeft - padRight);
-
-  wrap.style.width = `${targetWidth}px`;
-  wrap.style.marginLeft = `${targetLeft - wrapRect.left}px`;
+  const shell = document.createElement('div');
+  shell.className = 'lb-table-lightbox-shell';
+  const clone = table.cloneNode(true);
+  clone.removeAttribute('id');
+  shell.appendChild(clone);
+  overlay.appendChild(close);
+  overlay.appendChild(shell);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('visible'));
+  overlay.addEventListener('click', ev => {
+    if (ev.target === overlay) _dismissLightbox(overlay);
+  });
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { _dismissLightbox(overlay); document.removeEventListener('keydown', esc); }
+  });
 }
 
 function toggleExpandedTable(btn) {
-  const wrap = btn && btn.closest ? btn.closest('.md-table-wrap') : null;
-  if (!wrap) return;
-  const expanded = !wrap.classList.contains('expanded');
-  wrap.classList.toggle('expanded', expanded);
-  if (expanded) {
-    _layoutExpandedTable(wrap);
-    btn.textContent = 'normal';
-    btn.title = 'Return table to entry width';
-  } else {
-    wrap.style.width = '';
-    wrap.style.marginLeft = '';
-    btn.textContent = 'wide';
-    btn.title = 'Fit table to page width';
-  }
+  openTableLightbox(btn);
 }
-
-window.addEventListener('resize', () => {
-  document.querySelectorAll('.md-table-wrap.expanded').forEach(_layoutExpandedTable);
-});
 
 
 // ── Export ───────────────────────────────────────────────────────────────────
@@ -829,7 +823,7 @@ async function exportEntryHtml() {
     ? `<h2>Campaign goal</h2><div class="export-goal">${exportGoal.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`
     : '';
   const mainExport = e.entry_type === 'campaign_board'
-    ? `${exportGoalHtml}<h2>Setup &amp; conventions</h2>${bodyHtml}<h2>Structured tables</h2>${_renderBoardJsonHtml(e.board_json, true, e.board_runtime)}`
+    ? `${exportGoalHtml}<h2>Setup &amp; conventions</h2>${bodyHtml}<h2>Structured tables</h2>${_renderBoardJsonHtml(e.board_json, true)}`
     : bodyHtml;
 
   const html = `<!DOCTYPE html>
@@ -1051,41 +1045,6 @@ function _lbFormatBoardJson() {
   }
 }
 
-/** Append a run_metric_grid section: columns declare default metric keys (scalar_latest); cells only need cluster + run_hash unless overriding. */
-function _lbInsertSmartMetricGridTemplate() {
-  const ta = document.getElementById('lb-edit-board-json');
-  if (!ta) return;
-  let o;
-  try {
-    o = JSON.parse(ta.value.trim() || '{}');
-  } catch (e) {
-    toast('Invalid JSON — fix before inserting a template', 'error');
-    return;
-  }
-  if (typeof o !== 'object' || o === null || Array.isArray(o)) {
-    toast('board_json must be a JSON object', 'error');
-    return;
-  }
-  if (o.version == null) o.version = 1;
-  if (!Array.isArray(o.sections)) o.sections = [];
-  const n = o.sections.filter((s) => s && String(s.type || '').toLowerCase() === 'run_metric_grid').length;
-  o.sections.push({
-    type: 'run_metric_grid',
-    title: `Metrics ${n + 1}`,
-    columns: [
-      { id: 'metric_a', label: 'Metric A', scalar: 'pass_at_1' },
-      { id: 'metric_b', label: 'Metric B', scalar: 'accuracy' },
-    ],
-    rows: [{ id: 'exp1', label: 'Experiment 1' }],
-    cells: {
-      'exp1:metric_a': { cluster: 'local', run_hash: '00000000' },
-      'exp1:metric_b': { cluster: 'local', run_hash: '00000000' },
-    },
-  });
-  ta.value = JSON.stringify(o, null, 2);
-  toast('Inserted run_metric_grid — edit scalar names, cluster, and run_hash for each cell', 'ok');
-}
-
 function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson, campaignGoal, graphJson) {
   if (_lbPresentMode) void toggleLogbookPresentMode(false);
   _lbEditingId = entryId || null;
@@ -1119,7 +1078,7 @@ function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson,
         <datalist id="lb-campaign-suggest"></datalist>
       </div>
       <div id="lb-editor-board-shell" class="lb-editor-board-shell" style="display:${typeVal === 'campaign_board' ? 'block' : 'none'}">
-        <div class="lb-editor-board-banner">Campaign board — canonical team surface. <strong>Table</strong> sections: each row needs <code>cluster</code> + <code>run_hash</code>; optional <code>"type":"run_status"</code> column (max one per section) shows live Slurm/SDK aggregate state. <strong>run_metric_grid</strong> (smart metric table): pick which SDK stats appear in each column — optional <code>scalar</code> on a column is the default <code>scalar_latest</code> metric name for that column; each <code>cells["row_id:col_id"]</code> entry sets <code>cluster</code> + <code>run_hash</code> and may override with its own <code>scalar</code>. Every row×column pair is required. On save/read, Clausius fills <code>board_runtime</code> with live status, numeric values, and <code>malfunctioned</code> flags (no external services). Use <strong>insert template</strong> below to scaffold a grid, then replace metric keys and run hashes.</div>
+        <div class="lb-editor-board-banner">Campaign board — legacy static surface. New campaign work belongs in mind maps; existing board JSON supports plain table sections only: <code>version</code>, <code>sections</code>, <code>columns</code>, <code>rows</code>, and string <code>cells</code>.</div>
         <label class="lb-editor-board-label" for="lb-edit-campaign-goal">Campaign goal</label>
         <textarea class="lb-editor-campaign-goal" id="lb-edit-campaign-goal" rows="4" placeholder="What this campaign is trying to achieve (plain text, a few sentences)…"></textarea>
       </div>
@@ -1135,7 +1094,6 @@ function showLogbookEditor(entryId, title, body, entryType, campaign, boardJson,
         <textarea class="lb-editor-board-json" id="lb-edit-board-json" rows="14" spellcheck="false"></textarea>
         <div class="lb-editor-board-json-actions">
           <button type="button" class="btn" onclick="_lbFormatBoardJson()">format JSON</button>
-          <button type="button" class="btn" onclick="_lbInsertSmartMetricGridTemplate()" title="Append a run_metric_grid section with column-level scalar keys">insert smart table template</button>
         </div>
       </div>
       <div id="lb-edit-graph-row" style="display:${typeVal === 'mind_map' ? 'block' : 'none'}">
@@ -1392,107 +1350,7 @@ function _lbEscapeAttr(s) {
     .replace(/>/g, '&gt;');
 }
 
-/** CSS class suffix for board_runtime status labels (matches server slugs). */
-function _lbBoardStatusSlug(label) {
-  const raw = String(label || 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return raw || 'unknown';
-}
-
-function _lbBoardStatusDisplay(label) {
-  if (label == null || label === '' || label === '—') return '—';
-  return String(label).replace(/_/g, ' ');
-}
-
-function _lbRunMetricRuntimeKey(sectionIndex, rowId, colId) {
-  return `${sectionIndex}|${rowId}|${colId}`;
-}
-
-/** Map backend status to a small set of UI tones (colors). */
-function _lbRunMetricTone(status, hasValue) {
-  if (hasValue) return 'value';
-  const s = String(status || '').toLowerCase();
-  if (s === 'completed') return 'completed';
-  if (s === 'running') return 'running';
-  if (s === 'pending' || s === 'submitting') return 'pending';
-  if (s === 'failed' || s === 'error' || s === 'cancelled' || s === 'timeout') return 'failed';
-  if (s === 'mixed') return 'pending';
-  if (s === 'not_found' || s === 'no_jobs') return 'missing';
-  return 'unknown';
-}
-
-function _lbRunMetricStatusAbbrev(status) {
-  const s = String(status || '').toLowerCase();
-  const map = {
-    completed: '✓',
-    running: '●',
-    pending: '◔',
-    submitting: '◔',
-    failed: '✕',
-    cancelled: '✕',
-    timeout: '✕',
-    mixed: '◆',
-    not_found: '—',
-    no_jobs: '○',
-    error: '!',
-  };
-  return map[s] || '·';
-}
-
-function _renderRunMetricGridSection(sec, sectionIndex, boardRuntime, forExport) {
-  const title = (sec && sec.title) ? String(sec.title).replace(/</g, '&lt;') : `Section ${sectionIndex + 1}`;
-  const cols = sec && Array.isArray(sec.columns) ? sec.columns : [];
-  const rows = sec && Array.isArray(sec.rows) ? sec.rows : [];
-  const cm = (boardRuntime && boardRuntime.cells) ? boardRuntime.cells : {};
-  const head = cols.map((c) => {
-    const lab = String(c.label != null ? c.label : c.id || '').replace(/</g, '&lt;');
-    const sk = c.scalar ? String(c.scalar).replace(/</g, '&lt;') : '';
-    const keySpan = sk ? ` <span class="lb-run-metric-col-key" title="scalar_latest key">${sk}</span>` : '';
-    return `<th><span class="lb-run-metric-th-inner">${lab}${keySpan}</span></th>`;
-  }).join('');
-  const body = rows.map((row) => {
-    const rid = row && row.id != null ? String(row.id) : '';
-    const tds = cols.map((c) => {
-      const cid = c && c.id != null ? String(c.id) : '';
-      const rk = _lbRunMetricRuntimeKey(sectionIndex, rid, cid);
-      const cell = cm[rk] || null;
-      const st = cell && cell.status ? String(cell.status) : 'missing';
-      const val = cell && cell.value != null && cell.value !== '' ? String(cell.value) : '';
-      const hasVal = !!val;
-      const cluster = cell && cell.cluster ? String(cell.cluster).trim() : '';
-      const runHash = cell && cell.run_hash ? String(cell.run_hash).trim() : '';
-      const scalar = cell && cell.scalar ? String(cell.scalar) : '';
-      const malfunctioned = !!(cell && cell.malfunctioned);
-      const tone = _lbRunMetricTone(st, hasVal);
-      const tipParts = [
-        cluster && runHash ? `${cluster}/${runHash}` : '',
-        st,
-        scalar ? `scalar:${scalar}` : '',
-        malfunctioned ? 'malfunctioned' : '',
-      ].filter(Boolean);
-      const tip = _lbEscapeAttr(tipParts.join(' · '));
-      if (forExport) {
-        const cellTxt = hasVal ? val : _lbBoardStatusDisplay(st);
-        return `<td>${cellTxt.replace(/</g, '&lt;')}</td>`;
-      }
-      const oc = _lbEscapeAttr(cluster);
-      const oh = _lbEscapeAttr(runHash);
-      const inner = hasVal
-        ? `<span class="lb-run-metric-val">${val.replace(/</g, '&lt;')}</span>`
-        : `<span class="lb-run-metric-glyph" aria-hidden="true">${_lbRunMetricStatusAbbrev(st)}</span>`;
-      const open = cluster && runHash
-        ? `onclick="event.stopPropagation();if(typeof openRunInfoByHash==='function')openRunInfoByHash('${oc}','${oh}','')"`
-        : '';
-      const mfCls = malfunctioned ? ' lb-run-metric-cell--malfunctioned' : '';
-      return `<td class="lb-run-metric-td"><button type="button" class="lb-run-metric-cell lb-run-metric-cell--${tone}${mfCls}" title="${tip}" ${open}>${inner}</button></td>`;
-    }).join('');
-    const rlab = row && row.label != null ? String(row.label).replace(/</g, '&lt;') : rid;
-    return `<tr><th scope="row" class="lb-run-metric-row-label">${rlab}</th>${tds}</tr>`;
-  }).join('');
-  return `<div class="lb-board-section lb-board-section--metric-grid"><h3 class="lb-board-section-title">${title}</h3>`
-    + `<div class="lb-board-table-scroll"><table class="lb-board-table lb-run-metric-grid md-table"><thead><tr><th class="lb-run-metric-corner"></th>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
-}
-
-function _renderBoardJsonHtml(boardJsonStr, forExport, boardRuntime) {
+function _renderBoardJsonHtml(boardJsonStr, forExport) {
   if (!boardJsonStr || !String(boardJsonStr).trim()) return '';
   let o;
   try {
@@ -1500,59 +1358,29 @@ function _renderBoardJsonHtml(boardJsonStr, forExport, boardRuntime) {
   } catch (_) {
     return '<p class="lb-board-json-err">Invalid board JSON</p>';
   }
-  const sm = (boardRuntime && boardRuntime.statuses) ? boardRuntime.statuses : {};
   const sections = o && Array.isArray(o.sections) ? o.sections : [];
   if (!sections.length) {
     return '<p class="lb-board-empty-hint">No structured tables yet. Edit this board and add JSON sections.</p>';
   }
   return sections.map((sec, si) => {
     const secType = String(sec && sec.type != null ? sec.type : 'table').toLowerCase();
-    if (secType === 'run_metric_grid') {
-      return _renderRunMetricGridSection(sec, si, boardRuntime, forExport);
+    if (secType !== 'table') {
+      return '<p class="lb-board-empty-hint">This legacy table type is no longer supported.</p>';
     }
     const title = (sec && sec.title) ? String(sec.title).replace(/</g, '&lt;') : `Section ${si + 1}`;
     const cols = sec && Array.isArray(sec.columns) ? sec.columns : [];
     const rows = sec && Array.isArray(sec.rows) ? sec.rows : [];
-    const head = cols.map(c => `<th>${String(c.label != null ? c.label : c.id || '').replace(/</g, '&lt;')}</th>`).join('')
-      + '<th class="lb-board-run-col">Run</th>';
+    const head = cols.map(c => `<th>${String(c.label != null ? c.label : c.id || '').replace(/</g, '&lt;')}</th>`).join('');
     const body = rows.map((row) => {
-      const clusterLc = row && row.cluster ? String(row.cluster).trim().toLowerCase() : '';
-      const runHashLc = row && row.run_hash ? String(row.run_hash).trim().toLowerCase() : '';
-      const statusKey = clusterLc && runHashLc ? `${clusterLc}:${runHashLc}` : '';
       const cells = cols.map((c) => {
         const id = c.id;
-        const colType = String(c.type || 'string').toLowerCase();
-        if (colType === 'run_status') {
-          const stRaw = statusKey && Object.prototype.hasOwnProperty.call(sm, statusKey) ? sm[statusKey] : null;
-          const hasVal = stRaw != null && stRaw !== '';
-          const display = hasVal ? _lbBoardStatusDisplay(stRaw) : '—';
-          const safe = display.replace(/</g, '&lt;');
-          if (forExport) {
-            return `<td>${safe}</td>`;
-          }
-          const slug = hasVal ? _lbBoardStatusSlug(stRaw) : 'unknown';
-          const titleAttr = _lbEscapeAttr(hasVal ? String(stRaw) : '');
-          return `<td><span class="lb-board-status lb-board-status--${slug}" title="${titleAttr}">${safe}</span></td>`;
-        }
         const v = row && row.cells && id in row.cells ? row.cells[id] : '';
         return `<td>${String(v).replace(/</g, '&lt;')}</td>`;
       }).join('');
-      const cluster = row && row.cluster ? String(row.cluster).trim() : '';
-      const runHash = row && row.run_hash ? String(row.run_hash).trim() : '';
-      let runCell = '—';
-      if (runHash && cluster) {
-        if (forExport) {
-          runCell = `${cluster.replace(/</g, '&lt;')}/${runHash.replace(/</g, '&lt;')}`;
-        } else {
-          const oc = _lbEscapeAttr(cluster);
-          const oh = _lbEscapeAttr(runHash);
-          runCell = `<button type="button" class="lb-board-run-chip" onclick="event.stopPropagation();if(typeof openRunInfoByHash==='function')openRunInfoByHash('${oc}','${oh}','')">${runHash.replace(/</g, '&lt;')}</button>`;
-        }
-      }
-      return `<tr>${cells}<td class="lb-board-run-col">${runCell}</td></tr>`;
+      return `<tr>${cells}</tr>`;
     }).join('');
     return `<div class="lb-board-section"><h3 class="lb-board-section-title">${title}</h3>`
-      + `<div class="lb-board-table-scroll"><table class="lb-board-table md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
+      + `<div class="lb-board-table-scroll md-table-wrap"><button class="md-table-expand" onclick="event.stopPropagation();toggleExpandedTable(this)" title="Open table fullscreen">full</button><table class="lb-board-table md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
   }).join('');
 }
 
@@ -1662,6 +1490,3 @@ document.addEventListener('keydown', e => {
 document.addEventListener('blur', e => {
   if (e.target.tagName === 'TEXTAREA') setTimeout(_hideSuggest, 150);
 }, true);
-
-
-

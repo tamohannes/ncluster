@@ -763,6 +763,10 @@ function groupJobsByDependency(jobs) {
     return '';
   }
 
+  function hasAuthoritativeRunIdentity(j) {
+    return !!(j.run_uuid || j.run_id);
+  }
+
   function jobGroupTimestamp(j) {
     const raw = j.submitted || j.started || j.ended_at || '';
     const t = Date.parse(String(raw).replace(' ', 'T'));
@@ -813,8 +817,7 @@ function groupJobsByDependency(jobs) {
     };
     for (const j of sorted) {
       const ts = jobGroupTimestamp(j);
-      const hasIdentity = !!jobRunIdentity(j);
-      if (hasIdentity) {
+      if (hasAuthoritativeRunIdentity(j)) {
         flush();
         prevTs = null;
         continue;
@@ -2147,7 +2150,6 @@ function _renderPppAllocations(data) {
       let myTotal = myTotalSqueue;
       myTotal = Math.min(myTotal, consumed || myTotal);
       teamOthersTotal = Math.min(teamOthersTotal, Math.max(0, (consumed || 0) - myTotal));
-      const pppNonTeam = Math.max(0, consumed - myTotal - teamOthersTotal);
 
       const clusterOccupied = cd.cluster_occupied_gpus || 0;
       const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
@@ -2222,8 +2224,6 @@ function _renderPppAllocations(data) {
         if (showTeamUsage && teamOthersTotal > 0)
           segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamOthersTotal)}%"></div>`;
       }
-      if (pppNonTeam > 0)
-        segments += `<div class="ppp-seg ppp-seg-ppp-rest" style="width:${toPct(pppNonTeam)}%"></div>`;
 
       const clusterOcc = cd.cluster_occupied_gpus || 0;
       const clusterTot = cd.cluster_total_gpus || 0;
@@ -2265,7 +2265,6 @@ function _renderPppAllocations(data) {
         { label: currentUser, value: myPopLabel, detail: myFsLabel, cls: `pop-me ${myFsCls}` },
         { label: 'team', value: teamPopLabel, detail: '', cls: 'pop-team' },
         ...(teamAllocLabel ? [{ label: 'team alloc', value: teamAllocLabel, detail: 'informal', cls: 'pop-team-alloc' }] : []),
-        { label: `${acctShortName} non-team`, value: `${pppNonTeam}`, detail: '', cls: 'pop-ppp' },
         { label: 'other PPPs', value: `${nonPpps}`, detail: '', cls: 'pop-other' },
         { label: 'cluster total', value: `${clusterOcc} / ${clusterTot}`, detail: clusterTot > 0 ? `${Math.round(clusterOcc/clusterTot*100)}%` : '', cls: 'pop-cluster' },
       ];
@@ -2329,7 +2328,6 @@ function _renderPppAllocations(data) {
       html += `<span><span class="ppp-legend-swatch swatch-team"></span>${tn}${hasAnySplit ? ' run' : ''}</span>`;
       if (hasAnySplit) html += `<span><span class="ppp-legend-swatch swatch-team-pend"></span>${tn} pend</span>`;
     }
-    html += `<span><span class="ppp-legend-swatch swatch-ppp-rest"></span>PPP non-team</span>`;
     html += '</div>';
 
 
@@ -3356,4 +3354,3 @@ document.addEventListener('visibilitychange', () => {
     }
   }
 });
-

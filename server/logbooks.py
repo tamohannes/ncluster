@@ -2,7 +2,7 @@
 
 Each entry has: project, title, body (markdown), entry_type, created_at, edited_at.
 entry_type is "note", "plan", "campaign_board" (legacy; singleton per project+campaign;
-structured grids in board_json JSON), or "mind_map" (singleton per project+campaign;
+static tables in board_json JSON), or "mind_map" (singleton per project+campaign;
 static DAG of tasks/experiments/bugs/decisions stored in graph_json JSON).
 Optional ``campaign_goal`` (short prose) is stored for ``campaign_board`` and
 ``mind_map`` rows. Full-text search via FTS5 with porter stemming and BM25 ranking.
@@ -18,7 +18,6 @@ from datetime import datetime
 
 from .config import PROJECT_ROOT
 from .db import get_db, db_write
-from .logbook_board_runtime import attach_board_runtime
 
 log = logging.getLogger(__name__)
 
@@ -39,10 +38,9 @@ BOARD_JSON_MAX_BYTES = 512 * 1024
 BOARD_MAX_SECTIONS = 48
 BOARD_MAX_COLS = 64
 BOARD_MAX_ROWS_PER_SECTION = 2000
-BOARD_MAX_GRID_CELLS = BOARD_MAX_COLS * BOARD_MAX_ROWS_PER_SECTION
 CAMPAIGN_GOAL_MAX_CHARS = 8000
-BOARD_COLUMN_TYPES = frozenset({"string", "run_status"})
-BOARD_SECTION_TYPES = frozenset({"table", "run_metric_grid"})
+BOARD_COLUMN_TYPES = frozenset({"string"})
+BOARD_SECTION_TYPES = frozenset({"table"})
 _COL_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]{0,63}$")
 
 GRAPH_JSON_MAX_BYTES = 512 * 1024
@@ -79,7 +77,7 @@ def validate_campaign_goal(raw):
 
 
 def _normalize_table_section(si: int, sec: dict) -> dict:
-    """Classic board: rows carry cells + optional row-level cluster/run_hash."""
+    """Classic board section: static columns and rows of string cells."""
     title = sec.get("title", "")
     if title is None:
         title = ""
@@ -93,7 +91,6 @@ def _normalize_table_section(si: int, sec: dict) -> dict:
     col_ids = []
     norm_cols = []
     seen_ids = set()
-    run_status_columns = 0
     for ci, c in enumerate(cols):
         if not isinstance(c, dict):
             raise ValueError(f"section {si} column {ci} must be an object")
@@ -121,13 +118,9 @@ def _normalize_table_section(si: int, sec: dict) -> dict:
         if col_type not in BOARD_COLUMN_TYPES:
             raise ValueError(
                 f"section {si} column {cid!r} has unknown type {col_type!r} "
-                f"(allowed: string, run_status)"
+                "(only static string columns are supported)"
             )
-        if col_type == "run_status":
-            run_status_columns += 1
-            if run_status_columns > 1:
-                raise ValueError(f"section {si} allows at most one run_status column")
-        norm_cols.append({"id": cid, "label": lab, "type": col_type})
+        norm_cols.append({"id": cid, "label": lab})
 
     rows = sec.get("rows")
     if rows is None:
@@ -154,165 +147,8 @@ def _normalize_table_section(si: int, sec: dict) -> dict:
                     f"(not in columns)"
                 )
         norm_cells = {cid: str(cells.get(cid, "") if cells.get(cid) is not None else "") for cid in col_ids}
-        cluster = row.get("cluster", "") or ""
-        run_hash = row.get("run_hash", "") or ""
-        if not isinstance(cluster, str) or not isinstance(run_hash, str):
-            raise ValueError(f"section {si} row {ri} cluster and run_hash must be strings")
-        cluster = cluster.strip()
-        run_hash = run_hash.strip()
-        if run_hash and not cluster:
-            raise ValueError(
-                f"section {si} row {ri}: cluster is required when run_hash is set"
-            )
-        norm_rows.append(
-            {"cells": norm_cells, "cluster": cluster, "run_hash": run_hash}
-        )
+        norm_rows.append({"cells": norm_cells})
     return {"title": title, "columns": norm_cols, "rows": norm_rows}
-
-
-def _normalize_run_metric_grid_section(si: int, sec: dict) -> dict:
-    """Matrix where each cell is its own run (+ optional SDK scalar key)."""
-    title = sec.get("title", "")
-    if title is None:
-        title = ""
-    if not isinstance(title, str):
-        raise ValueError(f"section {si} title must be a string")
-    cols = sec.get("columns")
-    if not isinstance(cols, list) or not cols:
-        raise ValueError(f"section {si} must have a non-empty columns array")
-    if len(cols) > BOARD_MAX_COLS:
-        raise ValueError(f"section {si} allows at most {BOARD_MAX_COLS} columns")
-    seen_col: set[str] = set()
-    norm_cols: list[dict] = []
-    for ci, c in enumerate(cols):
-        if not isinstance(c, dict):
-            raise ValueError(f"section {si} column {ci} must be an object")
-        if set(c.keys()) - {"id", "label", "scalar"}:
-            raise ValueError(
-                f"section {si} run_metric_grid column {ci} only allows id, label, and optional scalar"
-            )
-        cid = c.get("id")
-        if not isinstance(cid, str) or not _COL_ID_RE.match(cid):
-            raise ValueError(
-                f"section {si} column {ci} needs a valid id "
-                "(start with letter, alphanumeric+underscore, max 64 chars)"
-            )
-        if cid in seen_col:
-            raise ValueError(f"section {si} duplicate column id {cid!r}")
-        seen_col.add(cid)
-        lab = c.get("label", cid)
-        if lab is None:
-            lab = cid
-        if not isinstance(lab, str):
-            raise ValueError(f"section {si} column {cid!r} label must be a string")
-        col_scalar = c.get("scalar", "") or ""
-        if col_scalar is not None and not isinstance(col_scalar, str):
-            raise ValueError(f"section {si} column {cid!r} scalar must be a string")
-        col_scalar = col_scalar.strip()
-        norm_col: dict = {"id": cid, "label": lab}
-        if col_scalar:
-            norm_col["scalar"] = col_scalar
-        norm_cols.append(norm_col)
-
-    rows_raw = sec.get("rows")
-    if rows_raw is None:
-        rows_raw = []
-    if not isinstance(rows_raw, list):
-        raise ValueError(f"section {si} rows must be a list")
-    if len(rows_raw) > BOARD_MAX_ROWS_PER_SECTION:
-        raise ValueError(
-            f"section {si} allows at most {BOARD_MAX_ROWS_PER_SECTION} rows"
-        )
-    if not rows_raw:
-        raise ValueError(f"section {si} run_metric_grid must have at least one row")
-    seen_row: set[str] = set()
-    norm_rows: list[dict] = []
-    for ri, row in enumerate(rows_raw):
-        if not isinstance(row, dict):
-            raise ValueError(f"section {si} row {ri} must be an object")
-        if set(row.keys()) - {"id", "label"}:
-            raise ValueError(
-                f"section {si} run_metric_grid row {ri} only allows id and label"
-            )
-        rid = row.get("id")
-        if not isinstance(rid, str) or not _COL_ID_RE.match(rid):
-            raise ValueError(
-                f"section {si} row {ri} needs a valid id "
-                "(start with letter, alphanumeric+underscore, max 64 chars)"
-            )
-        if rid in seen_row:
-            raise ValueError(f"section {si} duplicate row id {rid!r}")
-        seen_row.add(rid)
-        rlab = row.get("label", rid)
-        if rlab is None:
-            rlab = rid
-        if not isinstance(rlab, str):
-            raise ValueError(f"section {si} row {rid!r} label must be a string")
-        norm_rows.append({"id": rid, "label": rlab})
-
-    cells_raw = sec.get("cells")
-    if cells_raw is None:
-        cells_raw = {}
-    if not isinstance(cells_raw, dict):
-        raise ValueError(f"section {si} cells must be an object keyed as row_id:col_id")
-    if len(cells_raw) > BOARD_MAX_GRID_CELLS:
-        raise ValueError(f"section {si} has too many cells (max {BOARD_MAX_GRID_CELLS})")
-
-    expected_pairs: set[str] = {f"{r['id']}:{c['id']}" for r in norm_rows for c in norm_cols}
-    col_default_scalar: dict[str, str] = {
-        c["id"]: c["scalar"] for c in norm_cols if c.get("scalar")
-    }
-    norm_cells: dict[str, dict] = {}
-    for key, spec in cells_raw.items():
-        if not isinstance(key, str) or ":" not in key:
-            raise ValueError(
-                f"section {si} invalid cells key {key!r} (expected row_id:col_id)"
-            )
-        rk, ck = key.split(":", 1)
-        if rk not in seen_row or ck not in seen_col:
-            raise ValueError(
-                f"section {si} cells key {key!r} must reference declared row and column ids"
-            )
-        if not isinstance(spec, dict):
-            raise ValueError(f"section {si} cells[{key!r}] must be an object")
-        extra = set(spec.keys()) - {"cluster", "run_hash", "scalar"}
-        if extra:
-            raise ValueError(f"section {si} cells[{key!r}] unknown keys {extra}")
-        cluster = spec.get("cluster", "") or ""
-        run_hash = spec.get("run_hash", "") or ""
-        if not isinstance(cluster, str) or not isinstance(run_hash, str):
-            raise ValueError(f"section {si} cells[{key!r}] cluster and run_hash must be strings")
-        cluster = cluster.strip()
-        run_hash = run_hash.strip()
-        if not cluster or not run_hash:
-            raise ValueError(f"section {si} cells[{key!r}] requires cluster and run_hash")
-        scalar = spec.get("scalar", "") or ""
-        if scalar is not None and not isinstance(scalar, str):
-            raise ValueError(f"section {si} cells[{key!r}] scalar must be a string")
-        scalar = scalar.strip()
-        fallback = (col_default_scalar.get(ck) or "").strip()
-        effective = scalar or fallback
-        norm_cells[f"{rk}:{ck}"] = {
-            "cluster": cluster.lower(),
-            "run_hash": run_hash.lower(),
-            **({"scalar": effective} if effective else {}),
-        }
-
-    missing = expected_pairs - set(norm_cells.keys())
-    if missing:
-        sample = ", ".join(sorted(missing)[:6])
-        more = f" (+{len(missing) - 6} more)" if len(missing) > 6 else ""
-        raise ValueError(
-            f"section {si} run_metric_grid is missing cells for: {sample}{more}"
-        )
-
-    return {
-        "type": "run_metric_grid",
-        "title": title,
-        "columns": norm_cols,
-        "rows": norm_rows,
-        "cells": norm_cells,
-    }
 
 
 def validate_board_json(raw):
@@ -360,12 +196,9 @@ def validate_board_json(raw):
         if sec_type not in BOARD_SECTION_TYPES:
             raise ValueError(
                 f"section {si} has unknown type {sec_type!r} "
-                f"(allowed: table, run_metric_grid)"
+                "(only static table sections are supported)"
             )
-        if sec_type == "run_metric_grid":
-            out_sections.append(_normalize_run_metric_grid_section(si, sec))
-        else:
-            out_sections.append(_normalize_table_section(si, sec))
+        out_sections.append(_normalize_table_section(si, sec))
 
     normalized = {"version": 1, "sections": out_sections}
     blob = json.dumps(normalized, separators=(",", ":"))
@@ -704,7 +537,6 @@ def get_campaign_board(project, campaign):
     if not row:
         return {"status": "not_found", "project": project, "campaign": camp}
     d = _row_to_dict(row)
-    attach_board_runtime(d)
     return d
 
 
@@ -1043,7 +875,6 @@ def get_entry(project, entry_id):
     if not row:
         return {"status": "error", "error": "Entry not found"}
     d = _row_to_dict(row)
-    attach_board_runtime(d)
     return d
 
 

@@ -683,6 +683,7 @@ emit() {{ echo "FILE:$1:$2"; }}
 LOGDIR=""
 STDOUT=""
 STDERR=""
+COMMAND=""
 
 SCTL=$(scontrol show job "$JOB" 2>/dev/null)
 if [ -n "$SCTL" ]; then
@@ -694,6 +695,7 @@ fi
 if [ -n "$SCTL" ]; then
   STDOUT=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2- | sed "s/%j/$JOB/g")
   STDERR=$(echo "$SCTL" | tr ' ' '\\n' | grep '^StdErr=' | cut -d= -f2- | sed "s/%j/$JOB/g")
+  COMMAND=$(echo "$SCTL" | tr ' ' '\\n' | grep '^Command=' | cut -d= -f2-)
   [ -n "$STDOUT" ] && LOGDIR=$(dirname "$STDOUT")
 fi
 
@@ -711,11 +713,17 @@ fi
 
 [ -n "$STDOUT" ] && [ -f "$STDOUT" ] && emit "$(basename "$STDOUT")" "$STDOUT"
 [ -n "$STDERR" ] && [ "$STDERR" != "$STDOUT" ] && [ -f "$STDERR" ] && emit "$(basename "$STDERR")" "$STDERR"
+[ -n "$COMMAND" ] && [ -f "$COMMAND" ] && echo "DIR:nemo-run:$(dirname "$COMMAND")"
 
 # --- Resolve real output_dir from batch script container mounts ---
 RUNDIR=""
 if [ -n "$LOGDIR" ]; then
   RUNDIR=$(dirname "$LOGDIR")
+fi
+if [ -z "$RUNDIR" ] || [ ! -d "$RUNDIR" ]; then
+  if [ -n "$COMMAND" ] && [ -f "$COMMAND" ]; then
+    RUNDIR=$(dirname "$COMMAND")
+  fi
 fi
 if [ -n "$RUNDIR" ] && [ -d "$RUNDIR" ]; then
   MOUNTS=""
