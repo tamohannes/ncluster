@@ -2362,6 +2362,7 @@ function _mpGroupKeyParts(record, fields) {
 
 function _mpChartCardHtml(group, idx) {
   const id = `mp-chart-${idx}`;
+  const hasSeries = (group.records || []).some(r => r.kind === 'series');
   // Pretty-print grouping fields in the title:
   //  - metric.name           → just the value, bold (e.g. "accuracy")
   //  - metric.context.<k>    → "<k>=<v>" compact
@@ -2418,7 +2419,7 @@ function _mpChartCardHtml(group, idx) {
       <div class="mp-chart-title">${titleParts}</div>
       <div class="mp-chart-meta">${meta}</div>
       <div class="mp-chart-tools">
-        <button class="mp-icon-btn" onclick="_mpResetZoom('${escAttr(id)}')" title="Reset zoom">⟲</button>
+        ${hasSeries ? `<button class="mp-icon-btn" onclick="_mpResetZoom('${escAttr(id)}')" title="Reset zoom">⟲</button>` : ''}
         <button class="mp-icon-btn" onclick="_mpExportChart('${escAttr(id)}')" title="Export PNG">⤓</button>
       </div>
     </div>
@@ -2542,6 +2543,7 @@ function _mpRenderCharts(matchingRecords) {
       _mpState.charts.push(chart);
       _mpAttachZoomHandlers(canvas, chart, id);
       _mpAttachCrosshair(canvas, chart);
+      _mpAttachHoverExit(canvas, chart);
     }
     idx++;
   }
@@ -2702,6 +2704,7 @@ function _mpRenderScalarBarChart(canvas, traces, chartId) {
   chart._mpTraces = traces;
   chart._mpKind = 'bar';
   _mpState.charts.push(chart);
+  _mpAttachHoverExit(canvas, chart);
 
   // Double-click a bar → scroll to its context-table row.
   canvas.addEventListener('dblclick', (event) => {
@@ -3075,14 +3078,34 @@ function _mpOnChartHover(chart, elements, event) {
   } else { chart.draw(); }
 }
 
+function _mpClearHoveredTrace(chart) {
+  let changed = false;
+  if (_mpState.hoveredTrace !== null) {
+    _mpState.hoveredTrace = null;
+    changed = true;
+  }
+  if (chart && chart._mpHover) {
+    chart._mpHover = null;
+    changed = true;
+  }
+  if (changed && chart) chart.update('none');
+}
+
+// Listen for raw pointer exit so highlight dimming clears when the cursor
+// leaves the chart canvas. Chart.js `onHover` doesn't reliably fire for
+// canvas exit, especially on scalar bar charts.
+function _mpAttachHoverExit(canvas, chart) {
+  const clear = () => _mpClearHoveredTrace(chart);
+  canvas.addEventListener('mouseleave', clear);
+  canvas.addEventListener('pointerleave', clear);
+  canvas.addEventListener('pointercancel', clear);
+}
+
 // Listen for raw mouseleave so the crosshair clears when the cursor leaves
 // the canvas. Chart.js `onHover` doesn't fire for mouseleave.
 function _mpAttachCrosshair(canvas, chart) {
   canvas.addEventListener('mouseleave', () => {
-    if (chart._mpHover) {
-      chart._mpHover = null;
-      chart.draw();
-    }
+    if (chart._mpHover) _mpClearHoveredTrace(chart);
   });
 }
 
@@ -3537,11 +3560,12 @@ function _mpClearAllRuns() {
 
 function _mpControlsHtml(matchingRecords) {
   const hasRecords = _mpState.records.length > 0;
+  const hasVisibleSeries = _mpHasVisibleSeries(matchingRecords || []);
   return `<div class="mp-controls-inner">
     ${hasRecords ? _mpMetricsRailSectionHtml(matchingRecords || []) : ''}
     ${hasRecords ? _mpGroupingRailSectionHtml() : ''}
     ${_mpRunsLegendHtml()}
-    ${_mpControlSection('Axes Alignment', `
+    ${hasVisibleSeries ? _mpControlSection('Axes Alignment', `
       <label class="mp-radio${_mpState.align === 'step' ? ' active' : ''}">
         <input type="radio" name="mp-align" ${_mpState.align === 'step' ? 'checked' : ''} onchange="_mpSetAlign('step')"> Step
       </label>
@@ -3551,7 +3575,7 @@ function _mpControlsHtml(matchingRecords) {
       <label class="mp-radio${_mpState.align === 'index' ? ' active' : ''}">
         <input type="radio" name="mp-align" ${_mpState.align === 'index' ? 'checked' : ''} onchange="_mpSetAlign('index')"> Index
       </label>
-    `)}
+    `) : ''}
     ${_mpControlSection('Axes Scale', `
       <label class="mp-radio${_mpState.yScale === 'linear' ? ' active' : ''}">
         <input type="radio" name="mp-yscale" ${_mpState.yScale === 'linear' ? 'checked' : ''} onchange="_mpSetYScale('linear')"> Linear
@@ -3560,7 +3584,7 @@ function _mpControlsHtml(matchingRecords) {
         <input type="radio" name="mp-yscale" ${_mpState.yScale === 'logarithmic' ? 'checked' : ''} onchange="_mpSetYScale('logarithmic')"> Logarithmic
       </label>
     `)}
-    ${_mpControlSection('Smoothing', `
+    ${hasVisibleSeries ? _mpControlSection('Smoothing', `
       <div class="mp-slider-row">
         <input type="range" min="0" max="0.95" step="0.05"
                value="${_mpState.smoothing}"
@@ -3572,13 +3596,13 @@ function _mpControlsHtml(matchingRecords) {
         <input type="checkbox" ${_mpState.showRaw ? 'checked' : ''} onchange="_mpSetShowRaw(this.checked)">
         Show original (raw) line
       </label>
-    `)}
-    ${_mpControlSection('Outliers', `
+    `) : ''}
+    ${hasVisibleSeries ? _mpControlSection('Outliers', `
       <label class="mp-checkbox">
         <input type="checkbox" ${_mpState.ignoreOutliers ? 'checked' : ''} onchange="_mpSetIgnoreOutliers(this.checked)">
         Ignore outliers (IQR filter)
       </label>
-    `)}
+    `) : ''}
     ${_mpControlSection('Highlight Mode', `
       <label class="mp-radio${_mpState.highlightMode === 'off' ? ' active' : ''}">
         <input type="radio" name="mp-hl" ${_mpState.highlightMode === 'off' ? 'checked' : ''} onchange="_mpSetHighlightMode('off')"> Off
@@ -3590,18 +3614,27 @@ function _mpControlsHtml(matchingRecords) {
         <input type="radio" name="mp-hl" ${_mpState.highlightMode === 'run' ? 'checked' : ''} onchange="_mpSetHighlightMode('run')"> Run on hover
       </label>
     `)}
-    ${_mpControlSection('Zoom', `
+    ${hasVisibleSeries ? _mpControlSection('Zoom', `
       <div class="mp-zoom-state">
         x: <b>${_mpState.xRange ? `${_formatMetricValue(_mpState.xRange[0])} – ${_formatMetricValue(_mpState.xRange[1])}` : 'auto'}</b>
         y: <b>${_mpState.yRange ? `${_formatMetricValue(_mpState.yRange[0])} – ${_formatMetricValue(_mpState.yRange[1])}` : 'auto'}</b>
       </div>
       <div class="mp-zoom-hint">Drag to zoom · double-click to reset</div>
       <button class="mp-btn ghost" onclick="_mpResetZoom()">⟲ reset zoom</button>
-    `)}
+    `) : ''}
     ${_mpControlSection('Export', `
       <button class="mp-btn ghost" onclick="_mpExportAll()">⤓ download all charts as PNG</button>
     `)}
   </div>`;
+}
+
+function _mpVisibleNumericRecords(matchingRecords) {
+  const selected = new Set(_mpState.selectedMetrics || []);
+  return (matchingRecords || []).filter(r => r.numeric && selected.has(r.key));
+}
+
+function _mpHasVisibleSeries(matchingRecords) {
+  return _mpVisibleNumericRecords(matchingRecords).some(r => r.kind === 'series');
 }
 
 function _mpControlSection(title, body) {
