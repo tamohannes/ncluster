@@ -24,6 +24,7 @@ declare const _runPageIsTraceHidden: (id: string) => boolean;
 declare const _runPageSetTooltipMode: (mode: string) => void;
 declare const runPageUrl: (cluster: string, runHash: string) => string;
 declare const openRunPageFromRun: (cluster: string, runHash: string) => void;
+declare const openRunPage: (cluster: string, runHash: string, fromTab?: boolean) => Promise<void>;
 
 beforeAll(() => {
   document.body.innerHTML = `
@@ -63,6 +64,7 @@ describe('run page routing', () => {
   });
 
   it('routes /run/<cluster>/<run_hash> to openRunPage', () => {
+    const original = (globalThis as any).openRunPage;
     const spy = vi.fn();
     (globalThis as any).openRunPage = spy;
     history.replaceState(null, '', '/run/eos/deadbeef?series=loss');
@@ -70,15 +72,53 @@ describe('run page routing', () => {
     _onHashChange();
 
     expect(spy).toHaveBeenCalledWith('eos', 'deadbeef');
+    (globalThis as any).openRunPage = original;
   });
 
   it('modal helper opens the run page by cluster and hash', () => {
+    const original = (globalThis as any).openRunPage;
     const spy = vi.fn();
     (globalThis as any).openRunPage = spy;
 
     openRunPageFromRun('eos', 'cafebabe');
 
     expect(spy).toHaveBeenCalledWith('eos', 'cafebabe');
+    (globalThis as any).openRunPage = original;
+  });
+
+  it('renders a run-level log button in the page header', async () => {
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    (globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/run_info_by_hash/')) {
+        return {
+          json: async () => ({
+            status: 'ok',
+            run: {
+              id: 7,
+              run_hash: 'abc12345',
+              root_job_id: '100',
+              run_name: 'demo-run',
+              jobs: [
+                { job_id: '100', job_name: 'demo-run-root', state: 'RUNNING' },
+              ],
+            },
+          }),
+        };
+      }
+      if (String(url).includes('/api/run_metrics_by_hash/')) {
+        return { json: async () => ({ status: 'ok', series: {}, scalars: {}, metadata: {} }) };
+      }
+      return { json: async () => ({ status: 'ok', aggregates: [], jobs: [] }) };
+    });
+
+    await openRunPage('eos', 'abc12345', true);
+
+    const buttons = Array.from(document.querySelectorAll('.run-page-head-actions .btn'))
+      .map((el) => el.textContent);
+    expect(buttons).toContain('Log');
+    const logButton = Array.from(document.querySelectorAll('.run-page-head-actions .btn'))
+      .find((el) => el.textContent === 'Log') as HTMLButtonElement | undefined;
+    expect(logButton?.getAttribute('onclick')).toContain('_openRunLog("eos","100","demo-run-root")');
   });
 });
 

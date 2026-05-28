@@ -439,6 +439,9 @@ function _runPageRender() {
   if (!el || !run) return;
   const title = run.run_name || run.name || `Run ${_runPageState.runHash}`;
   const jobs = run.jobs || [];
+  const logJob = typeof _runPrimaryLogJob === 'function'
+    ? _runPrimaryLogJob(run)
+    : { jobId: run.root_job_id || (jobs[0] && (jobs[0].job_id || jobs[0].jobid)) || '', name: title };
   const tabs = [
     ['overview', 'Overview'],
     ['metadata', 'Metadata'],
@@ -457,6 +460,7 @@ function _runPageRender() {
       </div>
       <div class="run-page-head-actions">
         <button class="btn" onclick="showTab('history')">Runs</button>
+        ${logJob.jobId ? `<button class="btn" onclick="_openRunLog(${_jsArg(_runPageState.cluster)},${_jsArg(logJob.jobId)},${_jsArg(logJob.name || title)})">Log</button>` : ''}
         <button class="btn" onclick="openRunInfoByHash('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}','${escAttr(title)}')">quick peek</button>
         <button class="btn" onclick="openRunPage('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}', true)">↻ refresh</button>
         ${run.id ? `<button class="btn run-delete-btn" onclick="_runPageDelete()" title="Permanently delete this run and all its metrics/metadata">Delete run</button>` : ''}

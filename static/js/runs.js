@@ -1,7 +1,6 @@
 let _runOverlayOpen = false;
 let _runOverlayCancelJobIds = null;
 let _runMetricChartInstances = [];
-let _runSdkPlotData = { series: {}, scalars: {} };
 let _runOverlayCluster = '';
 let _runOverlayRootJobId = '';
 let _runCustomMetricsLoaded = false;
@@ -140,23 +139,25 @@ function _renderRunBody(run, cluster) {
   }
   const pageSlot = document.getElementById('run-page-action-slot');
   if (pageSlot) {
+    const logJob = _runPrimaryLogJob(run);
+    const logBtn = logJob.jobId
+      ? `<button type="button" class="run-page-action-btn"
+            onclick="_openRunLog(${_jsArg(cluster)},${_jsArg(logJob.jobId)},${_jsArg(logJob.name)})"
+            title="Open the representative log for this run">Log</button>`
+      : '';
     const pageBtn = run.run_hash && !run.read_only
       ? `<button type="button" class="run-page-action-btn"
             onclick="_openRunPageFromModal('${escAttr(cluster)}','${escAttr(run.run_hash)}')"
             title="Open the full run metrics page">Run page</button>`
       : '';
-    const deleteBtn = editableRun
-      ? `<button type="button" class="run-page-action-btn run-delete-btn"
-            onclick="_deleteRun(${runId}, '${escAttr(cluster)}', '${escAttr(run.run_hash || '')}', '${escAttr(run.run_name || run.name || '')}')"
-            title="Permanently delete this run and all its metrics/metadata">Delete run</button>`
-      : '';
-    pageSlot.innerHTML = `${pageBtn}${deleteBtn}`;
+    pageSlot.innerHTML = `${logBtn}${pageBtn}`;
   }
 
   let overviewHtml = '';
   let metadataHtml = '';
   let metricsHtml = '';
   let jobsHtml = '';
+  let settingsHtml = '';
 
   if (editableRun) {
     overviewHtml += `<div class="run-notes-block">
@@ -169,12 +170,24 @@ function _renderRunBody(run, cluster) {
       </div>
     </div>`;
     const malfunctioned = !!(run.malfunctioned);
-    overviewHtml += `<div class="run-malfunction-block">
+    settingsHtml += `<div class="run-settings-card">
+      <div class="run-settings-title">Result flags</div>
+      <div class="run-malfunction-block">
       <label class="run-malfunction-label">
         <input type="checkbox" id="run-malfunction-checkbox" ${malfunctioned ? 'checked' : ''}
                onchange="_toggleRunMalfunctioned(${runId}, this.checked)">
         <span>Malfunctioned — treat results as unreliable; redo experiment</span>
       </label>
+      </div>
+    </div>
+    <div class="run-settings-card run-settings-danger-card">
+      <div>
+        <div class="run-settings-title">Danger zone</div>
+        <div class="run-settings-help">Permanently delete this run and all its metrics/metadata.</div>
+      </div>
+      <button type="button" class="run-page-action-btn run-delete-btn"
+            onclick="_deleteRun(${runId}, '${escAttr(cluster)}', '${escAttr(run.run_hash || '')}', '${escAttr(run.run_name || run.name || '')}')"
+            title="Permanently delete this run and all its metrics/metadata">Delete run</button>
     </div>`;
   }
 
@@ -340,19 +353,48 @@ function _renderRunBody(run, cluster) {
     ['metrics', 'Metrics'],
     ['jobs', `Jobs${jobs.length ? ` (${jobs.length})` : ''}`],
   ];
+  if (settingsHtml) tabs.push(['settings', 'Settings']);
   const tabButtons = tabs.map(([id, label], idx) => `
     <button type="button" class="run-tab-btn${idx === 0 ? ' active' : ''}"
             id="run-tab-btn-${id}" onclick="switchRunTab('${id}')">${label}</button>`).join('');
+  const settingsPanel = settingsHtml
+    ? `<div class="run-tab-panel" id="run-tab-settings">${settingsHtml}</div>`
+    : '';
   const html = `<div class="run-tabs">${tabButtons}</div>
     <div class="run-tab-panels">
       <div class="run-tab-panel active" id="run-tab-overview">${overviewHtml}</div>
       <div class="run-tab-panel" id="run-tab-metadata">${metadataHtml}</div>
       <div class="run-tab-panel" id="run-tab-metrics">${metricsHtml}</div>
       <div class="run-tab-panel" id="run-tab-jobs">${jobsHtml}</div>
+      ${settingsPanel}
     </div>`;
 
   body.innerHTML = html;
   _loadRunSdkMetrics(cluster, run.root_job_id);
+}
+
+function _runPrimaryLogJob(run) {
+  const jobs = (run && run.jobs) || [];
+  const root = String((run && run.root_job_id) || '').trim();
+  const rootJob = root ? jobs.find(j => String(j.job_id || j.jobid || '') === root) : null;
+  const firstJob = rootJob || jobs.find(j => j.job_id || j.jobid) || null;
+  const jobId = root || (firstJob ? String(firstJob.job_id || firstJob.jobid || '') : '');
+  const name = firstJob
+    ? (firstJob.job_name || firstJob.name || run.run_name || run.name || jobId)
+    : (run.run_name || run.name || jobId);
+  return { jobId, name };
+}
+
+function _jsArg(value) {
+  return escAttr(JSON.stringify(String(value || '')));
+}
+
+function _openRunLog(cluster, jobId, runName) {
+  if (!cluster || !jobId || typeof openLog !== 'function') {
+    if (typeof toast === 'function') toast('No log job is attached to this run', 'error');
+    return;
+  }
+  openLog(cluster, jobId, runName || jobId);
 }
 
 async function _loadRunCustomMetrics(cluster, rootJobId) {
@@ -448,7 +490,6 @@ function _destroyRunMetricCharts() {
     try { c.destroy(); } catch (_) {}
   });
   _runMetricChartInstances = [];
-  _runSdkPlotData = { series: {}, scalars: {} };
 }
 
 async function _loadRunSdkMetrics(cluster, rootJobId) {
@@ -465,7 +506,7 @@ async function _loadRunSdkMetrics(cluster, rootJobId) {
     const scalarKeys = Object.keys(scalars).sort();
     const hasMetadata = metadata && typeof metadata === 'object' && Object.keys(metadata).length > 0;
     if (!hasMetadata && !keys.length && !scalarKeys.length) {
-      el.innerHTML = _renderRunPlotBuilderShell([], []);
+      el.innerHTML = '';
       return;
     }
 
@@ -510,14 +551,6 @@ async function _loadRunSdkMetrics(cluster, rootJobId) {
       </div>`;
     }
 
-    const numericKeys = keys.filter(k => (series[k] || []).filter(p => Number.isFinite(p.value_num)).length >= 2);
-    const scalarNumericKeys = scalarKeys.filter(k => {
-      const pts = scalars[k] || [];
-      const p = pts[pts.length - 1] || {};
-      return Number.isFinite(p.value_num);
-    });
-    html += _renderRunPlotBuilderShell(numericKeys, scalarNumericKeys);
-
     const sparseRows = keys.flatMap((k) => {
       const pts = (series[k] || []).filter(p => !Number.isFinite(p.value_num) || (series[k] || []).length < 2);
       return pts.slice(-5).map(p => {
@@ -542,199 +575,14 @@ async function _loadRunSdkMetrics(cluster, rootJobId) {
 
     if (html) _hideRunMetricsEmpty();
     el.innerHTML = html;
-    if ((numericKeys.length || scalarNumericKeys.length) && typeof Chart !== 'undefined') {
-      _setupRunAdvancedPlots(series, scalars);
-    }
   } catch (e) {
     console.error('Failed to load SDK metrics', e);
   }
 }
 
-function _renderRunPlotBuilderShell(numericKeys, scalarNumericKeys) {
-  const seriesControls = numericKeys.length
-    ? numericKeys.map((k, i) => `<label class="run-plot-chip">
-        <input type="checkbox" class="run-series-metric-check" data-key="${escAttr(k)}" ${i < 4 ? 'checked' : ''} onchange="_updateRunAdvancedPlots()">
-        <span>${_escHtml(k)}</span>
-      </label>`).join('')
-    : '<span class="run-plot-muted">No numeric series yet. Log stepped metrics with <code>run.track("loss", value, step=i)</code>.</span>';
-  const scalarControls = scalarNumericKeys.length
-    ? scalarNumericKeys.map((k, i) => `<label class="run-plot-chip">
-        <input type="checkbox" class="run-scalar-metric-check" data-key="${escAttr(k)}" ${i < 12 ? 'checked' : ''} onchange="_updateRunAdvancedPlots()">
-        <span>${_escHtml(k)}</span>
-      </label>`).join('')
-    : '<span class="run-plot-muted">No numeric scalar stats yet. Log stats with <code>run.scalar("accuracy", value)</code> or <code>run.track("accuracy", value)</code>.</span>';
-  return `<div class="run-section" style="margin-top:14px">
-    <div class="run-section-head" onclick="toggleRunSection('run-sdk-plot-builder')">
-      <span>Advanced Plot Builder</span>
-      <span class="run-section-chevron" id="run-sdk-plot-builder-chevron">▼</span>
-    </div>
-    <div class="run-section-body run-plot-builder" id="run-sdk-plot-builder">
-      <div class="run-plot-grid">
-        <div class="run-plot-card">
-          <div class="run-plot-title">Series line plot</div>
-          <div class="run-plot-controls">${seriesControls}</div>
-          <div class="run-plot-canvas"><canvas id="run-sdk-series-canvas"></canvas></div>
-        </div>
-        <div class="run-plot-card">
-          <div class="run-plot-title">Scalar bar chart</div>
-          <div class="run-plot-controls">${scalarControls}</div>
-          <div class="run-plot-canvas"><canvas id="run-sdk-scalar-canvas"></canvas></div>
-        </div>
-      </div>
-    </div>
-  </div>`;
-}
-
 function _hideRunMetricsEmpty() {
   const empty = document.getElementById('run-metrics-empty');
   if (empty) empty.style.display = 'none';
-}
-
-function _setupRunAdvancedPlots(series, scalars) {
-  _runSdkPlotData = { series: series || {}, scalars: scalars || {} };
-  _updateRunAdvancedPlots();
-}
-
-function _selectedPlotKeys(selector) {
-  return Array.from(document.querySelectorAll(selector))
-    .filter(el => el.checked)
-    .map(el => el.getAttribute('data-key'))
-    .filter(Boolean);
-}
-
-function _destroyOnlyRunPlotCharts() {
-  _runMetricChartInstances.forEach(c => {
-    try { c.destroy(); } catch (_) {}
-  });
-  _runMetricChartInstances = [];
-}
-
-function _updateRunAdvancedPlots() {
-  if (typeof Chart === 'undefined') return;
-  _destroyOnlyRunPlotCharts();
-  const cs = getComputedStyle(document.documentElement);
-  const textColor = cs.getPropertyValue('--text').trim();
-  const mutedColor = cs.getPropertyValue('--muted').trim();
-  const gridColor = cs.getPropertyValue('--border').trim();
-  const colors = ['#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6'];
-
-  const selectedSeries = _selectedPlotKeys('.run-series-metric-check');
-  const seriesCanvas = document.getElementById('run-sdk-series-canvas');
-  if (seriesCanvas && selectedSeries.length) {
-    const datasets = selectedSeries.map((key, idx) => {
-      const pts = (_runSdkPlotData.series[key] || []).filter(p => Number.isFinite(p.value_num));
-      return {
-        label: key,
-        data: pts.map((p, i) => ({ x: p.step == null ? i + 1 : p.step, y: p.value_num })),
-        borderColor: colors[idx % colors.length],
-        backgroundColor: colors[idx % colors.length] + '22',
-        fill: false,
-        tension: 0.25,
-        pointRadius: pts.length < 20 ? 2 : 0,
-        borderWidth: 2,
-      };
-    }).filter(ds => ds.data.length);
-    if (datasets.length) {
-      _runMetricChartInstances.push(new Chart(seriesCanvas, {
-        type: 'line',
-        data: { datasets },
-        options: _runPlotChartOptions(textColor, mutedColor, gridColor, 'step'),
-      }));
-    }
-  }
-
-  const selectedScalars = _selectedPlotKeys('.run-scalar-metric-check');
-  const scalarCanvas = document.getElementById('run-sdk-scalar-canvas');
-  if (scalarCanvas && selectedScalars.length) {
-    const labels = [];
-    const values = [];
-    selectedScalars.forEach((key) => {
-      const pts = _runSdkPlotData.scalars[key] || [];
-      const p = pts[pts.length - 1] || {};
-      if (Number.isFinite(p.value_num)) {
-        labels.push(key);
-        values.push(p.value_num);
-      }
-    });
-    if (labels.length) {
-      _runMetricChartInstances.push(new Chart(scalarCanvas, {
-        type: 'bar',
-        data: {
-          labels,
-          datasets: [{
-            label: 'scalar value',
-            data: values,
-            borderColor: '#22c55e',
-            backgroundColor: '#22c55e55',
-            borderWidth: 1,
-          }],
-        },
-        options: _runPlotChartOptions(textColor, mutedColor, gridColor, ''),
-      }));
-    }
-  }
-}
-
-function _runPlotChartOptions(textColor, mutedColor, gridColor, xTitle) {
-  const xScale = {
-    title: { display: !!xTitle, text: xTitle, color: mutedColor },
-    ticks: { color: mutedColor },
-    grid: { color: gridColor },
-  };
-  if (xTitle) xScale.type = 'linear';
-  return {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { display: true, position: 'bottom', labels: { color: mutedColor, boxWidth: 10, padding: 8, usePointStyle: true, pointStyle: 'line' } },
-      tooltip: { mode: 'nearest', intersect: false },
-    },
-    scales: {
-      x: xScale,
-      y: { ticks: { color: mutedColor }, grid: { color: gridColor } },
-    },
-    interaction: { mode: 'nearest', intersect: false },
-  };
-}
-
-function _renderRunSdkMetricChart(series, numericKeys) {
-  const canvas = document.getElementById('run-sdk-series-canvas');
-  if (!canvas) return;
-  const cs = getComputedStyle(document.documentElement);
-  const textColor = cs.getPropertyValue('--text').trim();
-  const mutedColor = cs.getPropertyValue('--muted').trim();
-  const gridColor = cs.getPropertyValue('--border').trim();
-  const colors = ['#22c55e', '#3b82f6', '#f59e0b', '#a855f7', '#ef4444', '#14b8a6'];
-  const datasets = numericKeys.map((key, idx) => {
-    const pts = (series[key] || []).filter(p => Number.isFinite(p.value_num));
-    return {
-      label: key,
-      data: pts.map((p, i) => ({ x: p.step == null ? i + 1 : p.step, y: p.value_num })),
-      borderColor: colors[idx % colors.length],
-      backgroundColor: colors[idx % colors.length] + '22',
-      fill: false,
-      tension: 0.25,
-      pointRadius: pts.length < 20 ? 2 : 0,
-      borderWidth: 2,
-    };
-  });
-  _runMetricChartInstances.push(new Chart(canvas, {
-    type: 'line',
-    data: { datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: true, position: 'bottom', labels: { color: mutedColor, boxWidth: 10, padding: 8, usePointStyle: true, pointStyle: 'line' } },
-        tooltip: { mode: 'nearest', intersect: false },
-      },
-      scales: {
-        x: { type: 'linear', title: { display: true, text: 'step', color: mutedColor }, ticks: { color: mutedColor }, grid: { color: gridColor } },
-        y: { ticks: { color: mutedColor }, grid: { color: gridColor } },
-      },
-      interaction: { mode: 'nearest', intersect: false },
-    },
-  }));
 }
 
 function _formatMetricValue(value) {

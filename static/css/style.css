@@ -1139,7 +1139,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   background: transparent; color: var(--muted);
   margin: 0 2px -1px 0;
   border-bottom-color: transparent;
-  border-radius: 11px 11px 0 0;
+  border-radius: 7px 7px 7px 7px;
   padding: 9px 16px 10px;
   font-family: var(--mono); font-size: 11px; font-weight: 700;
   cursor: pointer; transition: color 0.12s, background 0.12s, border-color 0.12s;
@@ -1149,8 +1149,8 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   border-bottom-color: var(--border);
 }
 .run-tab-btn.active {
-  color: var(--text); background: var(--surface2); border-color: var(--accent);
-  border-bottom-color: var(--surface2);
+  color: #fff; background: var(--accent); border-color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 .run-tab-panel { display: none; }
 .run-tab-panel.active { display: block; }
@@ -1392,74 +1392,6 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   max-height: min(70vh, 640px); overflow-y: auto;
 }
 .run-section-body.hidden { display: none; }
-.run-plot-builder {
-  max-height: none;
-}
-.run-plot-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-}
-.run-plot-card {
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface2);
-}
-.run-plot-title {
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--text);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 8px;
-}
-.run-plot-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 10px;
-  max-height: 94px;
-  overflow-y: auto;
-}
-.run-plot-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 10px;
-  cursor: pointer;
-}
-.run-plot-chip input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-.run-plot-muted {
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  line-height: 1.5;
-}
-.run-plot-muted code {
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 4px;
-}
-.run-plot-canvas {
-  height: 260px;
-}
-@media (max-width: 900px) {
-  .run-plot-grid { grid-template-columns: 1fr; }
-}
 .run-section-body pre {
   margin: 0; font-family: var(--mono); font-size: 11px;
   white-space: pre-wrap; word-break: break-all; line-height: 1.5;
@@ -1509,6 +1441,40 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .run-malfunction-label input {
   margin-top: 2px; flex-shrink: 0;
+}
+.run-settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+}
+.run-settings-card .run-malfunction-block {
+  margin-bottom: 0;
+}
+.run-settings-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.run-settings-help {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.run-settings-danger-card {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-color: color-mix(in srgb, var(--tbl-rose-fg, #d33) 34%, var(--border));
 }
 .run-page-malfunction-card .run-page-malfunction-label {
   display: flex; align-items: flex-start; gap: 10px;
@@ -7511,7 +7477,6 @@ body::before {
 .run-params,
 .run-timing,
 .run-resource-bar,
-.run-plot-card,
 .run-page-card,
 .run-page-summary-card,
 .run-page-search-wrap,
@@ -7875,7 +7840,6 @@ tr.group-bg-3 td {
 .run-timing,
 .run-resource-bar,
 .run-params,
-.run-plot-card,
 .run-page-card,
 .run-page-summary-card,
 .run-page-metric-item,
@@ -7956,12 +7920,12 @@ main,
 }
 
 .run-tab-btn.active {
-  background: color-mix(in srgb, var(--accent) 10%, var(--glass-surface-strong)) !important;
-  background-image: var(--liquid-grad) !important;
-  border-color: color-mix(in srgb, var(--accent) 26%, var(--glass-border)) !important;
-  border-bottom-color: color-mix(in srgb, var(--accent) 10%, var(--glass-surface-strong)) !important;
-  color: var(--accent) !important;
-  box-shadow: 0 -1px 0 var(--glass-highlight), 0 8px 18px color-mix(in srgb, var(--accent) 10%, transparent);
+  background: var(--accent) !important;
+  background-image: none !important;
+  border-color: var(--accent) !important;
+  border-bottom-color: var(--accent) !important;
+  color: #fff !important;
+  box-shadow: none;
   transform: none;
 }
 
@@ -8084,8 +8048,7 @@ main,
 :root:not([data-appearance="glass"]) .run-section,
 :root:not([data-appearance="glass"]) .run-params,
 :root:not([data-appearance="glass"]) .run-timing,
-:root:not([data-appearance="glass"]) .run-resource-bar,
-:root:not([data-appearance="glass"]) .run-plot-card {
+:root:not([data-appearance="glass"]) .run-resource-bar {
   background: var(--surface2);
   background-image: none;
   border-color: var(--border);
@@ -8163,7 +8126,7 @@ main,
   padding: 9px 16px 10px;
   border: 1px solid transparent;
   border-bottom-color: transparent;
-  border-radius: 11px 11px 0 0;
+  border-radius: 7px 7px 7px 7px;
   background: transparent;
   background-image: none;
   box-shadow: none;
@@ -8181,11 +8144,11 @@ main,
 }
 
 :root:not([data-appearance="glass"]) .run-tab-btn.active {
-  color: var(--text) !important;
-  background: var(--surface2) !important;
+  color: #fff !important;
+  background: var(--accent) !important;
   background-image: none !important;
   border-color: var(--accent) !important;
-  border-bottom-color: var(--surface2) !important;
+  border-bottom-color: var(--accent) !important;
   box-shadow: none;
   transform: none;
 }

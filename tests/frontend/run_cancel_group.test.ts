@@ -12,6 +12,7 @@ beforeAll(() => {
     <div id="run-subtitle"></div>
     <div id="run-body"></div>
     <div id="run-mark-slot"></div>
+    <div id="run-page-action-slot"></div>
   `;
   loadBrowserScripts(['utils.js', 'jobs.js', 'runs.js']);
 });
@@ -24,6 +25,7 @@ beforeEach(() => {
     <div id="run-subtitle"></div>
     <div id="run-body"></div>
     <div id="run-mark-slot"></div>
+    <div id="run-page-action-slot"></div>
   `;
   // Minimal stubs used by the cancel button rendering path.
   (globalThis as any).toast = () => {};
@@ -95,7 +97,40 @@ describe('read-only job-history run popups', () => {
     expect(document.querySelector('#run-notes-textarea')).toBeNull();
     expect(document.querySelector('#run-malfunction-checkbox')).toBeNull();
     expect(document.querySelector('.run-delete-btn')).toBeNull();
-    expect(document.querySelector('.run-page-action-btn')).toBeNull();
+    const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
+      .map((el) => el.textContent);
+    expect(actionLabels).toEqual(['Log']);
     expect(document.getElementById('run-body')!.textContent).toContain('No SDK metadata is attached');
+  });
+});
+
+describe('run popup settings tab', () => {
+  it('moves malfunction and delete controls out of the overview/header', () => {
+    _renderRunBody({
+      id: 7,
+      root_job_id: 'root123',
+      run_hash: 'abc12345',
+      run_name: 'editable-run',
+      params: {},
+      metadata: {},
+      jobs: [
+        {
+          job_id: '100',
+          state: 'COMPLETED',
+        },
+      ],
+      malfunctioned: true,
+    }, 'dfw');
+
+    expect(document.getElementById('run-tab-btn-settings')?.textContent).toBe('Settings');
+    expect(document.querySelector('#run-tab-overview #run-malfunction-checkbox')).toBeNull();
+    const flag = document.querySelector('#run-tab-settings #run-malfunction-checkbox') as HTMLInputElement | null;
+    expect(flag).toBeTruthy();
+    expect(flag!.checked).toBe(true);
+    expect(document.querySelector('#run-page-action-slot .run-delete-btn')).toBeNull();
+    const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
+      .map((el) => el.textContent);
+    expect(actionLabels).toEqual(['Log', 'Run page']);
+    expect(document.querySelector('#run-tab-settings .run-delete-btn')?.textContent).toContain('Delete run');
   });
 });
