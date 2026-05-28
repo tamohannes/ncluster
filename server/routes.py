@@ -55,6 +55,7 @@ from .logs import (
     get_job_log_files_cached,
     read_jsonl_index, read_jsonl_record,
     extract_custom_metrics, normalize_metrics_config,
+    filter_log_explorer_entries,
 )
 from .jobs import (
     schedule_prefetch,
@@ -3016,17 +3017,19 @@ def api_ls(cluster):
     if not force:
         cached = _cache_get(_dir_list_cache, cache_key, DIR_LIST_TTL_SEC)
         if cached is not None:
+            cached = dict(cached)
+            cached["entries"] = filter_log_explorer_entries(cached.get("entries", []))
             return jsonify(cached)
     try:
         if cluster == "local":
-            entries = list_local_dir(path)
+            entries = filter_log_explorer_entries(list_local_dir(path))
             payload = {"status": "ok", "path": path, "entries": entries, "source": "local", "resolved_path": path}
             _cache_set(_dir_list_cache, cache_key, payload)
             prefetch_nested_dir_cache_local(cluster, path, path, entries)
             return jsonify(payload)
         mounted_dir = resolve_mounted_path(cluster, path, want_dir=True)
         if mounted_dir:
-            entries = list_local_dir(mounted_dir)
+            entries = filter_log_explorer_entries(list_local_dir(mounted_dir))
             for e in entries:
                 e["path"] = path.rstrip("/") + "/" + e["name"]
             payload = {"status": "ok", "path": path, "entries": entries, "source": "mount", "resolved_path": mounted_dir}
@@ -3048,6 +3051,7 @@ def api_ls(cluster):
             ftype, size, name = parts
             entries.append({"name": name, "path": path.rstrip("/") + "/" + name, "is_dir": ftype == "d",
                             "size": int(size) if size.isdigit() else None})
+        entries = filter_log_explorer_entries(entries)
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         payload = {"status": "ok", "path": path, "entries": entries, "source": "ssh", "resolved_path": path}
         _cache_set(_dir_list_cache, cache_key, payload)

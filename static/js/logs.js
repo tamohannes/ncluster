@@ -5,6 +5,123 @@ let _exDirRoot = null;
 const _treeState = {};   // path -> { open, entries }
 const TREE_CACHE_TTL_MS = 30000;
 
+function _isSharedNemoRunRoot(path) {
+  return /\/nemo-run\/[^/]+\/?$/.test(path || '');
+}
+
+function _selectPrimaryLogTreeDir(dirs) {
+  const candidates = (dirs || []).filter(d => d && d.path);
+  return candidates.find(d => _isSharedNemoRunRoot(d.path))
+    || candidates.find(d => (d.label || '').toLowerCase() !== 'experiment output')
+    || candidates[0]
+    || null;
+}
+
+function _looksLikeNemoLaunchDir(entries) {
+  const files = new Set((entries || [])
+    .filter(e => !e.is_dir)
+    .map(e => e.name));
+  return files.has('__main__.py')
+    && files.has('_CONFIG')
+    && files.has('_TASKS')
+    && files.has('_VERSION');
+}
+
+function _logEntryPriority(entry) {
+  const n = (entry && entry.name ? entry.name : '').toLowerCase();
+  if (!n) return 100;
+  if (n.includes('main') && n.endsWith('.log')) return 0;
+  if (n.includes('_srun') && n.endsWith('.log')) return 1;
+  if (n.includes('server') && n.endsWith('.log')) return 2;
+  if (n.includes('sbatch') && n.endsWith('.log')) return 3;
+  if (n.endsWith('.log') || n.endsWith('.out') || n.endsWith('.err')) return 4;
+  return 20;
+}
+
+function _pickDefaultLogEntry(entries) {
+  const files = (entries || []).filter(e => e && !e.is_dir && e.path);
+  if (!files.length) return null;
+  return files.slice().sort((a, b) => {
+    const pa = _logEntryPriority(a);
+    const pb = _logEntryPriority(b);
+    if (pa !== pb) return pa - pb;
+    return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' });
+  })[0];
+}
+
+function _samePath(a, b) {
+  return String(a || '').replace(/\/+$/, '') === String(b || '').replace(/\/+$/, '');
+}
+
+function _markCurrentTreeFile(path, scroll) {
+  if (!path) return false;
+  document.querySelectorAll('.tree-item.active').forEach(e => e.classList.remove('active'));
+  const item = Array.from(document.querySelectorAll('.tree-item'))
+    .find(el => !el.classList.contains('is-dir') && _samePath(el.dataset.path, path));
+  if (!item) return false;
+  item.classList.add('active');
+  if (scroll && typeof item.scrollIntoView === 'function') {
+    item.scrollIntoView({ block: 'nearest' });
+  }
+  return true;
+}
+
+function _childTreeContainerForDir(path) {
+  const dirItem = Array.from(document.querySelectorAll('.tree-item.is-dir'))
+    .find(el => _samePath(el.dataset.path, path));
+  if (!dirItem) return null;
+  const wrapper = dirItem.parentElement;
+  const subContainer = wrapper
+    ? Array.from(wrapper.children).find(el => el.classList && el.classList.contains('tree-items'))
+    : null;
+  if (!subContainer) return null;
+  subContainer.classList.add('open');
+  const icon = dirItem.querySelector('.item-icon');
+  if (icon) icon.textContent = '📂';
+  return subContainer;
+}
+
+async function _revealFileInTree(rootPath, filePath, container) {
+  if (!rootPath || !filePath || !String(filePath).startsWith(String(rootPath).replace(/\/+$/, '') + '/')) {
+    _markCurrentTreeFile(filePath, true);
+    return;
+  }
+  const root = String(rootPath).replace(/\/+$/, '');
+  const rel = String(filePath).slice(root.length).replace(/^\/+/, '');
+  const parts = rel.split('/').filter(Boolean);
+  let dirPath = root;
+  let currentContainer = container;
+
+  for (let i = 0; i < parts.length - 1; i++) {
+    dirPath = `${dirPath}/${parts[i]}`;
+    const subContainer = _childTreeContainerForDir(dirPath);
+    if (!subContainer) break;
+    currentContainer = subContainer;
+    await expandDir(dirPath, currentContainer, i + 1);
+  }
+  _markCurrentTreeFile(filePath, true);
+}
+
+async function _resolveOpenDirListing(cluster, dirPath, data) {
+  const entries = data && Array.isArray(data.entries) ? data.entries : [];
+  const trimmed = String(dirPath || '').replace(/\/+$/, '');
+  if (!_looksLikeNemoLaunchDir(entries) || !trimmed || trimmed.endsWith('/nemo-run')) {
+    return { dirPath, data, normalized: false };
+  }
+
+  const logDir = `${trimmed}/nemo-run`;
+  try {
+    const res = await fetchWithTimeout(`/api/ls/${cluster}?path=${encodeURIComponent(logDir)}&force=1`, {}, 15000);
+    const logData = await res.json();
+    if (logData.status === 'ok' && Array.isArray(logData.entries) && logData.entries.length) {
+      return { dirPath: logDir, data: logData, normalized: true };
+    }
+  } catch (e) {
+    console.warn('Failed to probe NeMo log directory', e);
+  }
+  return { dirPath, data, normalized: false };
+}
+
 // ── Live tail state ──
 let _liveTimer = null;
 let _liveActive = false;
@@ -295,25 +412,32 @@ async function openLog(cluster, jobId, jobName, force) {
 
     const files = (data.files || []).filter(f => f.path);
     const dirs  = data.dirs || [];
+    const primaryDir = _selectPrimaryLogTreeDir(dirs);
+    if (primaryDir) _exDirRoot = primaryDir.path;
+    const first = files[0] || null;
+    if (first) _currentFilePath = first.path;
 
     const tree = document.getElementById('tree-pane');
     tree.innerHTML = '';
 
-    if (files.length) {
-      tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
-        name: f.label, path: f.path, is_dir: false,
-        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
-        job_id: _extractJobId(f.path.split('/').pop() || ''),
-      })), true));
+    if (primaryDir) {
+      await expandDir(primaryDir.path, tree);
+      if (first) await _revealFileInTree(primaryDir.path, first.path, tree);
+    } else {
+      if (files.length) {
+        tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
+          name: f.label, path: f.path, is_dir: false,
+          icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
+          job_id: _extractJobId(f.path.split('/').pop() || ''),
+        })), true));
+      }
+      for (const dir of dirs) {
+        const startOpen = dir.label === 'custom logs';
+        tree.appendChild(makeTreeSection('📁 ' + dir.label, [], startOpen, dir.path));
+      }
     }
 
-    for (const dir of dirs) {
-      const startOpen = dir.label === 'custom logs';
-      tree.appendChild(makeTreeSection('📁 ' + dir.label, [], startOpen, dir.path));
-    }
-
     if (files.length) {
-      const first = files[0];
       if (data.first_content != null) {
         _currentFilePath = first.path;
         _currentRemotePath = first.path;
@@ -329,9 +453,15 @@ async function openLog(cluster, jobId, jobName, force) {
         sourceEl.textContent = `source: ${_currentSource}`;
         sourceEl.className = `source-pill ${_currentSource}`;
         _liveLastHash = data.first_hash || null;
+        _markCurrentTreeFile(first.path, true);
       } else {
         await viewFile(first.path);
+        _markCurrentTreeFile(first.path, true);
       }
+    } else if (primaryDir) {
+      document.getElementById('modal-content').className = 'placeholder';
+      document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
+      document.getElementById('content-path').textContent = primaryDir.path || 'browse discovered directory';
     } else if (dirs.length) {
       document.getElementById('modal-content').className = 'placeholder';
       document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
@@ -351,6 +481,16 @@ async function openLog(cluster, jobId, jobName, force) {
     document.getElementById('modal-content').textContent = msg;
     document.getElementById('content-path').textContent = 'error';
     document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
+  }
+}
+
+async function openRunGroupLogs(cluster, jobId, label, dirPath) {
+  if (jobId) {
+    await openLog(cluster, jobId, label);
+    return;
+  }
+  if (dirPath) {
+    await openDir(cluster, dirPath, label);
   }
 }
 
@@ -384,7 +524,7 @@ async function openDir(cluster, dirPath, label) {
 
   try {
     const res = await fetchWithTimeout(`/api/ls/${cluster}?path=${encodeURIComponent(dirPath)}&force=1`, {}, 15000);
-    const data = await res.json();
+    let data = await res.json();
 
     if (data.status !== 'ok') {
       document.getElementById('modal-content').className = 'placeholder';
@@ -392,6 +532,13 @@ async function openDir(cluster, dirPath, label) {
       document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
       return;
     }
+
+    const resolved = await _resolveOpenDirListing(cluster, dirPath, data);
+    data = resolved.data;
+    const activeDirPath = resolved.dirPath || dirPath;
+    _exDirRoot = activeDirPath;
+    document.getElementById('modal-subtitle').textContent = `${cluster} · ${activeDirPath}`;
+    document.getElementById('content-path').textContent = activeDirPath;
 
     const entries = (data.entries || []).map(e => ({
       name: e.name, path: e.path, is_dir: e.is_dir, size: e.size,
@@ -402,6 +549,10 @@ async function openDir(cluster, dirPath, label) {
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
 
+    const shouldAutoOpen = resolved.normalized || /\/nemo-run\/?$/.test(activeDirPath);
+    const defaultFile = shouldAutoOpen ? _pickDefaultLogEntry(entries) : null;
+    if (defaultFile) _currentFilePath = defaultFile.path;
+
     const tree = document.getElementById('tree-pane');
     tree.innerHTML = '';
     if (entries.length) {
@@ -410,12 +561,17 @@ async function openDir(cluster, dirPath, label) {
       tree.innerHTML = '<div class="tree-loading" style="color:var(--muted)">(empty directory)</div>';
     }
 
-    document.getElementById('modal-content').className = 'placeholder';
-    document.getElementById('modal-content').textContent = 'Select a file from the tree to view its contents.';
-
     const sourceEl = document.getElementById('content-source');
     sourceEl.textContent = `source: ${data.source || 'ssh'}`;
     sourceEl.className = `source-pill ${data.source || 'ssh'}`;
+
+    if (defaultFile) {
+      await viewFile(defaultFile.path);
+      _markCurrentTreeFile(defaultFile.path, true);
+    } else {
+      document.getElementById('modal-content').className = 'placeholder';
+      document.getElementById('modal-content').textContent = 'Select a file from the tree to view its contents.';
+    }
   } catch (e) {
     const msg = e.name === 'TimeoutError' || e.name === 'AbortError'
       ? 'Timed out loading directory — the cluster may be slow or unreachable.'
@@ -472,12 +628,16 @@ function renderTreeItems(container, items, depth, onFileClick) {
   for (const item of items) {
     const el = document.createElement('div');
     el.className = 'tree-item' + (item.is_dir ? ' is-dir' : '');
+    el.dataset.path = item.path || '';
     if (!item.is_dir) {
       const n = (item.name || '').toLowerCase();
       if (n.endsWith('.err') || n.includes('error') || n.includes('traceback') || n.includes('failed')) {
         el.style.color = 'var(--red)';
       } else if (n.includes('warn')) {
         el.style.color = 'var(--amber)';
+      }
+      if (_samePath(item.path, _currentFilePath)) {
+        el.classList.add('active');
       }
     }
     el.style.paddingLeft = (22 + depth * 14) + 'px';

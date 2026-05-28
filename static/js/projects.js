@@ -391,8 +391,9 @@ function _renderProjPage() {
       const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
       const _projOutputRaw = groupJobs.find(j => j.output_dir)?.output_dir || '';
       const _projOutputDir = _projOutputRaw.replace(/\/(eval-logs|log|logs)\/?$/, '');
-      const _projDirBtn = _projOutputDir
-        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openDir('${escAttr(cluster)}','${escAttr(_projOutputDir)}','${safeLabel}')">logs</button>`
+      const _projLogJobId = String(rootJobId || '');
+      const _projDirBtn = (_projLogJobId || _projOutputDir)
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(cluster)}','${escAttr(_projLogJobId)}','${safeLabel}','${escAttr(_projOutputDir)}')">logs</button>`
         : '';
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}${gpuSuffix}</span>${_projDirBtn}</span>`;
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;

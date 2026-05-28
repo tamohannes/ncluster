@@ -48,6 +48,17 @@ class TestApiLs:
         names = [e["name"] for e in data["entries"]]
         assert "file.txt" in names
 
+    def test_ls_hides_nemo_run_directory(self, client, mock_ssh, tmp_path):
+        (tmp_path / "nemo-run").mkdir()
+        (tmp_path / "eval-results").mkdir()
+        (tmp_path / "nemo-run_sbatch.sh").write_text("x")
+        resp = client.get(f"/api/ls/local?path={tmp_path}")
+        assert resp.status_code == 200
+        names = [e["name"] for e in resp.get_json()["entries"]]
+        assert "nemo-run" not in names
+        assert "eval-results" in names
+        assert "nemo-run_sbatch.sh" in names
+
     def test_force_bypasses_cache(self, client, mock_ssh, tmp_path):
         (tmp_path / "a.txt").write_text("x")
         client.get(f"/api/ls/local?path={tmp_path}")

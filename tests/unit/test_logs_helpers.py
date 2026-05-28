@@ -285,7 +285,30 @@ class TestMountedLogDiscovery:
         assert "/remote/run/eval-logs/main_exp_11400143_srun.log" not in paths
 
     @pytest.mark.unit
-    def test_discovers_nemo_run_command_dir_when_stdout_dir_missing(self, db_path, monkeypatch, mock_cluster):
+    def test_nemo_run_logs_use_shared_parent_tree_root(self, db_path, monkeypatch, mock_cluster):
+        upsert_job(mock_cluster, {
+            "jobid": "366675",
+            "name": "mpsf_v25_v2-5-hle-phy-nem120b-turn0-r5-judge-generate",
+            "state": "RUNNING",
+            "log_path": "/missing/eval-logs/mpsf_366675_sbatch.log",
+        })
+        monkeypatch.setattr("server.logs.resolve_mounted_path", lambda *args, **kwargs: "")
+
+        def fake_ssh(cluster, script, timeout_sec=25):
+            assert cluster == mock_cluster
+            return (
+                "FILE:main:/remote/nemo-run/mpsf_demo/mpsf_demo_123/nemo-run/main_366675_srun.log\n",
+                "",
+            )
+
+        monkeypatch.setattr("server.logs.ssh_run_with_timeout", fake_ssh)
+
+        result = get_job_log_files(mock_cluster, "366675")
+
+        assert result["dirs"] == [{"label": "mpsf_demo", "path": "/remote/nemo-run/mpsf_demo"}]
+
+    @pytest.mark.unit
+    def test_hides_nemo_run_command_dir_when_stdout_dir_missing(self, db_path, monkeypatch, mock_cluster):
         upsert_job(mock_cluster, {
             "jobid": "357999",
             "name": "mcp_ablation_kimi-k26-no-tool-r29-hle",
@@ -308,10 +331,7 @@ class TestMountedLogDiscovery:
         result = get_job_log_files(mock_cluster, "357999")
 
         assert result["files"] == []
-        assert {
-            "label": "nemo-run",
-            "path": "/lustre/fsw/portfolios/nemotron/users/test/nemo-run/demo/demo_1",
-        } in result["dirs"]
+        assert result["dirs"] == []
 
 
 class TestExtractCustomMetrics:

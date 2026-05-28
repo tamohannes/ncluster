@@ -29,6 +29,38 @@ _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
 _LOG_DISCOVERY_ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
 _LOG_ALLOWED_SUFFIXES = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 _DEFAULT_METRICS_FILE_GLOB = "*{job_id}*"
+_HIDDEN_LOG_EXPLORER_DIR_LABELS = {"nemo-run"}
+_HIDDEN_LOG_EXPLORER_ENTRY_NAMES = {"nemo-run"}
+
+
+def filter_log_explorer_dirs(dirs):
+    """Drop noisy implementation dirs from discovered log explorer roots."""
+    visible = []
+    for entry in dirs or []:
+        label = str(entry.get("label", "")).strip().lower()
+        if label in _HIDDEN_LOG_EXPLORER_DIR_LABELS:
+            continue
+        visible.append(entry)
+    return visible
+
+
+def filter_log_explorer_entries(entries):
+    """Drop noisy implementation dirs from expanded log explorer listings."""
+    visible = []
+    for entry in entries or []:
+        name = str(entry.get("name", "")).strip().lower()
+        if entry.get("is_dir") and name in _HIDDEN_LOG_EXPLORER_ENTRY_NAMES:
+            continue
+        visible.append(entry)
+    return visible
+
+
+def _finalize_log_files_result(result):
+    if not result or "dirs" not in result:
+        return result
+    finalized = dict(result)
+    finalized["dirs"] = filter_log_explorer_dirs(finalized.get("dirs", []))
+    return finalized
 
 
 def extract_progress(content):
@@ -282,11 +314,30 @@ def _derive_result_dirs(files, cluster_name=None):
     expansion, so we just need the root path."""
     if not files:
         return []
-    log_dir = os.path.dirname(files[0]["path"])
+    path = files[0]["path"]
+    shared_root = _shared_nemo_run_root(path)
+    if shared_root:
+        return [{"label": os.path.basename(shared_root), "path": shared_root}]
+    log_dir = os.path.dirname(path)
     output_dir = os.path.dirname(log_dir)
     if not output_dir or output_dir == log_dir:
         return []
     return [{"label": os.path.basename(output_dir), "path": output_dir}]
+
+
+def _shared_nemo_run_root(path):
+    """Return the shared NeMo run root for per-job nemo-run leaf paths.
+
+    NeMo creates one parent directory per logical run/stage, then per-job
+    leaf directories below it. The explorer should use the parent as the
+    stable tree root so all jobs in the run show the same tree.
+    """
+    norm = os.path.normpath(path or "")
+    parts = norm.split(os.sep)
+    for idx, part in enumerate(parts):
+        if part == "nemo-run" and idx + 2 < len(parts):
+            return os.sep.join(parts[:idx + 2]) or os.sep
+    return ""
 
 
 def fetch_log_tail(cluster_name, log_path, lines=150):
@@ -644,7 +695,7 @@ def _db_custom_log_dir(cluster_name, job_id):
 
 def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
-        return local_job_log_files(job_id)
+        return _finalize_log_files_result(local_job_log_files(job_id))
 
     is_sdk_job = str(job_id).startswith("sdk-")
     log_ctx = _db_log_context(cluster_name, job_id)
@@ -661,13 +712,13 @@ def get_job_log_files(cluster_name, job_id):
                 local["dirs"] = [{"label": "custom logs", "path": custom_dir}] + local.get("dirs", [])
         local["custom_log_dir"] = custom_dir
         if is_sdk_job or local.get("files"):
-            return local
+            return _finalize_log_files_result(local)
         local_dirs = local.get("dirs", [])
 
     if is_sdk_job:
         if db_path or output_dir:
-            return {"files": [], "dirs": _derive_result_dirs([{"path": db_path}]) if db_path else [], "error": ""}
-        return {"files": [], "dirs": [], "error": "SDK run — waiting for Slurm job logs"}
+            return _finalize_log_files_result({"files": [], "dirs": _derive_result_dirs([{"path": db_path}]) if db_path else [], "error": ""})
+        return _finalize_log_files_result({"files": [], "dirs": [], "error": "SDK run — waiting for Slurm job logs"})
     db_logdir_clause = ""
     if db_path:
         db_logdir = os.path.dirname(db_path).replace("'", "'\\''")
@@ -796,8 +847,8 @@ fi
         out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=25)
     except Exception as e:
         if local_dirs:
-            return {"files": [], "dirs": local_dirs, "custom_log_dir": custom_dir, "error": ""}
-        return {"files": [], "dirs": [], "error": f"SSH error: {e}"}
+            return _finalize_log_files_result({"files": [], "dirs": local_dirs, "custom_log_dir": custom_dir, "error": ""})
+        return _finalize_log_files_result({"files": [], "dirs": [], "error": f"SSH error: {e}"})
 
     seen = set()
     files = []
@@ -849,7 +900,7 @@ fi
             files = fallback.get("files", [])
             dirs = fallback.get("dirs", [])
 
-    return {"files": files, "dirs": dirs, "custom_log_dir": custom_dir}
+    return _finalize_log_files_result({"files": files, "dirs": dirs, "custom_log_dir": custom_dir})
 
 
 def _search_log_bases(cluster_name, job_id):
@@ -914,8 +965,8 @@ def get_job_log_files_cached(cluster_name, job_id, force=False):
     if not force:
         cached = _cache_get(_log_index_cache, key, LOG_INDEX_TTL_SEC)
         if cached is not None:
-            return cached
-    value = get_job_log_files(cluster_name, str(job_id))
+            return _finalize_log_files_result(cached)
+    value = _finalize_log_files_result(get_job_log_files(cluster_name, str(job_id)))
     if not value.get("error"):
         _cache_set(_log_index_cache, key, value)
     return value

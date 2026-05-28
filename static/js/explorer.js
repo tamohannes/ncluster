@@ -99,7 +99,16 @@ async function _loadExplorerTree() {
     tree.innerHTML = '';
     const files = (data.files || []).filter(f => f.path);
     const dirs  = data.dirs || [];
+    const primaryDir = typeof _selectPrimaryLogTreeDir === 'function'
+      ? _selectPrimaryLogTreeDir(dirs)
+      : (dirs[0] || null);
     
+    if (primaryDir) {
+      _exDirRoot = primaryDir.path;
+      await expandDir(primaryDir.path, tree, 0, onFileClick);
+      return;
+    }
+
     if (files.length) {
       tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
         name: f.label, path: f.path, is_dir: false,
@@ -360,7 +369,7 @@ function openExplorerForCurrentFile() {
   }
   const path = _currentFilePath || _exDirRoot;
   const filename = path.split('/').pop();
-  openExplorer(_exCluster, _exJobId || '__dir__', path, filename);
+  openExplorer(_exCluster, _exJobId || '__dir__', path, filename, _exDirRoot ? { rootDir: _exDirRoot } : undefined);
 }
 
 // Add Escape handler for explorer
@@ -369,4 +378,3 @@ document.addEventListener('keydown', e => {
     closeExplorer();
   }
 });
-

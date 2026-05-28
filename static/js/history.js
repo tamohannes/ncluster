@@ -206,8 +206,9 @@ function _renderHistPage() {
       const gpuSuffix = groupGpus > 0 ? ` · ${groupGpus} GPU${groupGpus !== 1 ? 's' : ''}` : '';
       const _histOutputRaw = groupJobs.find(j => j.output_dir)?.output_dir || '';
       const _histOutputDir = _histOutputRaw.replace(/\/(eval-logs|log|logs)\/?$/, '');
-      const _histDirBtn = _histOutputDir
-        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openDir('${escAttr(g.cluster)}','${escAttr(_histOutputDir)}','${safeLabel}')">logs</button>`
+      const _histLogJobId = String(rootJobId || '');
+      const _histDirBtn = (_histLogJobId || _histOutputDir)
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(g.cluster)}','${escAttr(_histLogJobId)}','${safeLabel}','${escAttr(_histOutputDir)}')">logs</button>`
         : '';
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span>${_histDirBtn}</span>`;
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
@@ -330,4 +331,3 @@ function showClusterHistory(name) {
   document.getElementById('hist-cluster').value = name;
   showTab('history');
 }
-

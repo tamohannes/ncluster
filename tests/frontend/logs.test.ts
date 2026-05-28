@@ -63,6 +63,7 @@ declare const renderJsonlLazyViewer: (
   opts?: { containerId?: string; cluster?: string; jobId?: string }
 ) => string;
 declare const openLog: (cluster: string, jobId: string, jobName?: string, force?: boolean) => Promise<void>;
+declare const openDir: (cluster: string, dirPath: string, label?: string) => Promise<void>;
 declare const toggleLive: () => void;
 
 describe('escapeHtml', () => {
@@ -301,6 +302,122 @@ describe('live log viewer defaults', () => {
     expect(document.getElementById('content-path')?.textContent).toBe('/remote/nemo-run/demo');
     expect(document.getElementById('tree-pane')?.textContent).toContain('nemo-run_sbatch.sh');
     expect(String(fetchMock.mock.calls[1][0])).toContain('/api/ls/h100');
+  });
+
+  it('uses the shared run directory as the only tree root when direct logs exist', async () => {
+    const rootDir = '/remote/nemo-run/demo';
+    const leafDir = `${rootDir}/demo_1`;
+    const logDir = `${leafDir}/nemo-run`;
+    const firstLog = `${logDir}/main_366675_srun.log`;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          files: [
+            { label: 'main output', path: firstLog },
+          ],
+          dirs: [
+            { label: 'demo', path: rootDir },
+            { label: 'experiment output', path: '/remote/experiments/demo' },
+          ],
+          first_content: 'hello log',
+          first_source: 'ssh',
+          first_resolved_path: firstLog,
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'demo_1', path: leafDir, is_dir: true, size: 10 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'nemo-run', path: logDir, is_dir: true, size: 10 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'main_366675_srun.log', path: firstLog, is_dir: false, size: 100 },
+          ],
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openLog('h100', '366675', 'demo job');
+
+    const treeText = document.getElementById('tree-pane')?.textContent || '';
+    expect(treeText).toContain('demo_1');
+    expect(treeText).toContain('main_366675_srun.log');
+    expect(treeText).not.toContain('logs');
+    expect(treeText).not.toContain('main output');
+    expect(treeText).not.toContain('experiment output');
+    expect(document.getElementById('content-path')?.textContent).toBe(firstLog);
+    expect(document.querySelector('.tree-item.active')?.textContent).toContain('main_366675_srun.log');
+    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(rootDir));
+  });
+
+  it('descends from a NeMo launch wrapper directory into useful logs', async () => {
+    const launchDir = '/remote/nemo-run/demo/demo_1';
+    const logDir = `${launchDir}/nemo-run`;
+    const mainLog = `${logDir}/main_demo_123_srun.log`;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          source: 'ssh',
+          entries: [
+            { name: '__main__.py', path: `${launchDir}/__main__.py`, is_dir: false, size: 11000 },
+            { name: '_CONFIG', path: `${launchDir}/_CONFIG`, is_dir: false, size: 1000 },
+            { name: '_TASKS', path: `${launchDir}/_TASKS`, is_dir: false, size: 9000 },
+            { name: '_VERSION', path: `${launchDir}/_VERSION`, is_dir: false, size: 14 },
+            { name: 'nemo-run_sbatch.sh', path: `${launchDir}/nemo-run_sbatch.sh`, is_dir: false, size: 5000 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          source: 'ssh',
+          entries: [
+            { name: 'code', path: `${logDir}/code`, is_dir: true, size: 0 },
+            { name: 'main_demo_123_srun.log', path: mainLog, is_dir: false, size: 8540 },
+            { name: 'server_demo_123_srun.log', path: `${logDir}/server_demo_123_srun.log`, is_dir: false, size: 62447 },
+            { name: 'demo_123_sbatch.log', path: `${logDir}/demo_123_sbatch.log`, is_dir: false, size: 15801 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          content: 'real log content',
+          source: 'ssh',
+          resolved_path: mainLog,
+          total_pages: 1,
+          page: 0,
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openDir('h100', launchDir, 'demo job');
+
+    const treeText = document.getElementById('tree-pane')?.textContent || '';
+    expect(treeText).toContain('main_demo_123_srun.log');
+    expect(treeText).not.toContain('__main__.py');
+    expect(treeText).not.toContain('_CONFIG');
+    expect(document.getElementById('content-path')?.textContent).toBe(mainLog);
+    expect(document.querySelector('.tree-item.active')?.textContent).toContain('main_demo_123_srun.log');
+    expect(document.getElementById('modal-content')?.textContent).toContain('real log content');
+    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(logDir));
+    expect(String(fetchMock.mock.calls[2][0])).toContain('/api/log_full/h100/__dir__');
   });
 });
 

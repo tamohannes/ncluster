@@ -958,8 +958,10 @@ function renderCard(name, data) {
         campaignDivider = `<tr class="campaign-divider"><td colspan="11"><span class="campaign-divider-inner"${_divBorder}><span class="campaign-divider-label"${_lblStyle}>${_divLabel}</span></span></td></tr>`;
       }
       _prevCampaign = _campaign;
-      const _dirBtn = _grpOutputDir && name !== 'local'
-        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openDir('${escAttr(name)}','${escAttr(_grpOutputDir)}','${safeGk}')">logs</button>`
+      const _grpLogJob = groupJobs.find(j => j.jobid && (j.state || '').toUpperCase() !== 'PENDING');
+      const _grpLogJobId = _grpLogJob ? String(_grpLogJob.run_root_job_id || _grpLogJob.jobid || '') : '';
+      const _dirBtn = (_grpLogJobId || _grpOutputDir) && name !== 'local'
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(name)}','${escAttr(_grpLogJobId)}','${safeGk}','${escAttr(_grpOutputDir)}')">logs</button>`
         : '';
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
       const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
