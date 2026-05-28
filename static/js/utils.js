@@ -95,6 +95,82 @@ function escAttr(s) {
     .replace(/</g, '&lt;');
 }
 
+const RUN_TAG_SMOKE = 'test/smoke';
+const RUN_TAG_MALFUNCTIONING = 'malfunctioning';
+const RUN_LOW_TRUST_TAGS = new Set([RUN_TAG_SMOKE, RUN_TAG_MALFUNCTIONING]);
+
+function _runTagEsc(s) {
+  if (typeof _escHtml === 'function') return _escHtml(String(s || ''));
+  if (typeof escapeHtml === 'function') return escapeHtml(String(s || ''));
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function normalizeRunTag(tag) {
+  let text = String(tag || '').trim().toLowerCase();
+  if (!text) return '';
+  text = text.replace(/^#/, '').replace(/\s+/g, '-').replace(/\\/g, '/').replace(/^[._/-]+|[._/-]+$/g, '');
+  const aliases = {
+    smoke: RUN_TAG_SMOKE,
+    'smoke-test': RUN_TAG_SMOKE,
+    'smoke/test': RUN_TAG_SMOKE,
+    test: RUN_TAG_SMOKE,
+    'test-smoke': RUN_TAG_SMOKE,
+    test_smoke: RUN_TAG_SMOKE,
+    malfunction: RUN_TAG_MALFUNCTIONING,
+    malfunctioned: RUN_TAG_MALFUNCTIONING,
+    'malfunctioning-run': RUN_TAG_MALFUNCTIONING,
+    broken: RUN_TAG_MALFUNCTIONING,
+  };
+  text = aliases[text] || text;
+  return /^[a-z0-9][a-z0-9._/-]{0,63}$/.test(text) ? text : '';
+}
+
+function normalizeRunTags(tags, malfunctioned = false) {
+  let items = [];
+  if (Array.isArray(tags)) items = tags;
+  else if (typeof tags === 'string' && tags.trim()) items = tags.split(',');
+  else if (tags != null) items = [tags];
+  const out = [];
+  const seen = new Set();
+  items.forEach((item) => {
+    const tag = normalizeRunTag(item);
+    if (tag && !seen.has(tag)) {
+      seen.add(tag);
+      out.push(tag);
+    }
+  });
+  if (malfunctioned && !seen.has(RUN_TAG_MALFUNCTIONING)) out.push(RUN_TAG_MALFUNCTIONING);
+  return out;
+}
+
+function runTagsFromRun(run) {
+  return normalizeRunTags(run?.tags || run?.run_tags || [], !!run?.malfunctioned);
+}
+
+function runHasLowTrustTag(tags) {
+  return normalizeRunTags(tags).some(tag => RUN_LOW_TRUST_TAGS.has(tag));
+}
+
+function runTagsPillsHtml(tags, opts = {}) {
+  const tagList = normalizeRunTags(tags);
+  if (!tagList.length) {
+    return opts.empty ? `<span class="run-tag-empty">${_runTagEsc(opts.empty)}</span>` : '';
+  }
+  const removable = !!opts.removable;
+  const onclick = opts.onRemove || '';
+  return tagList.map((tag) => {
+    const low = RUN_LOW_TRUST_TAGS.has(tag) ? ' low-trust' : '';
+    const remove = removable && onclick
+      ? `<button type="button" class="run-tag-remove" onclick="${onclick}('${escAttr(tag)}')" title="Remove ${escAttr(tag)}">×</button>`
+      : '';
+    return `<span class="run-tag-chip${low}" data-run-tag="${escAttr(tag)}">${_runTagEsc(tag)}${remove}</span>`;
+  }).join('');
+}
+
 /** Update board/history/project run name badges when mark state changes (no full refresh). */
 function syncRunMarkedBorders(cluster, rootJobId, marked) {
   if (cluster == null || rootJobId == null) return;

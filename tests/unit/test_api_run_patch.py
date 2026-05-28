@@ -8,11 +8,11 @@ from server.db import db_write, upsert_run
 
 
 @pytest.mark.unit
-def test_patch_run_malfunctioned_round_trip(client, db_path):
+def test_patch_run_tags_round_trip_and_keeps_malfunctioned_compat(client, db_path):
     run_id = upsert_run("mock-cluster", "patch-mal-1", "hle_mpsf_x", "hle")
     res = client.patch(
         f"/api/run/{run_id}",
-        json={"malfunctioned": True},
+        json={"tags": ["smoke", "malfunctioned"]},
         content_type="application/json",
     )
     assert res.status_code == 200
@@ -22,25 +22,27 @@ def test_patch_run_malfunctioned_round_trip(client, db_path):
 
     con = get_db()
     row = con.execute(
-        "SELECT malfunctioned FROM runs WHERE id = ?",
+        "SELECT malfunctioned, tags_json FROM runs WHERE id = ?",
         (run_id,),
     ).fetchone()
     con.close()
     assert int(row["malfunctioned"]) == 1
+    assert row["tags_json"] == '["test/smoke","malfunctioning"]'
 
     res2 = client.patch(
         f"/api/run/{run_id}",
-        json={"malfunctioned": False},
+        json={"tags": ["test/smoke"]},
         content_type="application/json",
     )
     assert res2.status_code == 200
     con = get_db()
     row2 = con.execute(
-        "SELECT malfunctioned FROM runs WHERE id = ?",
+        "SELECT malfunctioned, tags_json FROM runs WHERE id = ?",
         (run_id,),
     ).fetchone()
     con.close()
     assert int(row2["malfunctioned"]) == 0
+    assert row2["tags_json"] == '["test/smoke"]'
 
 
 @pytest.mark.unit
@@ -70,3 +72,4 @@ def test_run_info_surfaces_malfunctioned_bool(client, db_path):
     body = info.get_json()
     assert body.get("status") == "ok"
     assert body["run"].get("malfunctioned") is True
+    assert body["run"].get("tags") == ["malfunctioning"]

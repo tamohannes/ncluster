@@ -26,6 +26,7 @@ from .db import (
     get_live_jobs_for_cluster,
     get_run_hash,
     normalize_job_times_local,
+    run_tags_from_row,
 )
 from .jobs import parse_dependency, schedule_prefetch
 
@@ -87,7 +88,7 @@ def _fill_starred(cluster, jobs):
     placeholders = ",".join("?" for _ in run_ids)
     rows = con.execute(
         f"""SELECT id, root_job_id, run_name, run_uuid, starred, source,
-                   wasteful, waste_reason
+                   wasteful, waste_reason, tags_json, malfunctioned
             FROM runs WHERE id IN ({placeholders})""",
         list(run_ids),
     ).fetchall()
@@ -110,6 +111,7 @@ def _fill_starred(cluster, jobs):
             # marks the run as wasted compute.
             j["run_wasteful"] = bool(row["wasteful"]) if "wasteful" in row.keys() else False
             j["run_waste_reason"] = row["waste_reason"] if "waste_reason" in row.keys() else ""
+            j["run_tags"] = run_tags_from_row(row)
 
 
 _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)

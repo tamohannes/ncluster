@@ -372,6 +372,19 @@ function parseMetricsRunRefs(text) {
 }
 
 function _mpRunKey(run) { return `${run.cluster}/${run.runHash}`; }
+const _MP_DEFAULT_EXCLUDED_RUN_TAGS = ['test/smoke'];
+
+function _mpQueryOptsIntoExcludedTags() {
+  return String(_mpState.query || '').includes('run.tags');
+}
+
+function _mpRunHasDefaultExcludedTag(runInfo) {
+  if (_mpQueryOptsIntoExcludedTags()) return false;
+  const tags = typeof runTagsFromRun === 'function'
+    ? runTagsFromRun(runInfo || {})
+    : ((runInfo && runInfo.tags) || []);
+  return tags.some(tag => _MP_DEFAULT_EXCLUDED_RUN_TAGS.includes(tag));
+}
 
 // ─── 3. Run loading + record normalization ────────────────────────────
 
@@ -394,6 +407,7 @@ async function _mpLoadRuns() {
         const info = await infoRes.json();
         const metrics = await metricsRes.json();
         if (info.status !== 'ok' || !info.run) return { run, missing: true, reason: info.error || 'run not found' };
+        if (_mpRunHasDefaultExcludedTag(info.run)) return { run, missing: true, reason: 'tagged test/smoke' };
         if (metrics.status !== 'ok') return { run, missing: true, reason: metrics.error || 'metrics not found' };
         return {
           ok: true,
@@ -475,10 +489,13 @@ function _mpBuildRecords() {
     const projectColor = payload.info && payload.info.project_color;
     const campaign = payload.info && payload.info.campaign;
     const params = (payload.info && payload.info.params) || {};
+    const tags = typeof runTagsFromRun === 'function'
+      ? runTagsFromRun(payload.info || {})
+      : ((payload.info && payload.info.tags) || []);
     Object.entries(payload.metrics.series || {}).forEach(([key, points]) => {
       _mpSplitByContext(points || []).forEach(group => {
         records.push(_mpRecord({
-          cluster, runHash, runName, project, projectColor, campaign, metadata, params,
+          cluster, runHash, runName, project, projectColor, campaign, metadata, params, tags,
           key, kind: 'series', points: group.points, context: group.context,
         }));
       });
@@ -486,7 +503,7 @@ function _mpBuildRecords() {
     Object.entries(payload.metrics.scalars || {}).forEach(([key, points]) => {
       _mpSplitByContext(points || []).forEach(group => {
         records.push(_mpRecord({
-          cluster, runHash, runName, project, projectColor, campaign, metadata, params,
+          cluster, runHash, runName, project, projectColor, campaign, metadata, params, tags,
           key, kind: 'scalars', points: group.points, context: group.context,
         }));
       });
@@ -516,10 +533,10 @@ function _mpSortObj(obj) {
   return out;
 }
 
-function _mpRecord({ cluster, runHash, runName, project, projectColor, campaign, metadata, params, key, kind, points, context }) {
+function _mpRecord({ cluster, runHash, runName, project, projectColor, campaign, metadata, params, tags, key, kind, points, context }) {
   const stats = _mpStats(points || [], kind === 'series');
   return {
-    cluster, runHash, runName, project, projectColor, campaign, metadata, params,
+    cluster, runHash, runName, project, projectColor, campaign, metadata, params, tags: tags || [],
     key, kind, points: points || [],
     context: context || {},
     stats,
@@ -752,13 +769,25 @@ function _mpQLEval(ast, ctx) {
     case 'in': {
       const left = _mpQLEval(ast.left, ctx);
       const right = _mpQLEval(ast.right, ctx);
+      if (Array.isArray(left) && Array.isArray(right)) return left.some(v => right.some(r => _mpQLEq(v, r)));
       if (Array.isArray(right)) return right.some(v => _mpQLEq(left, v));
+      if (Array.isArray(left)) return left.some(v => _mpQLEq(v, right));
       if (typeof right === 'string') return right.includes(String(left));
       return false;
     }
     case 'method': {
-      const v = String(_mpQLResolve(ctx, ast.field) ?? '').toLowerCase();
+      const raw = _mpQLResolve(ctx, ast.field);
       const arg = String(_mpQLEval(ast.arg, ctx) ?? '').toLowerCase();
+      if (Array.isArray(raw)) {
+        return raw.some(item => {
+          const v = String(item ?? '').toLowerCase();
+          if (ast.method === 'contains') return v.includes(arg);
+          if (ast.method === 'startswith') return v.startsWith(arg);
+          if (ast.method === 'endswith') return v.endsWith(arg);
+          return false;
+        });
+      }
+      const v = String(raw ?? '').toLowerCase();
       if (ast.method === 'contains') return v.includes(arg);
       if (ast.method === 'startswith') return v.startsWith(arg);
       if (ast.method === 'endswith') return v.endsWith(arg);
@@ -784,6 +813,8 @@ function _mpQLEval(ast, ctx) {
 function _mpQLEq(a, b) {
   if (a == null && b == null) return true;
   if (a == null || b == null) return false;
+  if (Array.isArray(a)) return a.some(v => _mpQLEq(v, b));
+  if (Array.isArray(b)) return b.some(v => _mpQLEq(a, v));
   if (typeof a === 'number' || typeof b === 'number') {
     const an = Number(a); const bn = Number(b);
     if (Number.isFinite(an) && Number.isFinite(bn)) return an === bn;
@@ -831,6 +862,7 @@ function _mpQLBuildContext(record) {
       cluster: record.cluster,
       project: record.project,
       campaign: record.campaign,
+      tags: record.tags || [],
       hparams,
       params,
       ...metadata,
@@ -1584,6 +1616,7 @@ const _MP_FIELD_CATALOG = [
   { id: 'run.cluster',     kind: 'string', hint: 'Cluster (aws-cmh, eos, …)' },
   { id: 'run.project',     kind: 'string', hint: 'Project tag' },
   { id: 'run.campaign',    kind: 'string', hint: 'Campaign tag' },
+  { id: 'run.tags',        kind: 'string[]', hint: 'Run tags; test/smoke excluded by default' },
   { id: 'metric.name',     kind: 'string', hint: 'Metric key' },
   { id: 'metric.kind',     kind: 'string', hint: '"series" or "scalar"' },
   { id: 'metric.last',     kind: 'number', hint: 'Last numeric value' },
@@ -1768,6 +1801,13 @@ function _mpAcValueItemsLocal(field, partial) {
     return projects.filter(c => !p || c.toLowerCase().includes(p))
       .map(c => ({ kind: 'value', id: c, label: c, hint: 'project', insert: c, cursorBack: 0 }));
   }
+  if (field === 'run.tags') {
+    const tags = new Set();
+    _mpState.records.forEach(r => (r.tags || []).forEach(tag => tags.add(tag)));
+    return Array.from(tags).sort()
+      .filter(c => !p || c.toLowerCase().includes(p))
+      .map(c => ({ kind: 'value', id: c, label: c, hint: 'run tag', insert: c, cursorBack: 0 }));
+  }
   if (field === 'metric.kind') {
     return ['series', 'scalar']
       .filter(c => !p || c.includes(p))
@@ -1797,7 +1837,7 @@ function _mpAcValueItemsLocal(field, partial) {
 // remote lookup.
 const _MP_CATALOG_FIELDS = new Set([
   'metric.name', 'metric.key', 'metric.kind',
-  'run.cluster', 'run.project',
+  'run.cluster', 'run.project', 'run.tags',
 ]);
 function _mpIsCatalogField(field) {
   if (!field) return false;
@@ -1806,7 +1846,7 @@ function _mpIsCatalogField(field) {
   if (field.startsWith('run.hparams.')) return true;
   // Top-level run.<metadata-key> (single dot after "run.")
   if (field.startsWith('run.') && !field.slice(4).includes('.')) {
-    const reserved = new Set(['name', 'hash', 'cluster', 'project', 'campaign', 'hparams', 'params']);
+    const reserved = new Set(['name', 'hash', 'cluster', 'project', 'campaign', 'tags', 'hparams', 'params']);
     if (!reserved.has(field.slice(4))) return true;
   }
   return false;
@@ -1850,6 +1890,7 @@ async function _mpAcValueItemsRemote(field, method, partial) {
     const mode = (method === 'startswith' || method === 'endswith') ? method : 'contains';
     try {
       const params = new URLSearchParams({ q: partial, mode, limit: '12' });
+      if (!_mpQueryOptsIntoExcludedTags()) params.set('exclude_tags', _MP_DEFAULT_EXCLUDED_RUN_TAGS.join(','));
       const res = await fetch(`/api/runs_by_name?${params.toString()}`);
       const data = await res.json();
       return (data.runs || []).map(r => ({
@@ -2048,6 +2089,7 @@ async function _mpRunQuery(value) {
     const found = [];
     for (const term of terms) {
       const params = new URLSearchParams({ q: term.value, mode: term.mode, limit: '100' });
+      if (!_mpQueryOptsIntoExcludedTags()) params.set('exclude_tags', _MP_DEFAULT_EXCLUDED_RUN_TAGS.join(','));
       try {
         const res = await fetch(`/api/runs_by_name?${params.toString()}`);
         const data = await res.json();
@@ -3484,6 +3526,10 @@ function _mpRunsLegendRowHtml(run) {
   // Match the chart trace color (enumerated assignment), falling back to
   // project tint when no record from this run is loaded yet.
   const sample = _mpState.records.find(r => r.cluster === run.cluster && r.runHash === run.runHash);
+  const tags = sample ? (sample.tags || []) : (typeof runTagsFromRun === 'function' ? runTagsFromRun(info) : (info.tags || []));
+  const tagPills = tags.length && typeof runTagsPillsHtml === 'function'
+    ? `<div class="mp-runs-legend-tags">${runTagsPillsHtml(tags)}</div>`
+    : '';
   let color;
   if (sample) color = METRICS_PALETTE[_mpRecordColorIdx(sample)];
   else color = projectColor || METRICS_PALETTE[_mpColorIndexForKey(run.runHash)];
@@ -3497,6 +3543,7 @@ function _mpRunsLegendRowHtml(run) {
        title="Open run popup for ${escAttr(runName)}">
       <div class="mp-runs-legend-name" title="${escAttr(primary)}">${_escHtml(primary)}</div>
       ${showOriginal ? `<div class="mp-runs-legend-original" title="${escAttr(runName)}">${_escHtml(runName)}</div>` : ''}
+      ${tagPills}
     </a>
     <button class="mp-runs-legend-remove" onclick="_mpRemoveRun('${escAttr(key)}')" title="Remove">×</button>
   </div>`;

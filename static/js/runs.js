@@ -123,6 +123,10 @@ function _renderRunBody(run, cluster) {
   const notes = run.notes || '';
   const runId = run.id;
   const editableRun = !!runId && !run.read_only;
+  const runTags = typeof runTagsFromRun === 'function'
+    ? runTagsFromRun(run)
+    : (Array.isArray(run.tags) ? run.tags : []);
+  const lowTrustRun = typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(runTags);
 
   const markSlot = document.getElementById('run-mark-slot');
   if (markSlot) {
@@ -169,16 +173,10 @@ function _renderRunBody(run, cluster) {
         <span class="run-notes-saved" id="run-notes-saved">saved</span>
       </div>
     </div>`;
-    const malfunctioned = !!(run.malfunctioned);
     settingsHtml += `<div class="run-settings-card">
-      <div class="run-settings-title">Result flags</div>
-      <div class="run-malfunction-block">
-      <label class="run-malfunction-label">
-        <input type="checkbox" id="run-malfunction-checkbox" ${malfunctioned ? 'checked' : ''}
-               onchange="_toggleRunMalfunctioned(${runId}, this.checked)">
-        <span>Malfunctioned — treat results as unreliable; redo experiment</span>
-      </label>
-      </div>
+      <div class="run-settings-title">Tags</div>
+      <div class="run-settings-help">Use <code>test/smoke</code> for smoke checks and <code>malfunctioning</code> for unreliable runs.</div>
+      ${_renderRunTagsEditor(runId, runTags, 'popup')}
     </div>
     <div class="run-settings-card run-settings-danger-card">
       <div>
@@ -193,6 +191,17 @@ function _renderRunBody(run, cluster) {
 
   const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
   const _durationRing = _runDurationRing(earliest, latest);
+
+  if (runTags.length || lowTrustRun) {
+    const tagPills = typeof runTagsPillsHtml === 'function' ? runTagsPillsHtml(runTags) : '';
+    overviewHtml += `<div class="run-tags-summary${lowTrustRun ? ' low-trust' : ''}">
+      <div>
+        <div class="run-tags-summary-title">${lowTrustRun ? 'Low-trust run' : 'Run tags'}</div>
+        <div class="run-tags-summary-help">${lowTrustRun ? 'Excluded or treated cautiously in result rollups.' : 'Tags annotate run intent and quality.'}</div>
+      </div>
+      <div class="run-tag-list">${tagPills}</div>
+    </div>`;
+  }
 
   overviewHtml += `<div class="run-timing">
     <div class="run-timing-item">
@@ -1161,21 +1170,107 @@ async function _deleteRun(runId, cluster, runHash, runLabel) {
   }
 }
 
-async function _toggleRunMalfunctioned(runId, checked) {
-  const el = document.getElementById('run-malfunction-checkbox');
+function _runTagsEditorIds(runId, context) {
+  const ctx = String(context || 'popup').replace(/[^a-z0-9_-]/gi, '');
+  return {
+    editor: `run-tags-editor-${ctx}-${runId}`,
+    list: `run-tags-list-${ctx}-${runId}`,
+    input: `run-tags-input-${ctx}-${runId}`,
+  };
+}
+
+function _renderRunTagsEditor(runId, tags, context = 'popup') {
+  const ids = _runTagsEditorIds(runId, context);
+  return `<div class="run-tags-editor" id="${ids.editor}">
+    ${_renderRunTagsEditorInner(runId, tags, context)}
+  </div>`;
+}
+
+function _renderRunTagsEditorInner(runId, tags, context = 'popup') {
+  const ids = _runTagsEditorIds(runId, context);
+  const ctx = escAttr(String(context || 'popup'));
+  const pills = typeof runTagsPillsHtml === 'function'
+    ? runTagsPillsHtml(tags, { empty: 'no tags', removable: true, onRemove: `_removeRunTag(${runId},'${ctx}',` })
+    : '';
+  return `<div class="run-tag-list" id="${ids.list}">${pills}</div>
+    <div class="run-tag-input-row">
+      <input id="${ids.input}" class="run-tag-input" placeholder="Add tag…" onkeydown="_runTagInputKey(event, ${runId}, '${ctx}')">
+      <button type="button" class="run-page-action-btn" onclick="_addRunTag(${runId}, '${ctx}')">Add</button>
+      <button type="button" class="run-page-action-btn subtle" onclick="_quickAddRunTag(${runId}, '${ctx}', 'test/smoke')">test/smoke</button>
+      <button type="button" class="run-page-action-btn subtle" onclick="_quickAddRunTag(${runId}, '${ctx}', 'malfunctioning')">malfunctioning</button>
+    </div>`;
+}
+
+function _currentRunEditorTags(runId, context = 'popup') {
+  const ids = _runTagsEditorIds(runId, context);
+  const list = document.getElementById(ids.list);
+  const tags = list
+    ? Array.from(list.querySelectorAll('[data-run-tag]')).map(el => el.getAttribute('data-run-tag') || '')
+    : [];
+  return typeof normalizeRunTags === 'function' ? normalizeRunTags(tags) : tags.filter(Boolean);
+}
+
+function _refreshRunTagsEditor(runId, context, tags) {
+  const ids = _runTagsEditorIds(runId, context);
+  const editor = document.getElementById(ids.editor);
+  if (editor) editor.innerHTML = _renderRunTagsEditorInner(runId, tags, context);
+}
+
+async function _patchRunTags(runId, tags) {
+  const nextTags = typeof normalizeRunTags === 'function' ? normalizeRunTags(tags) : tags;
   try {
     const res = await fetch(`/api/run/${runId}`, {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ malfunctioned: !!checked }),
+      body: JSON.stringify({ tags: nextTags }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.status === 'error') {
       throw new Error(data.error || 'request failed');
     }
-  } catch (_) {
-    if (el) el.checked = !checked;
+    if (typeof _runPageState !== 'undefined' && _runPageState.run && Number(_runPageState.run.id) === Number(runId)) {
+      _runPageState.run.tags = nextTags;
+      _runPageState.run.malfunctioned = nextTags.includes('malfunctioning');
+    }
+    return nextTags;
+  } catch (e) {
+    if (typeof toast === 'function') toast(`Tag update failed: ${e.message || e}`, 'error');
+    throw e;
   }
+}
+
+async function _addRunTag(runId, context = 'popup') {
+  const ids = _runTagsEditorIds(runId, context);
+  const input = document.getElementById(ids.input);
+  const tag = typeof normalizeRunTag === 'function' ? normalizeRunTag(input?.value || '') : (input?.value || '').trim();
+  if (!tag) return;
+  const tags = _currentRunEditorTags(runId, context);
+  if (!tags.includes(tag)) tags.push(tag);
+  const next = await _patchRunTags(runId, tags);
+  if (input) input.value = '';
+  _refreshRunTagsEditor(runId, context, next);
+}
+
+async function _quickAddRunTag(runId, context, tag) {
+  const norm = typeof normalizeRunTag === 'function' ? normalizeRunTag(tag) : tag;
+  if (!norm) return;
+  const tags = _currentRunEditorTags(runId, context);
+  if (!tags.includes(norm)) tags.push(norm);
+  const next = await _patchRunTags(runId, tags);
+  _refreshRunTagsEditor(runId, context, next);
+}
+
+async function _removeRunTag(runId, context, tag) {
+  const norm = typeof normalizeRunTag === 'function' ? normalizeRunTag(tag) : tag;
+  const tags = _currentRunEditorTags(runId, context).filter(t => t !== norm);
+  const next = await _patchRunTags(runId, tags);
+  _refreshRunTagsEditor(runId, context, next);
+}
+
+function _runTagInputKey(event, runId, context = 'popup') {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  _addRunTag(runId, context);
 }
 
 function _onRunNoteInput(runId) {

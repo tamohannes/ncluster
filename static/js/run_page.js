@@ -448,6 +448,7 @@ function _runPageRender() {
     ['metrics', 'Metrics'],
     ['jobs', `Jobs${jobs.length ? ` (${jobs.length})` : ''}`],
   ];
+  if (run.id) tabs.push(['settings', 'Settings']);
   const tabButtons = tabs.map(([id, label]) => `
     <button type="button" class="run-page-tab${_runPageState.pageTab === id ? ' active' : ''}" onclick="_runPageSetTab('${id}')">${label}</button>
   `).join('');
@@ -463,7 +464,6 @@ function _runPageRender() {
         ${logJob.jobId ? `<button class="btn" onclick="_openRunLog(${_jsArg(_runPageState.cluster)},${_jsArg(logJob.jobId)},${_jsArg(logJob.name || title)})">Log</button>` : ''}
         <button class="btn" onclick="openRunInfoByHash('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}','${escAttr(title)}')">quick peek</button>
         <button class="btn" onclick="openRunPage('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}', true)">↻ refresh</button>
-        ${run.id ? `<button class="btn run-delete-btn" onclick="_runPageDelete()" title="Permanently delete this run and all its metrics/metadata">Delete run</button>` : ''}
       </div>
     </div>
     <div class="run-page-tabs">${tabButtons}</div>
@@ -481,6 +481,7 @@ function _runPageRenderPanel() {
     el.innerHTML = _runPageMetadataHtml();
   }
   else if (_runPageState.pageTab === 'jobs') el.innerHTML = _runPageJobsHtml();
+  else if (_runPageState.pageTab === 'settings') el.innerHTML = _runPageSettingsHtml();
   else {
     el.innerHTML = _runPageMetricsHtml();
     _runPageRenderCharts();
@@ -512,6 +513,14 @@ function _runPageOverviewHtml() {
     : '';
   const _resubmitBtn = run.can_resubmit
     ? `<button class="action-btn resubmit-run-btn" onclick="_resubmitRun('${escAttr(cluster)}','${escAttr(run.run_hash || _runPageState.runHash || '')}','${escAttr(_runLabel)}')" title="Re-run the original submission command locally">resubmit</button>`
+    : '';
+  const runTags = typeof runTagsFromRun === 'function' ? runTagsFromRun(run) : (Array.isArray(run.tags) ? run.tags : []);
+  const lowTrustRun = typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(runTags);
+  const tagSummary = runTags.length || lowTrustRun
+    ? `<div class="run-page-card run-page-tags-card${lowTrustRun ? ' low-trust' : ''}">
+        <div class="run-page-card-title">${lowTrustRun ? 'Low-trust run' : 'Run tags'}</div>
+        <div class="run-tag-list">${typeof runTagsPillsHtml === 'function' ? runTagsPillsHtml(runTags) : ''}</div>
+      </div>`
     : '';
   const sdkExtra = (run.source === 'sdk' || run.source === 'sdk+legacy') ? `
     <div class="run-timing-item">
@@ -550,14 +559,7 @@ function _runPageOverviewHtml() {
         <textarea class="run-page-notes" placeholder="Add notes about this run…" oninput="_runPageOnNoteInput()" onblur="_runPageSaveNotes()">${_escHtml(run.notes || '')}</textarea>
         <div class="run-page-save-state" id="run-page-notes-saved">saved</div>
       </div>
-      <div class="run-page-card run-page-malfunction-card">
-        <div class="run-page-card-title">Run quality</div>
-        <label class="run-page-malfunction-label">
-          <input type="checkbox" class="run-page-malfunction-cb" ${run.malfunctioned ? 'checked' : ''}
-                 onchange="_runPageToggleMalfunctioned(this.checked)">
-          <span>Malfunctioned — treat metrics as low-trust; experiment should be redone</span>
-        </label>
-      </div>
+      ${tagSummary}
       <div class="run-page-card run-page-overview-summary">
         <div class="run-page-card-title">Timeline & jobs</div>
         <div class="run-timing">
@@ -622,6 +624,26 @@ function _runPageMetadataHtml() {
   }
   const provClass = hasAccordions ? 'run-page-provenance run-page-provenance--stack' : 'run-page-provenance';
   return `<div class="${provClass}">${inner}</div>`;
+}
+
+function _runPageSettingsHtml() {
+  const run = _runPageState.run || {};
+  if (!run.id) return '<div class="run-page-empty">This run is read-only.</div>';
+  const tags = typeof runTagsFromRun === 'function' ? runTagsFromRun(run) : (run.tags || []);
+  return `<div class="run-page-settings-grid">
+    <div class="run-page-card">
+      <div class="run-page-card-title">Tags</div>
+      <div class="run-page-card-sub">Use <code>test/smoke</code> for smoke checks and <code>malfunctioning</code> for unreliable runs.</div>
+      ${typeof _renderRunTagsEditor === 'function' ? _renderRunTagsEditor(run.id, tags, 'page') : ''}
+    </div>
+    <div class="run-page-card run-settings-danger-card">
+      <div>
+        <div class="run-page-card-title">Danger zone</div>
+        <div class="run-page-card-sub">Permanently delete this run and all its metrics/metadata.</div>
+      </div>
+      <button class="btn run-delete-btn" onclick="_runPageDelete()" title="Permanently delete this run and all its metrics/metadata">Delete run</button>
+    </div>
+  </div>`;
 }
 
 function _runPageMetricsHtml() {
@@ -1564,26 +1586,6 @@ async function _runPageDelete() {
   } catch (e) {
     if (typeof toast === 'function') toast(`Delete failed: ${e.message}`, 'error');
     else alert(`Delete failed: ${e.message}`);
-  }
-}
-
-async function _runPageToggleMalfunctioned(checked) {
-  const run = _runPageState.run;
-  const cb = document.querySelector('.run-page-malfunction-cb');
-  if (!run || !run.id) return;
-  try {
-    const res = await fetch(`/api/run/${run.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ malfunctioned: !!checked }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.status === 'error') {
-      throw new Error(data.error || 'failed');
-    }
-    run.malfunctioned = !!checked;
-  } catch (_) {
-    if (cb) cb.checked = !checked;
   }
 }
 

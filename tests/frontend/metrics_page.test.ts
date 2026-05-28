@@ -9,6 +9,8 @@ import { loadBrowserScripts } from './helpers';
 
 declare const _mpControlsHtml: (matchingRecords: any[]) => string;
 declare const _mpChartCardHtml: (group: any, idx: number) => string;
+declare const _mpQLParse: (query: string) => any;
+declare const _mpRecordMatches: (record: any, ast: any) => boolean;
 
 function scalarRecord() {
   return {
@@ -24,6 +26,7 @@ function scalarRecord() {
     stats: { latestNum: 0.91 },
     metadata: {},
     params: {},
+    tags: [],
   };
 }
 
@@ -41,6 +44,7 @@ function seriesRecord() {
     stats: { latestNum: 0.3, firstStep: 1, lastStep: 2 },
     metadata: {},
     params: {},
+    tags: [],
   };
 }
 
@@ -126,5 +130,13 @@ describe('metrics explorer controls', () => {
 
     expect(html).not.toContain('_mpResetZoom');
     expect(html).toContain('Export PNG');
+  });
+
+  it('matches run tags as array membership in AimQL', () => {
+    const rec = { ...scalarRecord(), tags: ['test/smoke', 'malfunctioning'] };
+
+    expect(_mpRecordMatches(rec, _mpQLParse('run.tags == "test/smoke"'))).toBe(true);
+    expect(_mpRecordMatches(rec, _mpQLParse('"malfunctioning" in run.tags'))).toBe(true);
+    expect(_mpRecordMatches(rec, _mpQLParse('run.tags == "production"'))).toBe(false);
   });
 });

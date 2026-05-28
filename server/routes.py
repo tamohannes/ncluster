@@ -70,6 +70,7 @@ from .jobs import (
 from .poller import get_poller, get_version, bump_version, touch_demand
 from .db import (
     get_run_by_hash, get_run_hash, get_run_with_jobs, update_run_fields,
+    merge_run_tags_for_uuid, normalize_run_tags, run_tags_from_row,
     resolve_run_hash_prefix,
     list_metrics_views, get_metrics_view, create_metrics_view,
     update_metrics_view, delete_metrics_view,
@@ -1735,6 +1736,7 @@ def _load_job_history_run_fallback(cluster, root_job_id):
         "primary_output_dir": "",
         "params_json": "",
         "metadata_json": "",
+        "tags_json": "[]",
         "batch_script": "",
         "scontrol_raw": "",
         "env_vars": "",
@@ -1769,7 +1771,7 @@ def _inherit_sdk_by_run_uuid(run):
         con = get_db()
         sibling = con.execute(
             """SELECT submit_command, submit_cwd, git_commit, launcher_hostname,
-                      primary_output_dir, params_json, metadata_json
+                      primary_output_dir, params_json, metadata_json, tags_json, malfunctioned
                FROM runs
                WHERE run_uuid=? AND id != ? AND source='sdk'
                ORDER BY CASE WHEN submit_command != '' THEN 0 ELSE 1 END, id DESC
@@ -1788,6 +1790,13 @@ def _inherit_sdk_by_run_uuid(run):
     ):
         if not run.get(field) and sibling[field]:
             run[field] = sibling[field]
+    merged_tags = run_tags_from_row(run)
+    for tag in run_tags_from_row(sibling):
+        if tag not in merged_tags:
+            merged_tags.append(tag)
+    if merged_tags:
+        run["tags_json"] = json.dumps(merged_tags)
+        run["malfunctioned"] = int("malfunctioning" in merged_tags)
     if not run.get("source") or run["source"] == "legacy":
         run["source"] = "sdk+legacy"
 
@@ -1812,7 +1821,8 @@ def _inherit_sdk_provenance(run, cluster):
         sdk_run = None
         for name in candidates:
             sdk_run = con.execute(
-                """SELECT submit_command, submit_cwd, git_commit, launcher_hostname, primary_output_dir, params_json, run_uuid
+                """SELECT submit_command, submit_cwd, git_commit, launcher_hostname,
+                          primary_output_dir, params_json, run_uuid, tags_json, malfunctioned
                    FROM runs WHERE cluster=? AND source='sdk' AND (run_name=? OR run_name LIKE ?) AND submit_command != ''
                    ORDER BY id DESC LIMIT 1""",
                 (cluster, name, f"%{name}%"),
@@ -1827,6 +1837,13 @@ def _inherit_sdk_provenance(run, cluster):
             ):
                 if not run.get(field) and sdk_run[field]:
                     run[field] = sdk_run[field]
+            merged_tags = run_tags_from_row(run)
+            for tag in run_tags_from_row(sdk_run):
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
+            if merged_tags:
+                run["tags_json"] = json.dumps(merged_tags)
+                run["malfunctioned"] = int("malfunctioning" in merged_tags)
             if not run.get("source") or run["source"] == "legacy":
                 run["source"] = "sdk+legacy"
     except Exception:
@@ -1911,7 +1928,9 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
     else:
         run["metadata"] = {}
 
-    run["malfunctioned"] = bool(int(run.get("malfunctioned") or 0))
+    run["tags"] = run_tags_from_row(run)
+    run.pop("tags_json", None)
+    run["malfunctioned"] = "malfunctioning" in run["tags"]
     run["wasteful"] = bool(int(run.get("wasteful") or 0))
     run["waste_reason"] = run.get("waste_reason") or ""
     run["waste_detected_at"] = run.get("waste_detected_at") or ""
@@ -2410,6 +2429,7 @@ def api_runs_by_name():
       - ``limit``: max results to return (default 50, max 200)
       - ``has_metrics``: ``1`` to restrict to runs that have at least one
         SDK metric or scalar logged (default off)
+      - ``exclude_tags``: comma-separated normalized tags to omit
     """
     q = (request.args.get("q") or "").strip()
     if not q or len(q) < 2:
@@ -2422,6 +2442,7 @@ def api_runs_by_name():
     except ValueError:
         limit = 50
     has_metrics = (request.args.get("has_metrics") or "").lower() in ("1", "true", "yes")
+    exclude_tags = set(normalize_run_tags(request.args.get("exclude_tags") or ""))
 
     if mode == "startswith":
         like = f"{q}%"
@@ -2435,7 +2456,8 @@ def api_runs_by_name():
     con = get_db()
     try:
         sql = """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
-                        r.project, r.sdk_status, r.started_at, r.created_at
+                        r.project, r.sdk_status, r.started_at, r.created_at,
+                        r.tags_json, r.malfunctioned
                  FROM runs r
                  WHERE r.run_name LIKE ? COLLATE NOCASE"""
         params = [like]
@@ -2455,6 +2477,9 @@ def api_runs_by_name():
         run_hash = get_run_hash(r["cluster"], r["root_job_id"], r["run_uuid"])
         if not run_hash:
             continue
+        tags = run_tags_from_row(r)
+        if exclude_tags and exclude_tags.intersection(tags):
+            continue
         runs.append({
             "cluster": r["cluster"],
             "run_hash": run_hash,
@@ -2462,6 +2487,7 @@ def api_runs_by_name():
             "project": r["project"] or "",
             "sdk_status": r["sdk_status"] or "",
             "started_at": r["started_at"] or "",
+            "tags": tags,
         })
     return jsonify({"status": "ok", "runs": runs, "total": len(runs), "mode": mode})
 
@@ -2498,7 +2524,7 @@ def api_sdk_resolve_run():
 
 # Catalog of (path → distinct values) used by the AimQL autocomplete to
 # suggest values for `metric.name`, `metric.context.<k>`, `run.cluster`,
-# `run.project`, `run.hparams.<k>`, etc. Results are sampled to stay fast
+# `run.project`, `run.tags`, `run.hparams.<k>`, etc. Results are sampled to stay fast
 # even on large databases.
 _METRIC_FIELD_VALUE_LIMIT = 200
 _METRIC_FIELD_VALUE_SAMPLE = 10000
@@ -2539,6 +2565,14 @@ def api_metric_field_values():
                 "SELECT DISTINCT project FROM runs WHERE project IS NOT NULL AND project != '' ORDER BY project"
             ).fetchall()
             values = [r["project"] for r in rows]
+        elif path == "run.tags":
+            rows = con.execute(
+                "SELECT tags_json, malfunctioned FROM runs WHERE tags_json IS NOT NULL OR malfunctioned = 1"
+            ).fetchall()
+            tag_values = set()
+            for row in rows:
+                tag_values.update(run_tags_from_row(row))
+            values = sorted(tag_values)
         elif path.startswith("metric.context."):
             ctx_key = path[len("metric.context."):]
             if not re.fullmatch(r"[A-Za-z0-9_\-]+", ctx_key):
@@ -2749,8 +2783,8 @@ def api_resubmit_log(filename):
 def api_update_run(run_id):
     """Partial update of user-editable run fields.
 
-    Accepts: ``starred`` (bool), ``notes`` (str),
-    ``malfunctioned`` (bool), ``wasteful`` (bool), ``waste_reason`` (str).
+    Accepts: ``starred`` (bool), ``notes`` (str), ``tags`` (list[str]),
+    legacy ``malfunctioned`` (bool), ``wasteful`` (bool), ``waste_reason`` (str).
     Pass ``waste_reason=""`` to clear the reason. Setting ``wasteful=true``
     via this endpoint records the run as manually flagged
     (``waste_cancelled_by_watcher=False``).
@@ -2760,12 +2794,13 @@ def api_update_run(run_id):
     starred = data.get("starred")
     notes = data.get("notes")
     malfunctioned = data.get("malfunctioned")
+    tags = data.get("tags")
     wasteful = data.get("wasteful")
     waste_reason = data.get("waste_reason")
     if (starred is None and notes is None and malfunctioned is None
-            and wasteful is None and waste_reason is None):
+            and tags is None and wasteful is None and waste_reason is None):
         return jsonify({"status": "error", "error": "No fields to update"}), 400
-    kwargs = dict(starred=starred, notes=notes, malfunctioned=malfunctioned)
+    kwargs = dict(starred=starred, notes=notes, malfunctioned=malfunctioned, tags=tags)
     if wasteful is not None:
         kwargs["wasteful"] = wasteful
         kwargs["waste_cancelled_by_watcher"] = False
@@ -4688,6 +4723,7 @@ def api_sdk_ingest():
         store_run_metric,
         store_run_scalar,
         merge_run_metadata,
+        merge_run_tags_for_uuid,
         finalize_sdk_run,
         get_run_by_uuid,
         invalidate_pinned_cache,
@@ -4797,6 +4833,14 @@ def api_sdk_ingest():
 
         elif event_type == "metadata_logged":
             merge_run_metadata(run_uuid, payload.get("metadata", {}))
+
+        elif event_type == "tags_logged":
+            merge_run_tags_for_uuid(
+                run_uuid,
+                payload.get("tags", []),
+                mode=payload.get("mode", "merge"),
+            )
+            bump_version()
 
         accepted += 1
 

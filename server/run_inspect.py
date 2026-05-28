@@ -6,6 +6,8 @@ import json
 import re
 from typing import Any, Optional
 
+from .db import run_tags_from_row
+
 
 def parse_env_vars(env_str: str) -> dict[str, str]:
     """Parse run ``env_vars`` text into a flat string dict.
@@ -365,11 +367,10 @@ def build_reproducibility_snapshot(
         else {}
     )
 
-    mal = run.get("malfunctioned")
-    if isinstance(mal, (int, float)):
-        malfunctioned = bool(int(mal))
-    else:
-        malfunctioned = bool(mal)
+    tags = run.get("tags")
+    if not isinstance(tags, list):
+        tags = run_tags_from_row(run)
+    malfunctioned = "malfunctioning" in tags
 
     return {
         "status": "ok",
@@ -388,6 +389,7 @@ def build_reproducibility_snapshot(
             "campaign": run.get("campaign") or "",
             "source": run.get("source") or "",
             "malfunctioned": malfunctioned,
+            "tags": tags,
             "job_count": len(run.get("jobs") or []),
         },
         "identity": {

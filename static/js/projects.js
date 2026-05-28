@@ -376,7 +376,10 @@ function _renderProjPage() {
       const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
       const highlightedLabel = highlightJobName(g.label, _clusterGkHL.prefix, _clusterGkHL.suffix);
       const runDataAttrs = ` data-run-cluster="${escAttr(cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
-      const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+      const _runTags = typeof normalizeRunTags === 'function' ? normalizeRunTags(rootJob.run_tags || []) : (rootJob.run_tags || []);
+      const _tagBadgeCls = (typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(_runTags)) ? ' run-name-badge--low-trust' : '';
+      const _runTitle = _runTags.length ? `${g.label} · tags ${_runTags.join(', ')}` : g.label;
+      const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_tagBadgeCls}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${_runTitle.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
       const identityBadge = typeof runIdentityBadge === 'function' ? runIdentityBadge(rootJob) : '';
       const hasMultiple = groupJobs.length > 1;
       const groupId = `${cluster}:${rootJobId}`;

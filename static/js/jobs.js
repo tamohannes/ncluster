@@ -796,13 +796,16 @@ function renderCard(name, data) {
       if (runHash) runTitleParts.push(`run hash ${runHash}`);
       if (runUuid) runTitleParts.push(`UUID ${runUuid}`);
       if (rootJobId) runTitleParts.push(`root ${rootJobId}`);
+      const _runTags = typeof normalizeRunTags === 'function' ? normalizeRunTags(rootJob.run_tags || []) : (rootJob.run_tags || []);
+      if (_runTags.length) runTitleParts.push(`tags ${_runTags.join(', ')}`);
       const legacyBadge = name !== 'local' ? nonSdkBadge(rootJob) : '';
       const runDataAttrs = name !== 'local'
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
       const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
+      const _tagBadgeCls = (typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(_runTags)) ? ' run-name-badge--low-trust' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}${_tagBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
         : highlightedGk;
       // WasteWatcher: if any job in this run is flagged ``run_wasteful``
       // (board.py decorates jobs from runs.wasteful), show a small warning

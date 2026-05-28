@@ -37,6 +37,7 @@ def _run_started_event(run_uuid):
             "conda_env": "test",
             "python_executable": "/usr/bin/python",
             "env_vars_set": [],
+            "tags": ["smoke"],
             "params": {},
         },
     }
@@ -50,9 +51,11 @@ def test_manual_run_track_and_metadata_emit_sdk_events(tmp_path, monkeypatch):
         run_name="hle_manual_metrics",
         cluster="mock-cluster",
         metadata={"model": "demo", "batch_size": 8},
+        tags="smoke",
     )
     run.track("loss", 0.42, step=2, context={"split": "train"})
     run.scalar("final_accuracy", 0.84, split="eval")
+    run.add_tag("malfunctioned")
     run.close()
 
     events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
@@ -62,8 +65,15 @@ def test_manual_run_track_and_metadata_emit_sdk_events(tmp_path, monkeypatch):
         "metadata_logged",
         "metric_logged",
         "scalar_logged",
+        "tags_logged",
         "run_finished",
     ]
+
+    started = next(event for event in events if event["event_type"] == "run_started")
+    assert started["payload"]["tags"] == ["test/smoke"]
+
+    tags = next(event for event in events if event["event_type"] == "tags_logged")
+    assert tags["payload"] == {"tags": ["malfunctioning"], "mode": "merge"}
 
     metric = next(event for event in events if event["event_type"] == "metric_logged")
     assert metric["payload"] == {
@@ -123,6 +133,13 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
             "ts": 5.0,
             "payload": {"key": "progress", "value": 10},
         },
+        {
+            "run_uuid": run_uuid,
+            "event_type": "tags_logged",
+            "event_seq": 7,
+            "ts": 6.0,
+            "payload": {"tags": ["malfunctioned"]},
+        },
     ]
 
     res = client.post("/api/sdk/events", data=json.dumps(events), content_type="application/json")
@@ -145,6 +162,10 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
     assert payload["scalars"]["phase"][0]["value"] == "warmup"
     assert payload["scalar_latest"]["final_accuracy"]["value"] == 0.75
     assert payload["scalar_latest"]["final_accuracy"]["value_num"] == 0.75
+
+    info = client.get(f"/api/run_info/mock-cluster/{root_job_id}")
+    assert info.status_code == 200, info.data
+    assert info.get_json()["run"]["tags"] == ["test/smoke", "malfunctioning"]
 
     from server.db import get_db
     con = get_db()

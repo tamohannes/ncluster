@@ -31,6 +31,7 @@ class EventType(str, Enum):
     METRIC_LOGGED = "metric_logged"
     SCALAR_LOGGED = "scalar_logged"
     METADATA_LOGGED = "metadata_logged"
+    TAGS_LOGGED = "tags_logged"
     ARTIFACT_LOGGED = "artifact_logged"
     RUN_FINISHED = "run_finished"
     RUN_FAILED = "run_failed"
@@ -75,6 +76,7 @@ class RunProvenance:
     conda_env: str = ""
     python_executable: str = ""
     env_vars_set: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     # Pipeline kwargs captured at the hook call site (model, benchmarks,
     # num_samples, judge_model, ...). Populated by the SDK hooks per entry
     # point — kept as a free-form dict so new kwargs don't need schema

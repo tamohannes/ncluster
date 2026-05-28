@@ -93,6 +93,7 @@ Resource: `jobs://summary` — one-line-per-cluster overview (running/pending/fa
 - **Mount-first reads**: Log reads prefer SSHFS mounts, falling back to SSH.
 - **PENDING jobs have no logs or stats** — don't attempt to fetch them.
 - **`crash_detected`**: Running jobs may have this field set when OOM/segfault/traceback is found in logs. Check before reading full logs.
+- **Run tags**: Runs can carry multiple tags. Use `test/smoke` for smoke or structural checks and `malfunctioning` for unreliable runs. Metrics Explorer excludes `test/smoke` by default; SDK smoke checks can call `Run(..., tags=["test/smoke"])`, `run.add_tag("test/smoke")`, or `ClausiusSession.start_from_cli(..., tags=["test/smoke"])`.
 
 ---
 

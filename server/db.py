@@ -4,6 +4,7 @@ import hashlib
 import json as _json
 import logging
 import math
+import re
 import sqlite3
 import subprocess
 import threading as _th_db
@@ -15,6 +16,96 @@ from .config import DB_PATH, PINNABLE_TERMINAL_STATES, RESULT_DIR_NAMES
 log = logging.getLogger(__name__)
 
 RUN_HASH_LEN = 12
+RUN_TAG_SMOKE = "test/smoke"
+RUN_TAG_MALFUNCTIONING = "malfunctioning"
+
+_RUN_TAG_ALIASES = {
+    "smoke": RUN_TAG_SMOKE,
+    "smoke-test": RUN_TAG_SMOKE,
+    "smoke/test": RUN_TAG_SMOKE,
+    "test": RUN_TAG_SMOKE,
+    "test-smoke": RUN_TAG_SMOKE,
+    "test_smoke": RUN_TAG_SMOKE,
+    "malfunction": RUN_TAG_MALFUNCTIONING,
+    "malfunctioned": RUN_TAG_MALFUNCTIONING,
+    "malfunctioning-run": RUN_TAG_MALFUNCTIONING,
+    "broken": RUN_TAG_MALFUNCTIONING,
+}
+_RUN_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,63}$")
+
+
+def normalize_run_tag(tag) -> str:
+    """Return a canonical run tag, or ``""`` when the value is unusable."""
+    text = str(tag or "").strip().lower()
+    if not text:
+        return ""
+    text = text.lstrip("#")
+    text = re.sub(r"\s+", "-", text)
+    text = text.replace("\\", "/").strip("._-/")
+    if not text:
+        return ""
+    text = _RUN_TAG_ALIASES.get(text, text)
+    return text if _RUN_TAG_RE.fullmatch(text) else ""
+
+
+def normalize_run_tags(tags) -> list[str]:
+    """Normalize, de-dupe, and preserve order for a run tag collection."""
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        raw = tags.strip()
+        if not raw:
+            items = []
+        elif raw.startswith("["):
+            try:
+                parsed = _json.loads(raw)
+                items = parsed if isinstance(parsed, list) else [parsed]
+            except Exception:
+                items = [raw]
+        else:
+            items = raw.split(",")
+    elif isinstance(tags, (list, tuple, set)):
+        items = list(tags)
+    else:
+        items = [tags]
+
+    out: list[str] = []
+    seen = set()
+    for item in items:
+        if isinstance(item, dict):
+            item = item.get("tag") or item.get("name") or item.get("id") or ""
+        tag = normalize_run_tag(item)
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+    return out
+
+
+def run_tags_from_values(tags_json="", malfunctioned=None) -> list[str]:
+    tags = normalize_run_tags(tags_json)
+    try:
+        mal = bool(int(malfunctioned or 0))
+    except Exception:
+        mal = bool(malfunctioned)
+    if mal and RUN_TAG_MALFUNCTIONING not in tags:
+        tags.append(RUN_TAG_MALFUNCTIONING)
+    return tags
+
+
+def run_tags_from_row(row) -> list[str]:
+    if not row:
+        return []
+    try:
+        keys = set(row.keys())
+    except Exception:
+        keys = set(row)
+    tags_json = row["tags_json"] if "tags_json" in keys else ""
+    malfunctioned = row["malfunctioned"] if "malfunctioned" in keys else None
+    return run_tags_from_values(tags_json, malfunctioned)
+
+
+def _run_tags_json(tags) -> str:
+    return _json.dumps(normalize_run_tags(tags), separators=(",", ":"))
 
 
 def get_run_hash(cluster, root_job_id, run_uuid=""):
@@ -307,6 +398,23 @@ def _force_close_thread_local_db():
     _db_local.con = None
 
 
+def _backfill_run_tags(con):
+    """Keep legacy malfunctioned rows visible through the tag model."""
+    try:
+        rows = con.execute(
+            "SELECT id, tags_json, malfunctioned FROM runs WHERE malfunctioned = 1"
+        ).fetchall()
+    except Exception:
+        return
+    for row in rows:
+        tags = run_tags_from_row(row)
+        if RUN_TAG_MALFUNCTIONING not in tags:
+            tags.append(RUN_TAG_MALFUNCTIONING)
+        next_json = _run_tags_json(tags)
+        if next_json != (row["tags_json"] or "[]"):
+            con.execute("UPDATE runs SET tags_json=? WHERE id=?", (next_json, row["id"]))
+
+
 # In-process serializer for DB writes so bookkeeping threads don't fight
 # for the SQLite writer slot. We hold this lock ONLY around the
 # write-and-commit window — never around `sqlite3.connect()` itself,
@@ -399,6 +507,7 @@ def init_db():
 
     # SDK synthetic jobs should never be pinned on the live board.
     con.execute("UPDATE job_history SET board_visible=0 WHERE job_id LIKE 'sdk-%' AND board_visible=1")
+    _backfill_run_tags(con)
     _collapse_duplicate_sdk_resume_runs(con)
 
     con.commit()
@@ -443,6 +552,10 @@ def _collapse_duplicate_sdk_resume_runs(con):
 
         for dup in rows[1:]:
             dup_uuid = dup["run_uuid"] or ""
+            merged_tags = run_tags_from_row(canonical)
+            for tag in run_tags_from_row(dup):
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
             if dup_uuid and dup_uuid != canonical_uuid:
                 con.execute(
                     """INSERT OR IGNORE INTO sdk_run_aliases
@@ -457,6 +570,8 @@ def _collapse_duplicate_sdk_resume_runs(con):
             con.execute(
                 """UPDATE runs SET
                        starred = MAX(starred, ?),
+                       tags_json = ?,
+                       malfunctioned = ?,
                        notes = CASE WHEN COALESCE(notes, '') = '' THEN COALESCE(?, '') ELSE notes END,
                        sdk_status = CASE
                            WHEN ? IN ('submitting', 'active') THEN ?
@@ -469,6 +584,8 @@ def _collapse_duplicate_sdk_resume_runs(con):
                    WHERE id=?""",
                 (
                     dup["starred"] or 0,
+                    _run_tags_json(merged_tags),
+                    int(RUN_TAG_MALFUNCTIONING in merged_tags),
                     dup["notes"] or "",
                     dup["sdk_status"] or "",
                     dup["sdk_status"] or "",
@@ -476,6 +593,9 @@ def _collapse_duplicate_sdk_resume_runs(con):
                     canonical["id"],
                 ),
             )
+            canonical = dict(canonical)
+            canonical["tags_json"] = _run_tags_json(merged_tags)
+            canonical["malfunctioned"] = int(RUN_TAG_MALFUNCTIONING in merged_tags)
             con.execute("DELETE FROM runs WHERE id=?", (dup["id"],))
 
 
@@ -951,7 +1071,9 @@ def get_history(
         "SELECT jh.*, COALESCE(r.run_name, '') AS run_name, "
         "COALESCE(r.starred, 0) AS starred, "
         "COALESCE(r.root_job_id, '') AS run_root_job_id, "
-        "COALESCE(r.run_uuid, '') AS run_uuid "
+        "COALESCE(r.run_uuid, '') AS run_uuid, "
+        "COALESCE(r.tags_json, '[]') AS run_tags_json, "
+        "COALESCE(r.malfunctioned, 0) AS run_malfunctioned "
         "FROM job_history jh "
         "LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster "
         f"{where} {order}"
@@ -970,6 +1092,10 @@ def get_history(
                 job.get("cluster", ""),
                 job.get("run_root_job_id") or job.get("job_id", ""),
                 job.get("run_uuid", ""),
+            )
+            job["run_tags"] = run_tags_from_values(
+                job.get("run_tags_json") or "[]",
+                job.get("run_malfunctioned") or 0,
             )
         jobs.append(job)
     _restore_dependency_fields(jobs, parse_dependency)
@@ -1558,6 +1684,7 @@ def update_run_fields(
     starred=None,
     notes=None,
     malfunctioned=None,
+    tags=None,
     wasteful=None,
     waste_reason=None,
     waste_detected_at=None,
@@ -1565,10 +1692,11 @@ def update_run_fields(
 ):
     """Partial update of user/agent-editable run fields.
 
-    Supports ``starred``, ``notes``, ``malfunctioned`` (user-facing flags)
-    and the WasteWatcher fields (``wasteful``, ``waste_reason``,
-    ``waste_detected_at``, ``waste_cancelled_by_watcher``). Pass ``None``
-    to skip a field. Empty string for ``waste_reason`` clears the reason.
+    Supports ``starred``, ``notes``, ``tags`` and the legacy
+    ``malfunctioned`` compatibility flag, plus the WasteWatcher fields
+    (``wasteful``, ``waste_reason``, ``waste_detected_at``,
+    ``waste_cancelled_by_watcher``). Pass ``None`` to skip a field. Empty
+    string for ``waste_reason`` clears the reason.
     """
     sets, params = [], []
     if starred is not None:
@@ -1577,9 +1705,6 @@ def update_run_fields(
     if notes is not None:
         sets.append("notes = ?")
         params.append(notes)
-    if malfunctioned is not None:
-        sets.append("malfunctioned = ?")
-        params.append(int(bool(malfunctioned)))
     if wasteful is not None:
         sets.append("wasteful = ?")
         params.append(int(bool(wasteful)))
@@ -1592,11 +1717,66 @@ def update_run_fields(
     if waste_cancelled_by_watcher is not None:
         sets.append("waste_cancelled_by_watcher = ?")
         params.append(int(bool(waste_cancelled_by_watcher)))
-    if not sets:
+    needs_tags = tags is not None or malfunctioned is not None
+    if not sets and not needs_tags:
         return
-    params.append(run_id)
     with db_write() as con:
+        if needs_tags:
+            row = con.execute(
+                "SELECT tags_json, malfunctioned FROM runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            if row:
+                next_tags = normalize_run_tags(tags) if tags is not None else run_tags_from_row(row)
+                if malfunctioned is not None:
+                    mal = bool(malfunctioned)
+                    if mal and RUN_TAG_MALFUNCTIONING not in next_tags:
+                        next_tags.append(RUN_TAG_MALFUNCTIONING)
+                    elif not mal:
+                        next_tags = [t for t in next_tags if t != RUN_TAG_MALFUNCTIONING]
+                    sets.append("malfunctioned = ?")
+                    params.append(int(mal))
+                elif tags is not None:
+                    sets.append("malfunctioned = ?")
+                    params.append(int(RUN_TAG_MALFUNCTIONING in next_tags))
+                sets.append("tags_json = ?")
+                params.append(_run_tags_json(next_tags))
+        if not sets:
+            return
+        params.append(run_id)
         con.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def update_run_tags(run_id, tags):
+    """Replace a run's tags with a normalized tag list."""
+    update_run_fields(run_id, tags=tags)
+
+
+def merge_run_tags_for_uuid(run_uuid, tags, mode="merge") -> bool:
+    """Merge or replace tags for the canonical SDK run identified by UUID."""
+    incoming = normalize_run_tags(tags)
+    if not run_uuid:
+        return False
+    with db_write() as con:
+        canonical_uuid = resolve_run_uuid(run_uuid, con=con)
+        row = con.execute(
+            "SELECT id, tags_json, malfunctioned FROM runs WHERE run_uuid=?",
+            (canonical_uuid,),
+        ).fetchone()
+        if not row:
+            return False
+        if str(mode or "merge").lower() == "replace":
+            next_tags = incoming
+        else:
+            next_tags = run_tags_from_row(row)
+            for tag in incoming:
+                if tag not in next_tags:
+                    next_tags.append(tag)
+        con.execute(
+            "UPDATE runs SET tags_json=?, malfunctioned=? WHERE id=?",
+            (_run_tags_json(next_tags), int(RUN_TAG_MALFUNCTIONING in next_tags), row["id"]),
+        )
+        return True
 
 
 def update_job_waste_fields(cluster, job_id, *, waste_reason=None, waste_cancelled_at=None):
@@ -1936,6 +2116,7 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
     command = _build_full_submit_command(provenance)
     params_obj = provenance.get("params") or {}
     params_json = _json.dumps(params_obj) if params_obj else ""
+    provenance_tags = normalize_run_tags(provenance.get("tags"))
 
     with db_write() as con:
         canonical_uuid = resolve_run_uuid(run_uuid, con=con)
@@ -1989,9 +2170,9 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 INSERT INTO runs
                     (cluster, root_job_id, run_name, project, run_uuid, source,
                      submit_command, submit_cwd, git_commit, launcher_hostname,
-                     primary_output_dir, params_json, sdk_status,
+                     primary_output_dir, params_json, tags_json, malfunctioned, sdk_status,
                      started_at, created_at, meta_fetched)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 cluster, synthetic_job_id, expname, project, canonical_uuid, "sdk",
                 command,
@@ -2000,9 +2181,25 @@ def upsert_run_from_sdk(run_uuid, cluster, expname, project, provenance):
                 provenance.get("hostname", ""),
                 _norm_output_dir(provenance.get("output_dir", "")),
                 params_json,
+                _run_tags_json(provenance_tags),
+                int(RUN_TAG_MALFUNCTIONING in provenance_tags),
                 "submitting", now, now, 1,
             ))
             run_id = cur.lastrowid
+
+        if provenance_tags:
+            tag_row = con.execute(
+                "SELECT tags_json, malfunctioned FROM runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+            merged_tags = run_tags_from_row(tag_row)
+            for tag in provenance_tags:
+                if tag not in merged_tags:
+                    merged_tags.append(tag)
+            con.execute(
+                "UPDATE runs SET tags_json=?, malfunctioned=? WHERE id=?",
+                (_run_tags_json(merged_tags), int(RUN_TAG_MALFUNCTIONING in merged_tags), run_id),
+            )
 
         env_json = _json.dumps(provenance.get("env_subset", {}))
         con.execute("""

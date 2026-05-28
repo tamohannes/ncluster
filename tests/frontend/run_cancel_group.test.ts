@@ -95,7 +95,7 @@ describe('read-only job-history run popups', () => {
 
     expect(document.querySelector('#run-mark-btn')).toBeNull();
     expect(document.querySelector('#run-notes-textarea')).toBeNull();
-    expect(document.querySelector('#run-malfunction-checkbox')).toBeNull();
+    expect(document.querySelector('.run-tags-editor')).toBeNull();
     expect(document.querySelector('.run-delete-btn')).toBeNull();
     const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
       .map((el) => el.textContent);
@@ -105,7 +105,7 @@ describe('read-only job-history run popups', () => {
 });
 
 describe('run popup settings tab', () => {
-  it('moves malfunction and delete controls out of the overview/header', () => {
+  it('moves tag and delete controls out of the overview/header', () => {
     _renderRunBody({
       id: 7,
       root_job_id: 'root123',
@@ -123,10 +123,10 @@ describe('run popup settings tab', () => {
     }, 'dfw');
 
     expect(document.getElementById('run-tab-btn-settings')?.textContent).toBe('Settings');
-    expect(document.querySelector('#run-tab-overview #run-malfunction-checkbox')).toBeNull();
-    const flag = document.querySelector('#run-tab-settings #run-malfunction-checkbox') as HTMLInputElement | null;
-    expect(flag).toBeTruthy();
-    expect(flag!.checked).toBe(true);
+    expect(document.querySelector('#run-tab-overview .run-tags-editor')).toBeNull();
+    const tagEditor = document.querySelector('#run-tab-settings .run-tags-editor');
+    expect(tagEditor).toBeTruthy();
+    expect(tagEditor?.textContent).toContain('malfunctioning');
     expect(document.querySelector('#run-page-action-slot .run-delete-btn')).toBeNull();
     const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
       .map((el) => el.textContent);

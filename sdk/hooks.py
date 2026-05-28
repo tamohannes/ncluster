@@ -45,6 +45,7 @@ def maybe_start_session(
     cluster: str = "",
     config_overrides: dict | None = None,
     params: dict | None = None,
+    tags: list[str] | str | None = None,
 ) -> ClausiusSession | None:
     """Start or return the global Clausius session if tracking is configured.
 
@@ -55,6 +56,7 @@ def maybe_start_session(
     num_samples, judge_model, ...) captured at the hook call site. It is
     serialised into the run_started event payload and rendered in the
     "Run Parameters" block in the UI.
+    ``tags`` marks runs such as ``test/smoke`` at launch.
     """
     if not _tracking_enabled():
         return None
@@ -66,6 +68,7 @@ def maybe_start_session(
             cluster=cluster,
             config_overrides=config_overrides,
             params=params,
+            tags=tags,
         )
     except Exception as exc:
         LOG.debug("clausius: failed to start session: %s", exc)

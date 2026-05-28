@@ -30,6 +30,7 @@ from clausius_sdk.session import (
     _detect_env_vars_set,
     _git_sha,
     _safe_env_subset,
+    _sanitize_tags,
     _sanitize_params,
 )
 
@@ -57,6 +58,7 @@ class Run:
         output_dir: str = "",
         command: str = "",
         params: dict[str, Any] | None = None,
+        tags: list[str] | str | None = None,
     ):
         if connect and not run_uuid:
             raise ValueError("connect=True requires run_uuid")
@@ -94,10 +96,13 @@ class Run:
                 conda_env=_detect_conda_env(),
                 python_executable=sys.executable,
                 env_vars_set=_detect_env_vars_set(),
+                tags=_sanitize_tags(tags),
                 params=_sanitize_params(params or {}),
             )
             self._session.emit_run_started(provenance)
 
+        if tags and self._attached:
+            self.add_tags(tags)
         if metadata:
             self.set_metadata(metadata)
 
@@ -149,6 +154,18 @@ class Run:
         if not isinstance(metadata, dict):
             raise TypeError("metadata must be a dict")
         self._session.log_metadata(metadata)
+        return self
+
+    def add_tag(self, tag: str) -> "Run":
+        self.add_tags([tag])
+        return self
+
+    def add_tags(self, tags: list[str] | str) -> "Run":
+        self._session.log_tags(tags, mode="merge")
+        return self
+
+    def set_tags(self, tags: list[str] | str) -> "Run":
+        self._session.log_tags(tags, mode="replace")
         return self
 
     def log_artifact(self, name: str, path: str, **metadata: Any) -> "Run":

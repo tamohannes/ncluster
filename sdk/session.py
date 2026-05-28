@@ -20,6 +20,7 @@ import atexit
 import logging
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -116,6 +117,19 @@ def _detect_env_vars_set() -> list[str]:
 _PARAMS_MAX_DEPTH = 5
 _PARAMS_MAX_STR_LEN = 2048
 _PARAMS_MAX_ITEMS = 64
+_TAG_ALIASES = {
+    "smoke": "test/smoke",
+    "smoke-test": "test/smoke",
+    "smoke/test": "test/smoke",
+    "test": "test/smoke",
+    "test-smoke": "test/smoke",
+    "test_smoke": "test/smoke",
+    "malfunction": "malfunctioning",
+    "malfunctioned": "malfunctioning",
+    "malfunctioning-run": "malfunctioning",
+    "broken": "malfunctioning",
+}
+_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,63}$")
 
 
 def _sanitize_params(raw: Any, depth: int = 0) -> Any:
@@ -146,6 +160,29 @@ def _sanitize_params(raw: Any, depth: int = 0) -> Any:
         return str(raw)[:_PARAMS_MAX_STR_LEN]
     except Exception:
         return None
+
+
+def _sanitize_tags(tags: Any) -> list[str]:
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        raw = tags.strip()
+        items = raw.split(",") if "," in raw else [raw]
+    elif isinstance(tags, (list, tuple, set)):
+        items = list(tags)
+    else:
+        items = [tags]
+
+    out: list[str] = []
+    seen = set()
+    for item in items:
+        tag = str(item or "").strip().lower().lstrip("#")
+        tag = re.sub(r"\s+", "-", tag).replace("\\", "/").strip("._-/")
+        tag = _TAG_ALIASES.get(tag, tag)
+        if tag and _TAG_RE.fullmatch(tag) and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+    return out
 
 
 class ClausiusSession:
@@ -185,7 +222,7 @@ class ClausiusSession:
             self._seq += 1
             return self._seq
 
-    _FLUSH_IMMEDIATELY = frozenset({"run_started", "run_finished", "run_failed"})
+    _FLUSH_IMMEDIATELY = frozenset({"run_started", "run_finished", "run_failed", "tags_logged"})
 
     def _emit(self, event_type: str | EventType, payload: dict[str, Any] | None = None):
         if self._closed:
@@ -282,6 +319,13 @@ class ClausiusSession:
     def log_metadata(self, metadata: dict[str, Any]):
         self._emit(EventType.METADATA_LOGGED, {"metadata": _sanitize_params(metadata)})
 
+    def log_tags(self, tags: Any, mode: str = "merge"):
+        tag_list = _sanitize_tags(tags)
+        if not tag_list:
+            return
+        mode = "replace" if str(mode or "").lower() == "replace" else "merge"
+        self._emit(EventType.TAGS_LOGGED, {"tags": tag_list, "mode": mode})
+
     def log_artifact(self, name: str, path: str, **metadata):
         self._emit(EventType.ARTIFACT_LOGGED, {"name": name, "path": path, **metadata})
 
@@ -311,13 +355,15 @@ class ClausiusSession:
         cluster: str = "",
         config_overrides: dict | None = None,
         params: dict | None = None,
+        tags: Any = None,
     ) -> ClausiusSession:
         """Create or return the global session, capturing launch provenance.
 
         Resume-aware: before minting a fresh uuid we ask the Clausius server
         whether an existing SDK run already covers this submission's
         ``output_dir`` (e.g. a previous ``ns eval ++skip_filled=True`` of the
-        same expname). On match we attach to the existing run so all
+        same expname). ``tags`` can mark low-trust smoke/test runs at launch.
+        On match we attach to the existing run so all
         downstream events (job_prepared, job_submitted, metric_logged, …)
         merge into the canonical row instead of spawning a duplicate.
         """
@@ -357,6 +403,7 @@ class ClausiusSession:
             conda_env=_detect_conda_env(),
             python_executable=sys.executable,
             env_vars_set=_detect_env_vars_set(),
+            tags=_sanitize_tags(tags),
             params=_sanitize_params(params or {}),
         )
         # `run_started` is idempotent server-side: when the row exists the

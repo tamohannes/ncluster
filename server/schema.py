@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS runs (
     sdk_status         TEXT DEFAULT '',
     params_json        TEXT DEFAULT '',
     metadata_json      TEXT DEFAULT '',
-    malfunctioned    INTEGER NOT NULL DEFAULT 0,
+    malfunctioned      INTEGER NOT NULL DEFAULT 0,
+    tags_json          TEXT NOT NULL DEFAULT '[]',
     wasteful           INTEGER NOT NULL DEFAULT 0,
     waste_reason       TEXT NOT NULL DEFAULT '',
     waste_detected_at  TEXT NOT NULL DEFAULT '',
@@ -590,6 +591,7 @@ MIGRATIONS = [
     ("runs", "params_json", "TEXT DEFAULT ''"),
     ("runs", "metadata_json", "TEXT DEFAULT ''"),
     ("runs", "malfunctioned", "INTEGER NOT NULL DEFAULT 0"),
+    ("runs", "tags_json", "TEXT NOT NULL DEFAULT '[]'"),
     # WasteWatcher run-level flags (v4+)
     ("runs", "wasteful", "INTEGER NOT NULL DEFAULT 0"),
     ("runs", "waste_reason", "TEXT NOT NULL DEFAULT ''"),
