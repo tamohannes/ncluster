@@ -55,7 +55,8 @@ from .logs import (
     get_job_log_files_cached,
     read_jsonl_index, read_jsonl_record,
     extract_custom_metrics, normalize_metrics_config,
-    filter_log_explorer_entries,
+    filter_log_explorer_entries, is_main_log_source, is_server_log_source,
+    label_log, main_log_waiting_for_server,
 )
 from .jobs import (
     schedule_prefetch,
@@ -3160,10 +3161,17 @@ def api_log(cluster, job_id):
             _cache_set(_log_content_cache, cache_key, content)
         pct = extract_progress(content)
         if pct is not None:
-            _cache_set(_progress_cache, (cluster, str(job_id)), pct)
-            from .logs import label_log
-            _cache_set(_progress_source_cache, (cluster, str(job_id)),
-                       label_log(os.path.basename(log_path)))
+            src = label_log(os.path.basename(log_path))
+            current_src = _cache_get(_progress_source_cache, (cluster, str(job_id)), PROGRESS_TTL_SEC)
+            main_waiting = is_main_log_source(src, log_path) and main_log_waiting_for_server(content)
+            server_over_main = (
+                is_server_log_source(src, log_path)
+                and current_src
+                and is_main_log_source(current_src, "")
+            )
+            if not main_waiting and not server_over_main:
+                _cache_set(_progress_cache, (cluster, str(job_id)), pct)
+                _cache_set(_progress_source_cache, (cluster, str(job_id)), src)
         from .logs import detect_crash
         crash = detect_crash(content)
         if crash is not None:

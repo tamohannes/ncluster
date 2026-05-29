@@ -33,7 +33,8 @@ from .db import (
 )
 from .logs import (
     get_job_log_files, fetch_log_tail, extract_progress, detect_crash,
-    detect_soft_failure, label_and_sort_files,
+    detect_soft_failure, label_and_sort_files, main_log_waiting_for_server,
+    is_server_log_source, select_progress_from_log_entries,
 )
 
 log = logging.getLogger(__name__)
@@ -1721,12 +1722,12 @@ def schedule_prefetch(cluster, job_id):
 _LOG_ERROR_PREFIXES = ("Could not read log:", "File not found on cluster:", "Invalid local process")
 
 def _extract_progress_with_source(cluster, job_id, files):
-    """Try files in order, return (pct, label) from the first file with progress."""
+    """Read candidate logs and choose main-run progress vs server loading."""
+    entries = []
     for f in files:
         content = fetch_log_tail(cluster, f["path"], lines=220)
         if not any(content.startswith(p) for p in _LOG_ERROR_PREFIXES):
             _cache_set(_log_content_cache, (cluster, job_id, f["path"]), content)
-        pct = extract_progress(content)
         crash = detect_crash(content)
         if crash is not None:
             _cache_set(_crash_cache, (cluster, job_id), crash)
@@ -1734,16 +1735,25 @@ def _extract_progress_with_source(cluster, job_id, files):
                 cache_db_put("crash", f"{cluster}:{job_id}", crash, CRASH_TTL_SEC)
             except Exception:
                 pass
-        if pct is not None:
-            _cache_set(_progress_cache, (cluster, job_id), pct)
-            src = f.get("label", "")
-            _cache_set(_progress_source_cache, (cluster, job_id), src)
-            try:
-                cache_db_put("progress", f"{cluster}:{job_id}", pct, PROGRESS_TTL_SEC)
-                cache_db_put("progress_source", f"{cluster}:{job_id}", src, PROGRESS_TTL_SEC)
-            except Exception:
-                pass
-            return pct, src
+        entries.append({
+            "label": f.get("label", ""),
+            "path": f.get("path", ""),
+            "content": content,
+        })
+        pct, src = select_progress_from_log_entries(entries)
+        if pct is not None and not is_server_log_source(src, ""):
+            break
+
+    pct, src = select_progress_from_log_entries(entries)
+    if pct is not None:
+        _cache_set(_progress_cache, (cluster, job_id), pct)
+        _cache_set(_progress_source_cache, (cluster, job_id), src)
+        try:
+            cache_db_put("progress", f"{cluster}:{job_id}", pct, PROGRESS_TTL_SEC)
+            cache_db_put("progress_source", f"{cluster}:{job_id}", src, PROGRESS_TTL_SEC)
+        except Exception:
+            pass
+        return pct, src
     return None, ""
 
 
@@ -1867,6 +1877,8 @@ def _prefetch_job_data(cluster, job_id):
                     if content and not any(content.startswith(p) for p in _LOG_ERROR_PREFIXES):
                         _cache_set(_log_content_cache, (cluster, job_id, db_path), content)
                     fast_pct = extract_progress(content)
+                    if fast_pct is not None and main_log_waiting_for_server(content):
+                        fast_pct = None
                     crash = detect_crash(content)
                     
                     if crash is not None:

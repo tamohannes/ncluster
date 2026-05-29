@@ -9,10 +9,12 @@ from server.logs import (
     get_job_log_files,
     label_log,
     label_and_sort_files,
+    main_log_waiting_for_server,
     _extract_arg_value,
     read_jsonl_index,
     read_jsonl_record,
     extract_custom_metrics,
+    select_progress_from_log_entries,
 )
 from server.db import upsert_job, set_custom_log_dir, set_custom_metrics_config
 
@@ -53,6 +55,56 @@ class TestExtractProgress:
     def test_truncated_content(self):
         content = "x" * 5000 + "75%|███████   |"
         assert extract_progress(content) == 75
+
+
+class TestProgressSelection:
+    @pytest.mark.unit
+    def test_waiting_main_uses_server_loading_progress(self):
+        entries = [
+            {
+                "label": "main output",
+                "path": "/logs/main_eval_123_srun.log",
+                "content": "0%|          |\nWaiting for server to start ...",
+            },
+            {
+                "label": "server output",
+                "path": "/logs/server_eval_123_srun.log",
+                "content": "Loading model shards: 63%|######    |",
+            },
+        ]
+
+        assert main_log_waiting_for_server(entries[0]["content"])
+        assert select_progress_from_log_entries(entries) == (63, "server output")
+
+    @pytest.mark.unit
+    def test_processing_main_wins_over_server_progress(self):
+        entries = [
+            {
+                "label": "main output",
+                "path": "/logs/main_eval_123_srun.log",
+                "content": "Waiting for server to start ...\nRemaining generations: 24%|##        |",
+            },
+            {
+                "label": "server output",
+                "path": "/logs/server_eval_123_srun.log",
+                "content": "Loading model shards: 91%|######### |",
+            },
+        ]
+
+        assert not main_log_waiting_for_server(entries[0]["content"])
+        assert select_progress_from_log_entries(entries) == (24, "main output")
+
+    @pytest.mark.unit
+    def test_server_only_progress_is_loading_progress(self):
+        entries = [
+            {
+                "label": "server output",
+                "path": "/logs/server_eval_123_srun.log",
+                "content": "Loading model shards: 42%|####      |",
+            },
+        ]
+
+        assert select_progress_from_log_entries(entries) == (42, "server output")
 
 
 class TestLabelLog:

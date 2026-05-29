@@ -8,8 +8,11 @@ log = logging.getLogger("server.progress_scraper")
 def _progress_scraper_loop():
     from .config import CLUSTERS, _cache, _cache_lock, PROGRESS_TTL_SEC, CRASH_TTL_SEC
     from .db import cache_db_put
-    from .jobs import extract_progress, detect_crash, _LOG_ERROR_PREFIXES
-    from .logs import _db_log_context, _try_local_discovery, tail_local_file
+    from .jobs import detect_crash, _LOG_ERROR_PREFIXES
+    from .logs import (
+        _db_log_context, _try_local_discovery, tail_local_file,
+        is_server_log_source, select_progress_from_log_entries,
+    )
     from .mounts import resolve_mounted_path
     from .routes import _cache_get, _cache_set, _progress_cache, _progress_source_cache, _crash_cache, _log_content_cache
     from .poller import get_poller, bump_version
@@ -46,6 +49,7 @@ def _progress_scraper_loop():
                         files = local_result.get("files", [])
                         
                         # Check logs in priority order (main -> server -> sandbox -> sbatch)
+                        entries = []
                         for f in files:
                             mt = resolve_mounted_path(cluster, f["path"], want_dir=False)
                             if mt and os.path.isfile(mt):
@@ -61,21 +65,27 @@ def _progress_scraper_loop():
                                             cache_db_put("crash", f"{cluster}:{jid}", crash, CRASH_TTL_SEC)
                                         except Exception:
                                             pass
-                                    
-                                    pct = extract_progress(content)
-                                    if pct is not None:
-                                        old_pct = _cache_get(_progress_cache, (cluster, str(jid)), PROGRESS_TTL_SEC)
-                                        if old_pct != pct:
-                                            any_changed = True
-                                        _cache_set(_progress_cache, (cluster, str(jid)), pct)
-                                        _cache_set(_progress_source_cache, (cluster, str(jid)), src)
-                                        try:
-                                            cache_db_put("progress", f"{cluster}:{jid}", pct, PROGRESS_TTL_SEC)
-                                            cache_db_put("progress_source", f"{cluster}:{jid}", src, PROGRESS_TTL_SEC)
-                                        except Exception:
-                                            pass
-                                        # Found progress, stop checking fallback logs
+                                    entries.append({
+                                        "label": src,
+                                        "path": f.get("path", ""),
+                                        "content": content,
+                                    })
+                                    pct, selected_src = select_progress_from_log_entries(entries)
+                                    if pct is not None and not is_server_log_source(selected_src, ""):
                                         break
+                        pct, src = select_progress_from_log_entries(entries)
+                        if pct is not None:
+                            old_pct = _cache_get(_progress_cache, (cluster, str(jid)), PROGRESS_TTL_SEC)
+                            old_src = _cache_get(_progress_source_cache, (cluster, str(jid)), PROGRESS_TTL_SEC)
+                            if old_pct != pct or old_src != src:
+                                any_changed = True
+                            _cache_set(_progress_cache, (cluster, str(jid)), pct)
+                            _cache_set(_progress_source_cache, (cluster, str(jid)), src)
+                            try:
+                                cache_db_put("progress", f"{cluster}:{jid}", pct, PROGRESS_TTL_SEC)
+                                cache_db_put("progress_source", f"{cluster}:{jid}", src, PROGRESS_TTL_SEC)
+                            except Exception:
+                                pass
                                         
                     except Exception as ex:
                         log.debug(f"Error scraping progress for {cluster}:{jid} - {ex}")

@@ -37,6 +37,13 @@ _HIDDEN_LOG_EXPLORER_ENTRY_NAMES = {
     "_tasks",
     "_version",
 }
+_WAITING_FOR_SERVER_MARKERS = (
+    "waiting for server to start",
+    "waiting for the server to start",
+    "waiting for server startup",
+    "waiting for server to be ready",
+    "waiting for the server to be ready",
+)
 
 
 def filter_log_explorer_dirs(dirs):
@@ -71,15 +78,106 @@ def _finalize_log_files_result(result):
     return finalized
 
 
-def extract_progress(content):
+def _last_progress_match(content):
     if not content:
         return None
-    matches = _PROGRESS_RE.findall(content)
-    if matches:
-        pct = int(matches[-1])
+    last = None
+    for match in _PROGRESS_RE.finditer(content):
+        pct = int(match.group(1))
         if 0 <= pct <= 100:
-            return pct
-    return None
+            last = (pct, match.start())
+    return last
+
+
+def extract_progress(content):
+    match = _last_progress_match(content)
+    return match[0] if match is not None else None
+
+
+def _last_waiting_for_server_pos(content):
+    if not content:
+        return -1
+    text = str(content).lower()
+    return max(text.rfind(marker) for marker in _WAITING_FOR_SERVER_MARKERS)
+
+
+def main_log_waiting_for_server(content):
+    wait_pos = _last_waiting_for_server_pos(content)
+    if wait_pos < 0:
+        return False
+    progress = _last_progress_match(content)
+    return progress is None or wait_pos >= progress[1]
+
+
+def is_main_log_source(label="", path=""):
+    label_l = str(label or "").lower()
+    base = os.path.basename(str(path or "")).lower()
+    return (
+        label_l == "main output"
+        or label_l.startswith("main")
+        or ("main" in label_l and "srun" in label_l)
+        or base.startswith("main")
+        or ("main" in base and "srun" in base)
+    )
+
+
+def is_server_log_source(label="", path=""):
+    label_l = str(label or "").lower()
+    base = os.path.basename(str(path or "")).lower()
+    return (
+        label_l == "server output"
+        or label_l.startswith("server")
+        or ("server" in label_l and "srun" in label_l)
+        or base.startswith("server")
+        or ("server" in base and "srun" in base)
+    )
+
+
+def select_progress_from_log_entries(entries):
+    """Choose server-loading progress only while the main log is waiting."""
+    main_actual = None
+    main_any = None
+    server = None
+    fallback = None
+    main_waiting = False
+
+    for entry in entries or []:
+        path = entry.get("path", "")
+        label = entry.get("label") or label_log(os.path.basename(str(path)))
+        content = entry.get("content", "")
+        pct = entry.get("progress")
+        if pct is None:
+            pct = extract_progress(content)
+        if pct is None:
+            if is_main_log_source(label, path) and main_log_waiting_for_server(content):
+                main_waiting = True
+            continue
+
+        candidate = (pct, label)
+        if fallback is None:
+            fallback = candidate
+
+        if is_main_log_source(label, path):
+            if main_any is None:
+                main_any = candidate
+            if main_log_waiting_for_server(content):
+                main_waiting = True
+            elif main_actual is None:
+                main_actual = candidate
+        elif is_server_log_source(label, path) and server is None:
+            server = candidate
+
+    if main_actual is not None:
+        return main_actual
+    if main_waiting and server is not None:
+        return server
+    if server is not None:
+        return server
+    if main_any is not None:
+        return main_any
+    if fallback is not None:
+        return fallback
+    return None, ""
 
 
 def tail_local_file(path, lines):
