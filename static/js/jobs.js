@@ -516,7 +516,7 @@ function applySidebarState() {
   } else {
     try {
       const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
-      const minW = 230;
+      const minW = 210;
       const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
       const w = Number.isNaN(saved) ? 280 : Math.min(maxW, Math.max(minW, saved));
       nav.style.width = `${w}px`;
@@ -574,7 +574,7 @@ function setupSidebarResizer() {
 
   window.addEventListener('mousemove', (e) => {
     if (!_isResizingNav || navCollapsed) return;
-    const minW = 230;
+    const minW = 210;
     const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
     let next = e.clientX;
     if (next < minW) next = minW;
@@ -593,7 +593,7 @@ function setupSidebarResizer() {
   try {
     const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
     if (!Number.isNaN(saved)) {
-      const minW = 230;
+      const minW = 210;
       const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
       const w = Math.min(maxW, Math.max(minW, saved));
       nav.style.width = `${w}px`;
@@ -604,7 +604,7 @@ function setupSidebarResizer() {
     if (!navCollapsed) {
       try {
         const saved = parseInt(localStorage.getItem('clausius.navWidth') || '', 10);
-        const minW = 230;
+        const minW = 210;
         const maxW = Math.min(640, Math.floor(window.innerWidth * 0.55));
         const w = Number.isNaN(saved) ? 320 : Math.min(maxW, Math.max(minW, saved));
         nav.style.width = `${w}px`;
