@@ -1094,6 +1094,34 @@ function depthInGroup(job, byId, idSet, memo) {
   return d;
 }
 
+/**
+ * Order group jobs by original submission order (ascending job id) regardless
+ * of run state, so sibling jobs stay grouped exactly as submitted (e.g. the
+ * parallel `path-*` jobs stay together at the top). Submission order is already
+ * a valid parent-before-child order, and depth-based indentation (depthInGroup)
+ * conveys the dependency nesting visually. Backups follow their parent.
+ */
+function orderJobsByDependencyTree(groupJobs, byId, idSet, backupMap, backupSet, depthMemo) {
+  const submitKey = (j) => {
+    const n = parseInt(String(j.jobid).replace(/[_+].*/, ''), 10);
+    return Number.isFinite(n) ? n : Infinity;
+  };
+  const mains = groupJobs
+    .filter(j => !backupSet.has(j.jobid))
+    .sort((a, b) => {
+      const ka = submitKey(a), kb = submitKey(b);
+      if (ka !== kb) return ka - kb;
+      return String(a.jobid).localeCompare(String(b.jobid));
+    });
+
+  const ordered = [];
+  for (const j of mains) {
+    ordered.push(j);
+    if (backupMap[j.jobid]) for (const bk of backupMap[j.jobid]) ordered.push(bk);
+  }
+  return ordered;
+}
+
 function _isDarkTheme() {
   return document.documentElement.getAttribute('data-theme') === 'dark';
 }

@@ -827,14 +827,7 @@ function renderCard(name, data) {
       // Identify backup jobs and reorder so each parent is followed by its backups.
       const { backupMap, parentOf } = buildBackupInfo(groupJobs, byId);
       const backupSet = new Set(Object.keys(parentOf));
-      const ordered = [];
-      for (const j of groupJobs) {
-        if (backupSet.has(j.jobid)) continue;
-        ordered.push(j);
-        if (backupMap[j.jobid]) {
-          for (const bk of backupMap[j.jobid]) ordered.push(bk);
-        }
-      }
+      const ordered = orderJobsByDependencyTree(groupJobs, byId, idSet, backupMap, backupSet, depthMemo);
       const visibleCount = groupJobs.length - backupSet.size;
       const groupId = `${name}:${rootJobId}`;
       const isGroupExpanded = _expandedGroups.has(groupId);
