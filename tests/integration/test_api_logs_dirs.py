@@ -59,6 +59,21 @@ class TestApiLs:
         assert "eval-results" in names
         assert "nemo-run_sbatch.sh" in names
 
+    def test_ls_hides_nemo_launch_wrapper_files(self, client, mock_ssh, tmp_path):
+        for name in ("__main__.py", "_CONFIG", "_TASKS", "_VERSION"):
+            (tmp_path / name).write_text("x")
+        (tmp_path / "nemo-run_sbatch.sh").write_text("x")
+        (tmp_path / "main_123_srun.log").write_text("log")
+        resp = client.get(f"/api/ls/local?path={tmp_path}")
+        assert resp.status_code == 200
+        names = [e["name"] for e in resp.get_json()["entries"]]
+        assert "__main__.py" not in names
+        assert "_CONFIG" not in names
+        assert "_TASKS" not in names
+        assert "_VERSION" not in names
+        assert "nemo-run_sbatch.sh" in names
+        assert "main_123_srun.log" in names
+
     def test_force_bypasses_cache(self, client, mock_ssh, tmp_path):
         (tmp_path / "a.txt").write_text("x")
         client.get(f"/api/ls/local?path={tmp_path}")

@@ -30,7 +30,13 @@ _LOG_DISCOVERY_ORDER = {"main output": 0, "server output": 1, "sandbox output": 
 _LOG_ALLOWED_SUFFIXES = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 _DEFAULT_METRICS_FILE_GLOB = "*{job_id}*"
 _HIDDEN_LOG_EXPLORER_DIR_LABELS = {"nemo-run"}
-_HIDDEN_LOG_EXPLORER_ENTRY_NAMES = {"nemo-run"}
+_HIDDEN_LOG_EXPLORER_ENTRY_NAMES = {
+    "nemo-run",
+    "__main__.py",
+    "_config",
+    "_tasks",
+    "_version",
+}
 
 
 def filter_log_explorer_dirs(dirs):
@@ -49,7 +55,9 @@ def filter_log_explorer_entries(entries):
     visible = []
     for entry in entries or []:
         name = str(entry.get("name", "")).strip().lower()
-        if entry.get("is_dir") and name in _HIDDEN_LOG_EXPLORER_ENTRY_NAMES:
+        if entry.get("is_dir") and name == "nemo-run":
+            continue
+        if not entry.get("is_dir") and name in _HIDDEN_LOG_EXPLORER_ENTRY_NAMES:
             continue
         visible.append(entry)
     return visible

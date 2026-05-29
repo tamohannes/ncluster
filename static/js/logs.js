@@ -4,9 +4,22 @@ let _currentRemotePath = null, _currentResolvedPath = null, _currentSource = nul
 let _exDirRoot = null;
 const _treeState = {};   // path -> { open, entries }
 const TREE_CACHE_TTL_MS = 30000;
+const HIDDEN_LOG_EXPLORER_ENTRY_NAMES = new Set([
+  'nemo-run',
+  '__main__.py',
+  '_config',
+  '_tasks',
+  '_version',
+]);
 
 function _isSharedNemoRunRoot(path) {
   return /\/nemo-run\/[^/]+\/?$/.test(path || '');
+}
+
+function _isNestedNemoRunLaunchDir(path) {
+  const parts = String(path || '').replace(/\/+$/, '').split('/').filter(Boolean);
+  const idx = parts.lastIndexOf('nemo-run');
+  return idx >= 0 && parts.length >= idx + 3;
 }
 
 function _selectPrimaryLogTreeDir(dirs) {
@@ -27,6 +40,20 @@ function _looksLikeNemoLaunchDir(entries) {
     && files.has('_VERSION');
 }
 
+function _filterLogExplorerEntries(entries) {
+  return (entries || []).filter((entry) => {
+    const name = String(entry && entry.name || '').trim().toLowerCase();
+    if (entry && entry.is_dir && name === 'nemo-run') return false;
+    if (entry && !entry.is_dir && HIDDEN_LOG_EXPLORER_ENTRY_NAMES.has(name)) return false;
+    return true;
+  });
+}
+
+function _withFilteredLogEntries(data) {
+  if (!data || !Array.isArray(data.entries)) return data;
+  return { ...data, entries: _filterLogExplorerEntries(data.entries) };
+}
+
 function _logEntryPriority(entry) {
   const n = (entry && entry.name ? entry.name : '').toLowerCase();
   if (!n) return 100;
@@ -39,7 +66,8 @@ function _logEntryPriority(entry) {
 }
 
 function _pickDefaultLogEntry(entries) {
-  const files = (entries || []).filter(e => e && !e.is_dir && e.path);
+  const files = (entries || [])
+    .filter(e => e && !e.is_dir && e.path && _logEntryPriority(e) < 20);
   if (!files.length) return null;
   return files.slice().sort((a, b) => {
     const pa = _logEntryPriority(a);
@@ -105,21 +133,24 @@ async function _revealFileInTree(rootPath, filePath, container) {
 async function _resolveOpenDirListing(cluster, dirPath, data) {
   const entries = data && Array.isArray(data.entries) ? data.entries : [];
   const trimmed = String(dirPath || '').replace(/\/+$/, '');
-  if (!_looksLikeNemoLaunchDir(entries) || !trimmed || trimmed.endsWith('/nemo-run')) {
-    return { dirPath, data, normalized: false };
+  const shouldProbeLogDir = trimmed
+    && !trimmed.endsWith('/nemo-run')
+    && (_looksLikeNemoLaunchDir(entries) || _isNestedNemoRunLaunchDir(trimmed));
+  if (!shouldProbeLogDir) {
+    return { dirPath, data: _withFilteredLogEntries(data), normalized: false };
   }
 
   const logDir = `${trimmed}/nemo-run`;
   try {
     const res = await fetchWithTimeout(`/api/ls/${cluster}?path=${encodeURIComponent(logDir)}&force=1`, {}, 15000);
     const logData = await res.json();
-    if (logData.status === 'ok' && Array.isArray(logData.entries) && logData.entries.length) {
-      return { dirPath: logDir, data: logData, normalized: true };
+    if (logData.status === 'ok' && Array.isArray(logData.entries)) {
+      return { dirPath: logDir, data: _withFilteredLogEntries(logData), normalized: true };
     }
   } catch (e) {
     console.warn('Failed to probe NeMo log directory', e);
   }
-  return { dirPath, data, normalized: false };
+  return { dirPath, data: _withFilteredLogEntries(data), normalized: false };
 }
 
 // ── Live tail state ──
@@ -735,11 +766,13 @@ async function expandDir(path, container, depth, onFileClick) {
   container.innerHTML = '<div class="tree-loading">loading…</div>';
   try {
     const res = await fetchWithTimeout(`/api/ls/${_exCluster}?path=${encodeURIComponent(path)}&force=1`);
-    const data = await res.json();
+    let data = await res.json();
     if (data.status !== 'ok') {
       container.innerHTML = `<div class="tree-loading">${data.error || '(error)'}</div>`;
       return;
     }
+    const resolved = await _resolveOpenDirListing(_exCluster, path, data);
+    data = resolved.data || data;
     if (!data.entries || !data.entries.length) {
       container.innerHTML = '<div class="tree-loading">(empty directory)</div>';
       return;
