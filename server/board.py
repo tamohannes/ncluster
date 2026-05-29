@@ -87,9 +87,10 @@ def _fill_starred(cluster, jobs):
     con = get_db()
     placeholders = ",".join("?" for _ in run_ids)
     rows = con.execute(
-        f"""SELECT id, root_job_id, run_name, run_uuid, starred, source,
-                   wasteful, waste_reason, tags_json, malfunctioned
-            FROM runs WHERE id IN ({placeholders})""",
+        f"""SELECT r.id, r.root_job_id, r.run_name, r.run_uuid, r.starred, r.source,
+                   r.wasteful, r.waste_reason, r.malfunctioned,
+                   COALESCE((SELECT json_group_array(rt.tag) FROM run_tags rt WHERE rt.run_id = r.id), '[]') AS run_tags_json
+            FROM runs r WHERE r.id IN ({placeholders})""",
         list(run_ids),
     ).fetchall()
     con.close()

@@ -95,9 +95,10 @@ function escAttr(s) {
     .replace(/</g, '&lt;');
 }
 
-const RUN_TAG_SMOKE = 'test/smoke';
+const RUN_TAG_SMOKE = 'smoke';
 const RUN_TAG_MALFUNCTIONING = 'malfunctioning';
-const RUN_LOW_TRUST_TAGS = new Set([RUN_TAG_SMOKE, RUN_TAG_MALFUNCTIONING]);
+let _runTagDefs = {};
+let _runTagDefsLoaded = false;
 
 function _runTagEsc(s) {
   if (typeof _escHtml === 'function') return _escHtml(String(s || ''));
@@ -115,11 +116,7 @@ function normalizeRunTag(tag) {
   text = text.replace(/^#/, '').replace(/\s+/g, '-').replace(/\\/g, '/').replace(/^[._/-]+|[._/-]+$/g, '');
   const aliases = {
     smoke: RUN_TAG_SMOKE,
-    'smoke-test': RUN_TAG_SMOKE,
-    'smoke/test': RUN_TAG_SMOKE,
-    test: RUN_TAG_SMOKE,
-    'test-smoke': RUN_TAG_SMOKE,
-    test_smoke: RUN_TAG_SMOKE,
+    'test/smoke': RUN_TAG_SMOKE,
     malfunction: RUN_TAG_MALFUNCTIONING,
     malfunctioned: RUN_TAG_MALFUNCTIONING,
     'malfunctioning-run': RUN_TAG_MALFUNCTIONING,
@@ -151,8 +148,37 @@ function runTagsFromRun(run) {
   return normalizeRunTags(run?.tags || run?.run_tags || [], !!run?.malfunctioned);
 }
 
-function runHasLowTrustTag(tags) {
-  return normalizeRunTags(tags).some(tag => RUN_LOW_TRUST_TAGS.has(tag));
+function setRunTagDefinitions(defs) {
+  const next = {};
+  const rows = Array.isArray(defs) ? defs : [];
+  rows.forEach((row) => {
+    const tag = normalizeRunTag(row?.tag || row?.name || '');
+    const color = String(row?.color || '').trim();
+    if (tag && /^#[0-9a-fA-F]{6}$/.test(color)) {
+      next[tag] = { ...row, tag, color: color.toLowerCase() };
+    }
+  });
+  _runTagDefs = next;
+  _runTagDefsLoaded = true;
+  return _runTagDefs;
+}
+
+async function loadRunTagDefinitions(force = false) {
+  if (_runTagDefsLoaded && !force) return _runTagDefs;
+  try {
+    const res = await fetchWithTimeout('/api/run_tags', {}, 10000);
+    const data = await res.json();
+    if (data?.status === 'ok') setRunTagDefinitions(data.tags || []);
+  } catch (_) {
+    _runTagDefsLoaded = true;
+  }
+  return _runTagDefs;
+}
+
+function runTagStyleAttr(tag) {
+  const norm = normalizeRunTag(tag);
+  const color = norm && _runTagDefs[norm] ? _runTagDefs[norm].color : '';
+  return color ? ` style="--run-tag-color:${escAttr(color)}"` : '';
 }
 
 function runTagsPillsHtml(tags, opts = {}) {
@@ -163,11 +189,10 @@ function runTagsPillsHtml(tags, opts = {}) {
   const removable = !!opts.removable;
   const onclick = opts.onRemove || '';
   return tagList.map((tag) => {
-    const low = RUN_LOW_TRUST_TAGS.has(tag) ? ' low-trust' : '';
     const remove = removable && onclick
-      ? `<button type="button" class="run-tag-remove" onclick="${onclick}('${escAttr(tag)}')" title="Remove ${escAttr(tag)}">×</button>`
+      ? `<button type="button" class="run-tag-remove" onclick="${onclick}'${escAttr(tag)}')" title="Remove ${escAttr(tag)}">×</button>`
       : '';
-    return `<span class="run-tag-chip${low}" data-run-tag="${escAttr(tag)}">${_runTagEsc(tag)}${remove}</span>`;
+    return `<span class="run-tag-chip" data-run-tag="${escAttr(tag)}"${runTagStyleAttr(tag)}>${_runTagEsc(tag)}${remove}</span>`;
   }).join('');
 }
 
@@ -1554,6 +1579,7 @@ async function _fetchSharedComputeData() {
   const promises = [
     _fetchProjectColors(),
     fetchWaitCalibration(),
+    loadRunTagDefinitions(),
   ];
   if (settingsNeeded) {
     promises.push(

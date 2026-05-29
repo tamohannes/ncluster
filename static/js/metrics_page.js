@@ -372,7 +372,7 @@ function parseMetricsRunRefs(text) {
 }
 
 function _mpRunKey(run) { return `${run.cluster}/${run.runHash}`; }
-const _MP_DEFAULT_EXCLUDED_RUN_TAGS = ['test/smoke'];
+const _MP_DEFAULT_EXCLUDED_RUN_TAGS = ['smoke'];
 
 function _mpQueryOptsIntoExcludedTags() {
   return String(_mpState.query || '').includes('run.tags');
@@ -394,6 +394,9 @@ async function _mpLoadRuns() {
   const body = document.getElementById('mp-body');
   if (body) body.innerHTML = '<div class="mp-empty">Loading selected runs…</div>';
   try {
+    if (typeof loadRunTagDefinitions === 'function') {
+      await loadRunTagDefinitions();
+    }
     await _mpResolveRuns();
     // Each run loads independently. A 404 (run deleted, dedupe, stale saved
     // view, etc.) drops that one run from the list instead of taking down
@@ -407,7 +410,7 @@ async function _mpLoadRuns() {
         const info = await infoRes.json();
         const metrics = await metricsRes.json();
         if (info.status !== 'ok' || !info.run) return { run, missing: true, reason: info.error || 'run not found' };
-        if (_mpRunHasDefaultExcludedTag(info.run)) return { run, missing: true, reason: 'tagged test/smoke' };
+        if (_mpRunHasDefaultExcludedTag(info.run)) return { run, missing: true, reason: 'tagged smoke' };
         if (metrics.status !== 'ok') return { run, missing: true, reason: metrics.error || 'metrics not found' };
         return {
           ok: true,
@@ -1616,7 +1619,7 @@ const _MP_FIELD_CATALOG = [
   { id: 'run.cluster',     kind: 'string', hint: 'Cluster (aws-cmh, eos, …)' },
   { id: 'run.project',     kind: 'string', hint: 'Project tag' },
   { id: 'run.campaign',    kind: 'string', hint: 'Campaign tag' },
-  { id: 'run.tags',        kind: 'string[]', hint: 'Run tags; test/smoke excluded by default' },
+  { id: 'run.tags',        kind: 'string[]', hint: 'Run tags; smoke excluded by default' },
   { id: 'metric.name',     kind: 'string', hint: 'Metric key' },
   { id: 'metric.kind',     kind: 'string', hint: '"series" or "scalar"' },
   { id: 'metric.last',     kind: 'number', hint: 'Last numeric value' },

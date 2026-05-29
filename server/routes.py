@@ -1736,7 +1736,7 @@ def _load_job_history_run_fallback(cluster, root_job_id):
         "primary_output_dir": "",
         "params_json": "",
         "metadata_json": "",
-        "tags_json": "[]",
+        "run_tags_json": "[]",
         "batch_script": "",
         "scontrol_raw": "",
         "env_vars": "",
@@ -1771,7 +1771,8 @@ def _inherit_sdk_by_run_uuid(run):
         con = get_db()
         sibling = con.execute(
             """SELECT submit_command, submit_cwd, git_commit, launcher_hostname,
-                      primary_output_dir, params_json, metadata_json, tags_json, malfunctioned
+                      primary_output_dir, params_json, metadata_json, malfunctioned,
+                      COALESCE((SELECT json_group_array(rt.tag) FROM run_tags rt WHERE rt.run_id = runs.id), '[]') AS run_tags_json
                FROM runs
                WHERE run_uuid=? AND id != ? AND source='sdk'
                ORDER BY CASE WHEN submit_command != '' THEN 0 ELSE 1 END, id DESC
@@ -1795,7 +1796,7 @@ def _inherit_sdk_by_run_uuid(run):
         if tag not in merged_tags:
             merged_tags.append(tag)
     if merged_tags:
-        run["tags_json"] = json.dumps(merged_tags)
+        run["run_tags_json"] = json.dumps(merged_tags)
         run["malfunctioned"] = int("malfunctioning" in merged_tags)
     if not run.get("source") or run["source"] == "legacy":
         run["source"] = "sdk+legacy"
@@ -1822,7 +1823,8 @@ def _inherit_sdk_provenance(run, cluster):
         for name in candidates:
             sdk_run = con.execute(
                 """SELECT submit_command, submit_cwd, git_commit, launcher_hostname,
-                          primary_output_dir, params_json, run_uuid, tags_json, malfunctioned
+                          primary_output_dir, params_json, run_uuid, malfunctioned,
+                          COALESCE((SELECT json_group_array(rt.tag) FROM run_tags rt WHERE rt.run_id = runs.id), '[]') AS run_tags_json
                    FROM runs WHERE cluster=? AND source='sdk' AND (run_name=? OR run_name LIKE ?) AND submit_command != ''
                    ORDER BY id DESC LIMIT 1""",
                 (cluster, name, f"%{name}%"),
@@ -1842,7 +1844,7 @@ def _inherit_sdk_provenance(run, cluster):
                 if tag not in merged_tags:
                     merged_tags.append(tag)
             if merged_tags:
-                run["tags_json"] = json.dumps(merged_tags)
+                run["run_tags_json"] = json.dumps(merged_tags)
                 run["malfunctioned"] = int("malfunctioning" in merged_tags)
             if not run.get("source") or run["source"] == "legacy":
                 run["source"] = "sdk+legacy"
@@ -1930,6 +1932,7 @@ def _run_info_response(cluster, run_ref, *, allow_on_demand=True):
 
     run["tags"] = run_tags_from_row(run)
     run.pop("tags_json", None)
+    run.pop("run_tags_json", None)
     run["malfunctioned"] = "malfunctioning" in run["tags"]
     run["wasteful"] = bool(int(run.get("wasteful") or 0))
     run["waste_reason"] = run.get("waste_reason") or ""
@@ -2457,7 +2460,8 @@ def api_runs_by_name():
     try:
         sql = """SELECT r.cluster, r.root_job_id, r.run_name, r.run_uuid,
                         r.project, r.sdk_status, r.started_at, r.created_at,
-                        r.tags_json, r.malfunctioned
+                        r.malfunctioned,
+                        COALESCE((SELECT json_group_array(rt.tag) FROM run_tags rt WHERE rt.run_id = r.id), '[]') AS run_tags_json
                  FROM runs r
                  WHERE r.run_name LIKE ? COLLATE NOCASE"""
         params = [like]
@@ -2567,12 +2571,16 @@ def api_metric_field_values():
             values = [r["project"] for r in rows]
         elif path == "run.tags":
             rows = con.execute(
-                "SELECT tags_json, malfunctioned FROM runs WHERE tags_json IS NOT NULL OR malfunctioned = 1"
+                """
+                SELECT tag FROM run_tag_defs
+                UNION
+                SELECT tag FROM run_tags
+                UNION
+                SELECT 'malfunctioning' AS tag FROM runs WHERE malfunctioned = 1
+                ORDER BY tag
+                """
             ).fetchall()
-            tag_values = set()
-            for row in rows:
-                tag_values.update(run_tags_from_row(row))
-            values = sorted(tag_values)
+            values = [r["tag"] for r in rows]
         elif path.startswith("metric.context."):
             ctx_key = path[len("metric.context."):]
             if not re.fullmatch(r"[A-Za-z0-9_\-]+", ctx_key):
@@ -2970,6 +2978,20 @@ def api_project_delete(name):
         status = 404 if "not found" in result.get("error", "") else 400
         return jsonify(result), status
     return jsonify(result)
+
+
+@api.route("/api/run_tags")
+def api_run_tags():
+    from .db import list_run_tag_defs
+    return jsonify({"status": "ok", "tags": list_run_tag_defs()})
+
+
+@api.route("/api/run_tags/<path:tag>", methods=["PUT"])
+def api_run_tag_update(tag):
+    from .db import update_run_tag_def
+    payload = request.get_json(silent=True) or {}
+    result = update_run_tag_def(tag, color=payload.get("color"))
+    return jsonify(result), (200 if result.get("status") == "ok" else 400)
 
 
 @api.route("/api/logbook_projects")

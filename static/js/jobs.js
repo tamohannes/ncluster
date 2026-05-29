@@ -803,9 +803,8 @@ function renderCard(name, data) {
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
       const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
-      const _tagBadgeCls = (typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(_runTags)) ? ' run-name-badge--low-trust' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}${_tagBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
         : highlightedGk;
       // WasteWatcher: if any job in this run is flagged ``run_wasteful``
       // (board.py decorates jobs from runs.wasteful), show a small warning

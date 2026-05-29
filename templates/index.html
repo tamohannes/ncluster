@@ -444,6 +444,7 @@
         <div class="settings-nav-item" data-section="sec-shortcuts" onclick="showSettingsSection(this)">Shortcuts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
         <div class="settings-nav-item" data-section="sec-projects" onclick="showSettingsSection(this)">Projects</div>
+        <div class="settings-nav-item" data-section="sec-tags" onclick="showSettingsSection(this)">Tags</div>
         <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
       </div>
       <div class="settings-content">
@@ -545,6 +546,12 @@
           <div class="set-actions" style="justify-content:flex-start">
             <button class="btn-ghost" onclick="addProjectRow()">+ add project</button>
           </div>
+        </div>
+
+        <!-- Run Tags -->
+        <div class="settings-section" id="sec-tags">
+          <div class="set-help">Tag colors are shared across every run using that tag.</div>
+          <div id="run-tag-editor"></div>
         </div>
 
         <!-- Advanced: every subsection collapsed by default -->

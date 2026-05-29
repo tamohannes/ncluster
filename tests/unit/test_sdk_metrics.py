@@ -70,7 +70,7 @@ def test_manual_run_track_and_metadata_emit_sdk_events(tmp_path, monkeypatch):
     ]
 
     started = next(event for event in events if event["event_type"] == "run_started")
-    assert started["payload"]["tags"] == ["test/smoke"]
+    assert started["payload"]["tags"] == ["smoke"]
 
     tags = next(event for event in events if event["event_type"] == "tags_logged")
     assert tags["payload"] == {"tags": ["malfunctioning"], "mode": "merge"}
@@ -165,7 +165,7 @@ def test_sdk_ingest_persists_generic_metrics_and_metadata(client, db_path):
 
     info = client.get(f"/api/run_info/mock-cluster/{root_job_id}")
     assert info.status_code == 200, info.data
-    assert info.get_json()["run"]["tags"] == ["test/smoke", "malfunctioning"]
+    assert info.get_json()["run"]["tags"] == ["smoke", "malfunctioning"]
 
     from server.db import get_db
     con = get_db()

@@ -74,6 +74,9 @@ async function _openRunInfoFromUrl(cluster, runRef, runName, cancelKey, url) {
       body.innerHTML = `<div class="err-msg">Could not load run info: ${data.error || 'unknown error'}</div>`;
       return;
     }
+    if (typeof loadRunTagDefinitions === 'function') {
+      await loadRunTagDefinitions();
+    }
     subtitle.textContent = `${cluster} · root ${data.run.root_job_id || runRef}`;
     _renderRunBody(data.run, cluster);
   } catch (e) {
@@ -126,7 +129,6 @@ function _renderRunBody(run, cluster) {
   const runTags = typeof runTagsFromRun === 'function'
     ? runTagsFromRun(run)
     : (Array.isArray(run.tags) ? run.tags : []);
-  const lowTrustRun = typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(runTags);
 
   const markSlot = document.getElementById('run-mark-slot');
   if (markSlot) {
@@ -175,7 +177,7 @@ function _renderRunBody(run, cluster) {
     </div>`;
     settingsHtml += `<div class="run-settings-card">
       <div class="run-settings-title">Tags</div>
-      <div class="run-settings-help">Use <code>test/smoke</code> for smoke checks and <code>malfunctioning</code> for unreliable runs.</div>
+      <div class="run-settings-help">Add or remove run tags.</div>
       ${_renderRunTagsEditor(runId, runTags, 'popup')}
     </div>
     <div class="run-settings-card run-settings-danger-card">
@@ -192,12 +194,12 @@ function _renderRunBody(run, cluster) {
   const _jobStates = _computeJobStateSummary(jobs, gpusPerNode);
   const _durationRing = _runDurationRing(earliest, latest);
 
-  if (runTags.length || lowTrustRun) {
+  if (runTags.length) {
     const tagPills = typeof runTagsPillsHtml === 'function' ? runTagsPillsHtml(runTags) : '';
-    overviewHtml += `<div class="run-tags-summary${lowTrustRun ? ' low-trust' : ''}">
+    overviewHtml += `<div class="run-tags-summary">
       <div>
-        <div class="run-tags-summary-title">${lowTrustRun ? 'Low-trust run' : 'Run tags'}</div>
-        <div class="run-tags-summary-help">${lowTrustRun ? 'Excluded or treated cautiously in result rollups.' : 'Tags annotate run intent and quality.'}</div>
+        <div class="run-tags-summary-title">Run tags</div>
+        <div class="run-tags-summary-help">Tags annotate this run.</div>
       </div>
       <div class="run-tag-list">${tagPills}</div>
     </div>`;
@@ -1193,11 +1195,16 @@ function _renderRunTagsEditorInner(runId, tags, context = 'popup') {
     ? runTagsPillsHtml(tags, { empty: 'no tags', removable: true, onRemove: `_removeRunTag(${runId},'${ctx}',` })
     : '';
   return `<div class="run-tag-list" id="${ids.list}">${pills}</div>
-    <div class="run-tag-input-row">
-      <input id="${ids.input}" class="run-tag-input" placeholder="Add tag…" onkeydown="_runTagInputKey(event, ${runId}, '${ctx}')">
-      <button type="button" class="run-page-action-btn" onclick="_addRunTag(${runId}, '${ctx}')">Add</button>
-      <button type="button" class="run-page-action-btn subtle" onclick="_quickAddRunTag(${runId}, '${ctx}', 'test/smoke')">test/smoke</button>
-      <button type="button" class="run-page-action-btn subtle" onclick="_quickAddRunTag(${runId}, '${ctx}', 'malfunctioning')">malfunctioning</button>
+    <div class="run-tag-add">
+      <div class="run-tag-input-row">
+        <input id="${ids.input}" class="run-tag-input" placeholder="Add tag…" onkeydown="_runTagInputKey(event, ${runId}, '${ctx}')">
+        <button type="button" class="run-page-action-btn" onclick="_addRunTag(${runId}, '${ctx}')">Add</button>
+      </div>
+      <div class="run-tag-suggestions">
+        <span class="run-tag-suggest-label">suggested</span>
+        <button type="button" class="run-tag-suggest" onclick="_quickAddRunTag(${runId}, '${ctx}', 'smoke')">+ smoke</button>
+        <button type="button" class="run-tag-suggest" onclick="_quickAddRunTag(${runId}, '${ctx}', 'malfunctioning')">+ malfunctioning</button>
+      </div>
     </div>`;
 }
 
@@ -1308,6 +1315,9 @@ async function retryMetadata(cluster, rootJobId) {
     const res = await fetch(`/api/run_info/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}/retry_meta`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok' && data.run) {
+      if (typeof loadRunTagDefinitions === 'function') {
+        await loadRunTagDefinitions();
+      }
       _renderRunBody(data.run, cluster);
     } else {
       if (container) container.innerHTML = 'Retry failed: ' + (data.error || 'unknown error');

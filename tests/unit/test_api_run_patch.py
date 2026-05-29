@@ -22,27 +22,61 @@ def test_patch_run_tags_round_trip_and_keeps_malfunctioned_compat(client, db_pat
 
     con = get_db()
     row = con.execute(
-        "SELECT malfunctioned, tags_json FROM runs WHERE id = ?",
+        "SELECT malfunctioned FROM runs WHERE id = ?",
         (run_id,),
     ).fetchone()
+    tags = {
+        r["tag"]
+        for r in con.execute("SELECT tag FROM run_tags WHERE run_id = ?", (run_id,)).fetchall()
+    }
     con.close()
     assert int(row["malfunctioned"]) == 1
-    assert row["tags_json"] == '["test/smoke","malfunctioning"]'
+    assert tags == {"smoke", "malfunctioning"}
 
     res2 = client.patch(
         f"/api/run/{run_id}",
-        json={"tags": ["test/smoke"]},
+        json={"tags": ["smoke"]},
         content_type="application/json",
     )
     assert res2.status_code == 200
     con = get_db()
     row2 = con.execute(
-        "SELECT malfunctioned, tags_json FROM runs WHERE id = ?",
+        "SELECT malfunctioned FROM runs WHERE id = ?",
         (run_id,),
     ).fetchone()
+    tags2 = [
+        r["tag"]
+        for r in con.execute("SELECT tag FROM run_tags WHERE run_id = ? ORDER BY tag", (run_id,)).fetchall()
+    ]
     con.close()
     assert int(row2["malfunctioned"]) == 0
-    assert row2["tags_json"] == '["test/smoke"]'
+    assert tags2 == ["smoke"]
+
+
+@pytest.mark.unit
+def test_run_tag_colors_are_shared_metadata(client, db_path):
+    run_id = upsert_run("mock-cluster", "patch-tag-color-1", "hle_mpsf_tags", "hle")
+    res = client.patch(
+        f"/api/run/{run_id}",
+        json={"tags": ["smoke"]},
+        content_type="application/json",
+    )
+    assert res.status_code == 200
+
+    listing = client.get("/api/run_tags")
+    assert listing.status_code == 200
+    tags = {row["tag"]: row for row in listing.get_json()["tags"]}
+    assert tags["smoke"]["run_count"] == 1
+    assert tags["smoke"]["color"].startswith("#")
+
+    update = client.put("/api/run_tags/smoke", json={"color": "#123abc"})
+    assert update.status_code == 200
+    assert update.get_json()["tag"]["color"] == "#123abc"
+
+    listing2 = client.get("/api/run_tags")
+    tags2 = {row["tag"]: row for row in listing2.get_json()["tags"]}
+    assert tags2["smoke"]["color"] == "#123abc"
+    assert tags2["smoke"]["run_count"] == 1
 
 
 @pytest.mark.unit

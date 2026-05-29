@@ -90,9 +90,13 @@ async function openRunPage(cluster, runHash, fromTab = false) {
   }
 
   try {
+    const tagDefsPromise = typeof loadRunTagDefinitions === 'function'
+      ? loadRunTagDefinitions()
+      : Promise.resolve();
     const [infoRes, metricRes] = await Promise.all([
       fetch(`/api/run_info_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`),
       fetch(`/api/run_metrics_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`),
+      tagDefsPromise,
     ]);
     const info = await infoRes.json();
     const metrics = await metricRes.json();
@@ -515,10 +519,9 @@ function _runPageOverviewHtml() {
     ? `<button class="action-btn resubmit-run-btn" onclick="_resubmitRun('${escAttr(cluster)}','${escAttr(run.run_hash || _runPageState.runHash || '')}','${escAttr(_runLabel)}')" title="Re-run the original submission command locally">resubmit</button>`
     : '';
   const runTags = typeof runTagsFromRun === 'function' ? runTagsFromRun(run) : (Array.isArray(run.tags) ? run.tags : []);
-  const lowTrustRun = typeof runHasLowTrustTag === 'function' && runHasLowTrustTag(runTags);
-  const tagSummary = runTags.length || lowTrustRun
-    ? `<div class="run-page-card run-page-tags-card${lowTrustRun ? ' low-trust' : ''}">
-        <div class="run-page-card-title">${lowTrustRun ? 'Low-trust run' : 'Run tags'}</div>
+  const tagSummary = runTags.length
+    ? `<div class="run-page-card run-page-tags-card">
+        <div class="run-page-card-title">Run tags</div>
         <div class="run-tag-list">${typeof runTagsPillsHtml === 'function' ? runTagsPillsHtml(runTags) : ''}</div>
       </div>`
     : '';
@@ -633,7 +636,7 @@ function _runPageSettingsHtml() {
   return `<div class="run-page-settings-grid">
     <div class="run-page-card">
       <div class="run-page-card-title">Tags</div>
-      <div class="run-page-card-sub">Use <code>test/smoke</code> for smoke checks and <code>malfunctioning</code> for unreliable runs.</div>
+      <div class="run-page-card-sub">Add or remove run tags.</div>
       ${typeof _renderRunTagsEditor === 'function' ? _renderRunTagsEditor(run.id, tags, 'page') : ''}
     </div>
     <div class="run-page-card run-settings-danger-card">

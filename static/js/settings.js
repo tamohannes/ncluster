@@ -943,6 +943,7 @@ async function loadSettingsPanel() {
 
     renderClusterEditor(cfg.clusters || {});
     await loadProjectEditor();
+    await loadRunTagEditor();
   } catch (e) {
     toast('Failed to load settings', 'error');
   }
@@ -964,6 +965,65 @@ async function loadProjectEditor() {
     renderProjectEditor(Array.isArray(projects) ? projects : []);
   } catch (e) {
     toast('Failed to load projects', 'error');
+  }
+}
+
+async function loadRunTagEditor() {
+  const el = document.getElementById('run-tag-editor');
+  if (!el) return;
+  try {
+    const data = typeof loadRunTagDefinitions === 'function'
+      ? { status: 'ok', tags: Object.values(await loadRunTagDefinitions(true)) }
+      : await fetch('/api/run_tags').then(r => r.json());
+    const tags = Array.isArray(data.tags) ? data.tags : [];
+    renderRunTagEditor(tags);
+  } catch (e) {
+    el.innerHTML = '<div class="set-help">Failed to load tags.</div>';
+  }
+}
+
+function renderRunTagEditor(tags) {
+  const el = document.getElementById('run-tag-editor');
+  if (!el) return;
+  if (!tags.length) {
+    el.innerHTML = '<div class="set-help">No run tags yet.</div>';
+    return;
+  }
+  el.innerHTML = tags.map((row) => {
+    const tag = typeof normalizeRunTag === 'function' ? normalizeRunTag(row.tag) : String(row.tag || '');
+    if (!tag) return '';
+    const color = /^#[0-9a-fA-F]{6}$/.test(String(row.color || '')) ? String(row.color).toLowerCase() : '#7aa2f7';
+    const count = Number(row.run_count || 0);
+    return `<div class="run-tag-edit-row" data-tag="${escAttr(tag)}">
+      <span class="run-tag-edit-chip">${typeof runTagsPillsHtml === 'function' ? runTagsPillsHtml([tag]) : tag}</span>
+      <span class="run-tag-edit-count">${count} run${count === 1 ? '' : 's'}</span>
+      <span class="color-pair run-tag-color-pair">
+        <input data-tag-color="${escAttr(tag)}" type="color" value="${escAttr(color)}" oninput="this.nextElementSibling.value=this.value" onchange="saveRunTagColor('${escAttr(tag)}', this.value)">
+        <input data-tag-color-hex="${escAttr(tag)}" type="text" value="${escAttr(color)}" oninput="const c=this.previousElementSibling;if(/^#[0-9a-fA-F]{6}$/.test(this.value))c.value=this.value" onblur="saveRunTagColor('${escAttr(tag)}', this.value)">
+      </span>
+    </div>`;
+  }).join('');
+}
+
+async function saveRunTagColor(tag, color) {
+  const norm = typeof normalizeRunTag === 'function' ? normalizeRunTag(tag) : String(tag || '');
+  const next = String(color || '').trim();
+  if (!norm || !/^#[0-9a-fA-F]{6}$/.test(next)) return;
+  try {
+    const res = await fetch(`/api/run_tags/${encodeURIComponent(norm)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ color: next }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.status === 'error') throw new Error(data.error || 'request failed');
+    await loadRunTagDefinitions(true);
+    renderRunTagEditor(Object.values(_runTagDefs || {}));
+    if (typeof _renderAll === 'function' && Object.keys(allData || {}).length) _renderAll();
+    if (typeof _runPageState !== 'undefined' && _runPageState.run && typeof _runPageRender === 'function') _runPageRender();
+    toast('Tag color saved');
+  } catch (e) {
+    toast(`Tag color save failed: ${e.message || e}`, 'error');
   }
 }
 

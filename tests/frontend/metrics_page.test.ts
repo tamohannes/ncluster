@@ -133,9 +133,9 @@ describe('metrics explorer controls', () => {
   });
 
   it('matches run tags as array membership in AimQL', () => {
-    const rec = { ...scalarRecord(), tags: ['test/smoke', 'malfunctioning'] };
+    const rec = { ...scalarRecord(), tags: ['smoke', 'malfunctioning'] };
 
-    expect(_mpRecordMatches(rec, _mpQLParse('run.tags == "test/smoke"'))).toBe(true);
+    expect(_mpRecordMatches(rec, _mpQLParse('run.tags == "smoke"'))).toBe(true);
     expect(_mpRecordMatches(rec, _mpQLParse('"malfunctioning" in run.tags'))).toBe(true);
     expect(_mpRecordMatches(rec, _mpQLParse('run.tags == "production"'))).toBe(false);
   });

@@ -1023,11 +1023,6 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .run-name-badge.run-name-badge--starred:hover {
   filter: brightness(1.06);
 }
-.run-name-badge.run-name-badge--low-trust {
-  border-style: dashed;
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--amber-fg, #b7791f) 55%, transparent);
-  opacity: 0.82;
-}
 /* WasteWatcher warning glyph next to the run badge. Hover for the full reason. */
 .run-waste-badge {
   display: inline-flex;
@@ -1479,11 +1474,6 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   border-radius: 10px;
   background: var(--surface2);
 }
-.run-tags-summary.low-trust,
-.run-page-tags-card.low-trust {
-  border-color: color-mix(in srgb, var(--amber-fg, #b7791f) 42%, var(--border));
-  background: color-mix(in srgb, var(--amber-bg, #fffbeb) 24%, var(--surface2));
-}
 .run-tags-summary-title {
   font-family: var(--mono);
   font-size: 11px;
@@ -1512,17 +1502,13 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   gap: 5px;
   min-height: 22px;
   padding: 3px 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--run-tag-color, var(--accent)) 46%, var(--border));
   border-radius: 7px;
-  background: color-mix(in srgb, var(--accent-bg) 70%, var(--surface));
+  background: color-mix(in srgb, var(--run-tag-color, var(--accent)) 16%, var(--surface));
   color: var(--text);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 800;
-}
-.run-tag-chip.low-trust {
-  border-color: color-mix(in srgb, var(--amber-fg, #b7791f) 48%, var(--border));
-  background: color-mix(in srgb, var(--amber-bg, #fffbeb) 45%, var(--surface));
 }
 .run-tag-empty {
   color: var(--muted);
@@ -1544,11 +1530,81 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   font: inherit;
   line-height: 1;
 }
+.run-tag-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
 .run-tag-input-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.run-tag-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.run-tag-suggest-label {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.run-tag-suggest {
+  appearance: none;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.run-tag-suggest:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: var(--accent-bg);
+}
+.run-tag-edit-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.run-tag-edit-chip {
+  min-width: 0;
+}
+.run-tag-edit-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.run-tag-color-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.run-tag-color-pair input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.run-tag-color-pair input[type="text"] {
+  width: 78px;
+  font-family: var(--mono);
 }
 .run-tag-input {
   min-width: 180px;

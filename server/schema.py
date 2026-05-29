@@ -117,6 +117,36 @@ Created either by the poller (legacy: based on dependency-chain
 detection) or by the SDK ingest endpoint (``source='sdk'``).
 """
 
+RUN_TAGS = """
+CREATE TABLE IF NOT EXISTS run_tags (
+    run_id     INTEGER NOT NULL,
+    tag        TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, tag),
+    FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+)
+"""
+"""Many-to-many-style tag assignment for runs.
+
+Each row assigns one normalized tag to one logical run. ``runs.tags_json`` is
+kept only as a legacy migration/cache column for older DBs and callers; this
+table is the authoritative source for current tag reads and writes.
+"""
+
+RUN_TAG_DEFS = """
+CREATE TABLE IF NOT EXISTS run_tag_defs (
+    tag        TEXT PRIMARY KEY,
+    color      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+"""Shared metadata for run tags.
+
+``run_tags`` stores assignments. ``run_tag_defs`` stores properties shared by
+all runs carrying the same tag, currently the editable chip color.
+"""
+
 LOGBOOK_ENTRIES = """
 CREATE TABLE IF NOT EXISTS logbook_entries (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -502,6 +532,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_jh_cluster_runid ON job_history(cluster, run_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_cluster_root ON runs(cluster, root_job_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_uuid ON runs(run_uuid)",
+    "CREATE INDEX IF NOT EXISTS idx_run_tags_tag ON run_tags(tag)",
+    "CREATE INDEX IF NOT EXISTS idx_run_tag_defs_updated ON run_tag_defs(updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_logbook_project ON logbook_entries(project)",
     "CREATE INDEX IF NOT EXISTS idx_logbook_title ON logbook_entries(project, title)",
     "CREATE INDEX IF NOT EXISTS idx_logbook_created ON logbook_entries(project, created_at)",
@@ -623,6 +655,8 @@ MIGRATIONS = [
 SCHEMA = [
     JOB_HISTORY,
     RUNS,
+    RUN_TAGS,
+    RUN_TAG_DEFS,
     LOGBOOK_ENTRIES,
     LOGBOOK_FTS,
     LOGBOOK_LINKS,

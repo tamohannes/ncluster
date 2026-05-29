@@ -17,6 +17,8 @@ from server.db import get_db, init_db
 _EXPECTED_TABLES = {
     "job_history",
     "runs",
+    "run_tags",
+    "run_tag_defs",
     "logbook_entries",
     "logbook_fts",
     "logbook_links",

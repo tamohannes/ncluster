@@ -118,12 +118,8 @@ _PARAMS_MAX_DEPTH = 5
 _PARAMS_MAX_STR_LEN = 2048
 _PARAMS_MAX_ITEMS = 64
 _TAG_ALIASES = {
-    "smoke": "test/smoke",
-    "smoke-test": "test/smoke",
-    "smoke/test": "test/smoke",
-    "test": "test/smoke",
-    "test-smoke": "test/smoke",
-    "test_smoke": "test/smoke",
+    "smoke": "smoke",
+    "test/smoke": "smoke",
     "malfunction": "malfunctioning",
     "malfunctioned": "malfunctioning",
     "malfunctioning-run": "malfunctioning",
@@ -362,7 +358,7 @@ class ClausiusSession:
         Resume-aware: before minting a fresh uuid we ask the Clausius server
         whether an existing SDK run already covers this submission's
         ``output_dir`` (e.g. a previous ``ns eval ++skip_filled=True`` of the
-        same expname). ``tags`` can mark low-trust smoke/test runs at launch.
+        same expname). ``tags`` can mark smoke runs at launch.
         On match we attach to the existing run so all
         downstream events (job_prepared, job_submitted, metric_logged, …)
         merge into the canonical row instead of spawning a duplicate.

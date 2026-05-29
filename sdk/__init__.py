@@ -22,7 +22,7 @@ Quick start (automatic — no user code needed):
 Manual metric logging from eval/training code:
     from clausius_sdk import Run
     run = Run(run_name="my_eval", cluster="eos")
-    # For non-production checks: run.add_tag("test/smoke")
+    # For non-production checks: run.add_tag("smoke")
     run.track("accuracy", 0.84, step=100)
     run.close()
 """
