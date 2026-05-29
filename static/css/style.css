@@ -639,6 +639,24 @@ main { padding: 14px 16px 16px; }
 .freshness-badge.warm  { color: var(--amber); background: rgba(255,152,0,0.10); }
 .freshness-badge.old   { color: var(--red);   background: rgba(244,67,54,0.10); }
 
+.roller { display: inline-flex; align-items: baseline; }
+.roller-cell {
+  position: relative;
+  display: inline-block;
+  height: 1.2em;
+  line-height: 1.2;
+  overflow: hidden;
+  vertical-align: baseline;
+}
+.roller-char {
+  display: block;
+  transition: transform 0.32s cubic-bezier(0.34, 1.18, 0.45, 1), opacity 0.32s ease;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .roller-char { transition: none; }
+}
+
 #grid.grid-loading { position: relative; }
 #grid.grid-loading::before {
   content: '';

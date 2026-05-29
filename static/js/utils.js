@@ -217,6 +217,55 @@ let _isResizingTree = false;
 let _isResizingNav = false;
 let navCollapsed = false;
 
+function _freshLabel(staleness) {
+  if (staleness < 60) return `${Math.round(staleness)}s`;
+  if (staleness < 3600) return `${Math.round(staleness / 60)}m`;
+  return `${Math.round(staleness / 3600)}h`;
+}
+
+function _freshClass(staleness) {
+  return staleness <= 20 ? 'fresh' : staleness <= 60 ? 'warm' : 'old';
+}
+
+/** Render text as a digital-clock roller: one fixed-height cell per character. */
+function rollerHtml(text) {
+  let out = '<span class="roller">';
+  for (const ch of String(text)) {
+    out += `<span class="roller-cell"><span class="roller-char">${ch}</span></span>`;
+  }
+  return out + '</span>';
+}
+
+/** Animate a single roller cell: old char rolls down out, new comes from top. */
+function _rollCell(cell, newChar) {
+  const cur = cell.querySelector('.roller-char');
+  if (!cur || cur.textContent === newChar) return;
+  const incoming = document.createElement('span');
+  incoming.className = 'roller-char';
+  incoming.textContent = newChar;
+  incoming.style.transform = 'translateY(-100%)';
+  cell.appendChild(incoming);
+  cur.style.position = 'absolute';
+  cur.style.top = '0';
+  cur.style.left = '0';
+  void cell.offsetWidth; // force reflow so the transition runs
+  incoming.style.transform = 'translateY(0)';
+  cur.style.transform = 'translateY(100%)';
+  cur.style.opacity = '0';
+  setTimeout(() => { if (cur.parentNode === cell) cell.removeChild(cur); }, 340);
+}
+
+/** Update a roller in place, animating only the characters that changed. */
+function updateRoller(roller, newText) {
+  const chars = [...String(newText)];
+  const cells = Array.from(roller.children);
+  if (cells.length !== chars.length) {
+    roller.innerHTML = chars.map(c => `<span class="roller-cell"><span class="roller-char">${c}</span></span>`).join('');
+    return;
+  }
+  chars.forEach((c, i) => _rollCell(cells[i], c));
+}
+
 function freshnessBadgeHtml(clusterName) {
   const d = allData[clusterName];
   let staleness = d?.poller?.staleness_sec;
@@ -224,12 +273,36 @@ function freshnessBadgeHtml(clusterName) {
     staleness = (Date.now() - new Date(d.updated).getTime()) / 1000;
   }
   if (staleness == null) return '';
-  let label;
-  if (staleness < 60) label = `${Math.round(staleness)}s`;
-  else if (staleness < 3600) label = `${Math.round(staleness / 60)}m`;
-  else label = `${Math.round(staleness / 3600)}h`;
-  const cls = staleness <= 20 ? 'fresh' : staleness <= 60 ? 'warm' : 'old';
-  return `<span class="freshness-badge ${cls}" title="Data age: ${label} ago">${label}</span>`;
+  // Anchor the badge to an absolute moment so it can tick live between
+  // refreshes. _tickFreshnessBadges recomputes the age every second.
+  const base = Math.round(Date.now() - staleness * 1000);
+  const label = _freshLabel(staleness);
+  const cls = _freshClass(staleness);
+  return `<span class="freshness-badge ${cls}" data-fresh-base="${base}" title="Data age: ${label} ago">${rollerHtml(label)}</span>`;
+}
+
+/** Advance every freshness badge one tick, like a clock, without a full re-render. */
+function _tickFreshnessBadges() {
+  if (document.hidden) return;
+  document.querySelectorAll('.freshness-badge[data-fresh-base]').forEach(badge => {
+    const base = parseInt(badge.getAttribute('data-fresh-base'), 10);
+    if (!base) return;
+    const staleness = (Date.now() - base) / 1000;
+    const label = _freshLabel(staleness);
+    const cls = _freshClass(staleness);
+    if (!badge.classList.contains(cls)) {
+      badge.classList.remove('fresh', 'warm', 'old');
+      badge.classList.add(cls);
+    }
+    badge.title = `Data age: ${label} ago`;
+    const roller = badge.querySelector('.roller');
+    if (roller) updateRoller(roller, label);
+    else badge.textContent = label;
+  });
+}
+
+if (!window._freshTicker) {
+  window._freshTicker = setInterval(_tickFreshnessBadges, 1000);
 }
 
 /* ── Cluster utilization data (from external dashboard) ── */
