@@ -148,6 +148,16 @@ function runTagsFromRun(run) {
   return normalizeRunTags(run?.tags || run?.run_tags || [], !!run?.malfunctioned);
 }
 
+function runHasTag(run, tag) {
+  const norm = normalizeRunTag(tag);
+  return !!norm && runTagsFromRun(run).includes(norm);
+}
+
+function groupHasRunTag(jobs, tag) {
+  const norm = normalizeRunTag(tag);
+  return !!norm && (jobs || []).some(j => runHasTag(j, norm));
+}
+
 function setRunTagDefinitions(defs) {
   const next = {};
   const rows = Array.isArray(defs) ? defs : [];
@@ -163,6 +173,11 @@ function setRunTagDefinitions(defs) {
   return _runTagDefs;
 }
 
+function runTagColor(tag) {
+  const norm = normalizeRunTag(tag);
+  return norm && _runTagDefs[norm] ? _runTagDefs[norm].color : '';
+}
+
 async function loadRunTagDefinitions(force = false) {
   if (_runTagDefsLoaded && !force) return _runTagDefs;
   try {
@@ -176,8 +191,7 @@ async function loadRunTagDefinitions(force = false) {
 }
 
 function runTagStyleAttr(tag) {
-  const norm = normalizeRunTag(tag);
-  const color = norm && _runTagDefs[norm] ? _runTagDefs[norm].color : '';
+  const color = runTagColor(tag);
   return color ? ` style="--run-tag-color:${escAttr(color)}"` : '';
 }
 
@@ -1174,10 +1188,29 @@ function contrastTextColor(hex) {
 }
 
 function projectBadgeStyle(hex) {
+  const decls = projectBadgeStyleDecls(hex);
+  return decls ? ` style="${decls}"` : '';
+}
+
+function projectBadgeStyleDecls(hex) {
   if (!hex) return '';
   const bg = projectBadgeBg(hex);
   const text = contrastTextColor(bg);
-  return ` style="background-color:${bg};border-color:${bg};color:${text}"`;
+  return `background-color:${bg};border-color:${bg};color:${text};`;
+}
+
+function styleAttr(...decls) {
+  const body = decls
+    .filter(Boolean)
+    .map(s => String(s).trim())
+    .filter(Boolean)
+    .join('');
+  return body ? ` style="${body}"` : '';
+}
+
+function smokeRunStyleDecls() {
+  const color = runTagColor(RUN_TAG_SMOKE);
+  return color ? `--smoke-run-color:${escAttr(color)};` : '';
 }
 
 /* ── Campaign shade (sub-project color differentiation) ── */

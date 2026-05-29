@@ -187,12 +187,20 @@ function _renderHistPage() {
     const rootJobId = rootJob.jobid;
     const safeLabel = g.label.replace(/'/g, "\\'");
     const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
-    const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
+    const _isSmokeRun = typeof groupHasRunTag === 'function'
+      ? groupHasRunTag(groupJobs, RUN_TAG_SMOKE)
+      : ((rootJob.run_tags || []).includes('smoke'));
+    const runBadgeStyle = typeof styleAttr === 'function'
+      ? styleAttr(
+          typeof projectBadgeStyleDecls === 'function' ? projectBadgeStyleDecls(_shadedColor) : '',
+          _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '',
+        )
+      : (_shadedColor ? projectBadgeStyle(_shadedColor) : '');
     const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
     const runDataAttrs = ` data-run-cluster="${escAttr(g.cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
     const _runTags = typeof normalizeRunTags === 'function' ? normalizeRunTags(rootJob.run_tags || []) : (rootJob.run_tags || []);
     const _runTitle = _runTags.length ? `${g.label} · tags ${_runTags.join(', ')}` : g.label;
-    const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${_runTitle.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+    const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_isSmokeRun ? ' smoke-run' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${_runTitle.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const identityBadge = typeof runIdentityBadge === 'function' ? runIdentityBadge(rootJob) : '';
     const hasMultiple = groupJobs.length > 1;
     const groupId = `${g.cluster}:${rootJobId}`;
@@ -214,8 +222,10 @@ function _renderHistPage() {
         : '';
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span>${_histDirBtn}</span>`;
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
-      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
-      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const _headStyleAttr = typeof styleAttr === 'function'
+        ? styleAttr(_headTintStyle, _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '')
+        : (_headTintStyle ? ` style="${_headTintStyle}"` : '');
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}${_isSmokeRun ? ' smoke-run-head' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 
     if (searchOnlyRuns && !hasMultiple) {
@@ -247,9 +257,9 @@ function _renderHistPage() {
       const hasGpu = parseGpus(j.nodes, j.gres) !== null;
       const nameCls = hasGpu ? '' : ' name-cpu';
       const _grpHidden = hasMultiple && !isGroupExpanded;
-      const _rowStyle = _grpHidden ? 'display:none' : '';
+      const _rowStyle = `${_grpHidden ? 'display:none;' : ''}${_isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : ''}`;
       const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
-      html += `<tr class="hist-compact ${pinKind}${bgClass}"${_grpAttr} style="${_rowStyle}">
+      html += `<tr class="hist-compact ${pinKind}${bgClass}${_isSmokeRun ? ' smoke-run-row' : ''}"${_grpAttr} style="${_rowStyle}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _histJnHL.prefix, _histJnHL.suffix) : '—'}</span></td>

@@ -373,12 +373,20 @@ function _renderProjPage() {
       const rootJobId = rootJob.jobid;
       const safeLabel = g.label.replace(/'/g, "\\'");
       const _projColor = groupJobs[0]?.project_color || '';
-      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
+      const _isSmokeRun = typeof groupHasRunTag === 'function'
+        ? groupHasRunTag(groupJobs, RUN_TAG_SMOKE)
+        : ((rootJob.run_tags || []).includes('smoke'));
+      const runBadgeStyle = typeof styleAttr === 'function'
+        ? styleAttr(
+            typeof projectBadgeStyleDecls === 'function' ? projectBadgeStyleDecls(_projColor) : '',
+            _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '',
+          )
+        : (_projColor ? projectBadgeStyle(_projColor) : '');
       const highlightedLabel = highlightJobName(g.label, _clusterGkHL.prefix, _clusterGkHL.suffix);
     const runDataAttrs = ` data-run-cluster="${escAttr(cluster)}" data-run-root="${escAttr(String(rootJobId))}"`;
     const _runTags = typeof normalizeRunTags === 'function' ? normalizeRunTags(rootJob.run_tags || []) : (rootJob.run_tags || []);
     const _runTitle = _runTags.length ? `${g.label} · tags ${_runTags.join(', ')}` : g.label;
-    const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${_runTitle.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+    const runBadge = `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_isSmokeRun ? ' smoke-run' : ''}"${runDataAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${_runTitle.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
       const identityBadge = typeof runIdentityBadge === 'function' ? runIdentityBadge(rootJob) : '';
       const hasMultiple = groupJobs.length > 1;
       const groupId = `${cluster}:${rootJobId}`;
@@ -401,8 +409,10 @@ function _renderProjPage() {
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
       const _campaign = groupJobs[0]?.campaign || '';
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
-      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
-      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const _headStyleAttr = typeof styleAttr === 'function'
+        ? styleAttr(_headTintStyle, _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '')
+        : (_headTintStyle ? ` style="${_headTintStyle}"` : '');
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}${_isSmokeRun ? ' smoke-run-head' : ''}" onclick="${rowAction}"${_headStyleAttr}><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 
       if (searchOnlyRuns && !hasMultiple) {
         return;
@@ -429,10 +439,10 @@ function _renderProjPage() {
         const ended = fmtTime(j.ended_local || j.ended_at);
         const nameCls = parseGpus(j.nodes, j.gres) !== null ? '' : ' name-cpu';
         const _grpHidden = hasMultiple && !isGroupExpanded;
-        const _rowDisp = _grpHidden ? 'display:none' : '';
+        const _rowDisp = `${_grpHidden ? 'display:none;' : ''}${_isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : ''}`;
         const _grpAttr = ` data-run-group="${groupId}"`;
 
-        html += `<tr class="hist-compact ${pinKind}"${_grpAttr} style="${_rowDisp}">
+        html += `<tr class="hist-compact ${pinKind}${_isSmokeRun ? ' smoke-run-row' : ''}"${_grpAttr} style="${_rowDisp}">
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _jnHL.prefix, _jnHL.suffix) : '—'}</span></td>
           <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>

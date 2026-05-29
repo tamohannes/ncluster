@@ -23,6 +23,9 @@ declare const isCompletedState: (s: string) => boolean;
 declare const fmtTime: (s: string) => string;
 declare const parseGpus: (nodes: string, gres: string) => string | null;
 declare const jobGpuCount: (nodes: string, gres: string) => number;
+declare const normalizeRunTags: (tags: any, malfunctioned?: boolean) => string[];
+declare const runHasTag: (run: any, tag: string) => boolean;
+declare const groupHasRunTag: (jobs: any[], tag: string) => boolean;
 declare const groupKeyForJob: (name: string) => string;
 declare const groupJobsByDependency: (jobs: any[]) => [string, any[]][];
 declare const topoSortJobs: (jobs: any[]) => any[];
@@ -85,6 +88,22 @@ describe('jobGpuCount', () => {
   it('returns 0 for cpu or missing gres', () => {
     expect(jobGpuCount('1', 'cpu')).toBe(0);
     expect(jobGpuCount('1', '(null)')).toBe(0);
+  });
+});
+
+describe('run tag helpers', () => {
+  it('normalizes smoke aliases', () => {
+    expect(normalizeRunTags(['test/smoke', '#malfunction'])).toEqual(['smoke', 'malfunctioning']);
+  });
+
+  it('detects smoke on a run', () => {
+    expect(runHasTag({ run_tags: ['test/smoke'] }, 'smoke')).toBe(true);
+    expect(runHasTag({ run_tags: ['baseline'] }, 'smoke')).toBe(false);
+  });
+
+  it('detects smoke anywhere in a grouped run', () => {
+    const jobs = [{ run_tags: [] }, { run_tags: ['smoke'] }];
+    expect(groupHasRunTag(jobs, 'smoke')).toBe(true);
   });
 });
 

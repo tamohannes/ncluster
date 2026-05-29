@@ -784,7 +784,15 @@ function renderCard(name, data) {
       const _campaign = groupJobs[0]?.campaign || '';
       const _shadedColor = _projColor && _campaign ? campaignShade(_projColor, _campaign) : _projColor;
       const _allCpuRun = groupJobs.every(j => !parseGpus(j.nodes, j.gres) && (j.partition || '').toLowerCase().startsWith('cpu'));
-      const runBadgeStyle = _shadedColor ? projectBadgeStyle(_shadedColor) : '';
+      const _isSmokeRun = typeof groupHasRunTag === 'function'
+        ? groupHasRunTag(groupJobs, RUN_TAG_SMOKE)
+        : ((rootJob.run_tags || []).includes('smoke'));
+      const runBadgeStyle = typeof styleAttr === 'function'
+        ? styleAttr(
+            typeof projectBadgeStyleDecls === 'function' ? projectBadgeStyleDecls(_shadedColor) : '',
+            _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '',
+          )
+        : (_shadedColor ? projectBadgeStyle(_shadedColor) : '');
       const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix, _campaign, _shadedColor);
       const runHash = String(rootJob.run_hash || '').trim();
       const runUuid = String(rootJob.run_uuid || '').trim();
@@ -803,8 +811,9 @@ function renderCard(name, data) {
         ? ` data-run-cluster="${escAttr(name)}" data-run-root="${escAttr(String(rootJobId))}"`
         : '';
       const _cpuBadgeCls = _allCpuRun ? ' cpu-run' : '';
+      const _smokeBadgeCls = _isSmokeRun ? ' smoke-run' : '';
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
+        ? `<span class="run-name-badge${rootJob.starred ? ' run-name-badge--starred' : ''}${_cpuBadgeCls}${_smokeBadgeCls}"${runDataAttrs}${runHashAttrs}${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}','${cancelKey}')" title="${escAttr(runTitleParts.join(' · '))}">${highlightedGk}</span>`
         : highlightedGk;
       // WasteWatcher: if any job in this run is flagged ``run_wasteful``
       // (board.py decorates jobs from runs.wasteful), show a small warning
@@ -882,9 +891,10 @@ function renderCard(name, data) {
 
       const _isBgJob = typeof isBackgroundRun === 'function' && isBackgroundRun(j.name);
       const bgJobCls = _isBgJob ? ' bg-job' : '';
-      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls}${bgJobCls} group-bg-${gidx % 4}`;
+      const smokeRunRowCls = _isSmokeRun ? ' smoke-run-row' : '';
+      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls}${bgJobCls}${smokeRunRowCls} group-bg-${gidx % 4}`;
       const groupHidden = !isGroupExpanded;
-      const rowDisplay = (groupHidden || backupHidden) ? 'display:none;' : '';
+      const rowDisplay = `${(groupHidden || backupHidden) ? 'display:none;' : ''}${_isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : ''}`;
       const parentAttr = isBackup ? ` data-backup-parent="${backupParentId}"` : '';
       const groupAttr = ` data-run-group="${groupId}"`;
 
@@ -959,8 +969,10 @@ function renderCard(name, data) {
         ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(name)}','${escAttr(_grpLogJobId)}','${safeGk}','${escAttr(_grpOutputDir)}')">logs</button>`
         : '';
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
-      const _headStyleAttr = _headTintStyle ? ` style="${_headTintStyle}"` : '';
-      return `${campaignDivider}<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"${_headStyleAttr}>
+      const _headStyleAttr = typeof styleAttr === 'function'
+        ? styleAttr(_headTintStyle, _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '')
+        : (_headTintStyle ? ` style="${_headTintStyle}"` : '');
+      return `${campaignDivider}<tr class="group-head-row${_isSmokeRun ? ' smoke-run-head' : ''}" onclick="toggleRunGroup('${groupId}')"${_headStyleAttr}>
         <td colspan="2"><span class="group-head-content">${groupLabel}</span></td>
         <td>${summaryHtml}</td>
         <td>${_dirBtn}</td>
