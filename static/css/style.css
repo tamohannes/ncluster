@@ -1799,7 +1799,9 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   display: flex;
   align-items: flex-end;
   gap: 0;
-  margin-bottom: 14px;
+  padding: 12px 0 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
 }
 .run-page-tab {
   appearance: none;
@@ -8047,7 +8049,8 @@ main,
   background: transparent !important;
 }
 
-.run-tab-btn {
+.run-tab-btn,
+.run-page-tab {
   position: relative;
   margin: 0 2px -1px 0;
   padding: 9px 16px 10px;
@@ -8060,7 +8063,8 @@ main,
   color: var(--muted);
 }
 
-.run-tab-btn:hover {
+.run-tab-btn:hover,
+.run-page-tab:hover {
   background: color-mix(in srgb, var(--glass-surface-soft) 70%, var(--accent-bg));
   border-color: color-mix(in srgb, var(--accent) 18%, var(--glass-border));
   border-bottom-color: var(--glass-border);
@@ -8068,7 +8072,8 @@ main,
   transform: none;
 }
 
-.run-tab-btn.active {
+.run-tab-btn.active,
+.run-page-tab.active {
   background: var(--accent) !important;
   background-image: none !important;
   border-color: var(--accent) !important;
@@ -8270,7 +8275,8 @@ main,
   backdrop-filter: none;
 }
 
-:root:not([data-appearance="glass"]) .run-tab-btn {
+:root:not([data-appearance="glass"]) .run-tab-btn,
+:root:not([data-appearance="glass"]) .run-page-tab {
   margin: 0 2px -1px 0;
   padding: 9px 16px 10px;
   border: 1px solid transparent;
@@ -8283,7 +8289,8 @@ main,
   transform: none;
 }
 
-:root:not([data-appearance="glass"]) .run-tab-btn:hover {
+:root:not([data-appearance="glass"]) .run-tab-btn:hover,
+:root:not([data-appearance="glass"]) .run-page-tab:hover {
   color: var(--text);
   background: var(--surface2);
   border-color: var(--border);
@@ -8292,7 +8299,8 @@ main,
   transform: none;
 }
 
-:root:not([data-appearance="glass"]) .run-tab-btn.active {
+:root:not([data-appearance="glass"]) .run-tab-btn.active,
+:root:not([data-appearance="glass"]) .run-page-tab.active {
   color: #fff !important;
   background: var(--accent) !important;
   background-image: none !important;
