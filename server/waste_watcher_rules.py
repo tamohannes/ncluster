@@ -152,6 +152,45 @@ def _job_id(job: Mapping) -> str:
     return str(job.get("jobid") or job.get("job_id") or "")
 
 
+def _progress_phase(progress_context: Optional[Mapping]) -> str:
+    return str((progress_context or {}).get("progress_phase") or "")
+
+
+def _progress_is_recent(progress_context: Optional[Mapping]) -> bool:
+    return bool((progress_context or {}).get("progress_log_recent"))
+
+
+def _progress_pct(progress_context: Optional[Mapping]):
+    return (progress_context or {}).get("progress")
+
+
+def _progress_is_server_loading(progress_context: Optional[Mapping]) -> bool:
+    if _progress_phase(progress_context) != "server_loading":
+        return False
+    pct = _progress_pct(progress_context)
+    try:
+        return pct is None or float(pct) < 100
+    except (TypeError, ValueError):
+        return True
+
+
+def _progress_is_run_progress(progress_context: Optional[Mapping]) -> bool:
+    return _progress_phase(progress_context) == "run_progress"
+
+
+def _progress_evidence(progress_context: Optional[Mapping]) -> dict:
+    if not progress_context:
+        return {}
+    keys = (
+        "progress",
+        "progress_source",
+        "progress_phase",
+        "progress_log_recent",
+        "main_waiting_for_server",
+    )
+    return {k: progress_context.get(k) for k in keys if k in progress_context}
+
+
 def is_exempt_name(job_name: str, regex: str) -> bool:
     """True when the job name matches a user-configured exempt pattern.
 
@@ -266,6 +305,7 @@ def detect_port_mismatch_hang(
     log_tail: str,
     min_runtime_min: int,
     busy_threshold_pct: float,
+    progress_context: Optional[Mapping] = None,
 ) -> Optional[Detection]:
     """Port-mismatch hang: server bound, every probe at 0% util, client never connects.
 
@@ -294,6 +334,11 @@ def detect_port_mismatch_hang(
     if _job_minutes_running(job) < min_runtime_min:
         return None
     if not snapshots:
+        return None
+
+    if _progress_is_server_loading(progress_context):
+        return None
+    if _progress_is_run_progress(progress_context):
         return None
 
     # Every snapshot must show zero-ish GPU util on every GPU.
@@ -331,6 +376,7 @@ def detect_port_mismatch_hang(
             "minutes_running": round(_job_minutes_running(job), 1),
             "log_contains_server_marker": True,
             "log_contains_client_marker": False,
+            **_progress_evidence(progress_context),
         },
     )
 
@@ -549,6 +595,7 @@ def detect_idle_gpu_sustained(
     busy_threshold_pct: float,
     log_quiet_min: int,
     log_age_min: Optional[float],
+    progress_context: Optional[Mapping] = None,
 ) -> Optional[Detection]:
     """Fallback rule: long sustained idle on a GPU job, plus a quiet log tail.
 
@@ -589,7 +636,16 @@ def detect_idle_gpu_sustained(
 
     if log_age_min is not None and log_age_min < log_quiet_min:
         return None
+    if _progress_is_recent(progress_context):
+        return None
 
+    progress_detail = ""
+    progress_evidence = _progress_evidence(progress_context)
+    if progress_evidence:
+        phase = progress_evidence.get("progress_phase") or "progress"
+        pct = progress_evidence.get("progress")
+        src = progress_evidence.get("progress_source") or "unknown source"
+        progress_detail = f" Last progress signal: {phase} {pct}% from {src}."
     return Detection(
         reason=WASTE_REASON_IDLE_GPU,
         confidence=CONFIDENCE_MEDIUM,
@@ -598,10 +654,12 @@ def detect_idle_gpu_sustained(
             f"GPU job idle for >= {suspicious_confirm_min}min across "
             f"{len(recent)} snapshots and log tail quiet for "
             f"{log_age_min if log_age_min is not None else '?'}min."
+            f"{progress_detail}"
         ),
         evidence={
             "snapshots_sampled": len(recent),
             "log_age_min": log_age_min,
+            **progress_evidence,
         },
     )
 
@@ -613,6 +671,7 @@ def detect_gpu_allocation_mismatch(
     log_tail: str,
     min_runtime_min: int,
     busy_threshold_pct: float,
+    progress_context: Optional[Mapping] = None,
 ) -> Optional[Detection]:
     """Detect allocations larger than the server appears to use.
 
@@ -626,6 +685,8 @@ def detect_gpu_allocation_mismatch(
     if str(job.get("state", "")).upper() != "RUNNING":
         return None
     if _job_minutes_running(job) < min_runtime_min:
+        return None
+    if _progress_is_server_loading(progress_context):
         return None
 
     allocated = _allocated_gpu_count(job, snapshots)

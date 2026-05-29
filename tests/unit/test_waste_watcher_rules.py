@@ -123,6 +123,46 @@ class TestPortMismatchHang:
         )
         assert det is None
 
+    def test_abstains_while_server_loading_progress_active(self):
+        job = _gpu_server_job()
+        snaps = _snapshots_zero(6)
+        tail = "vLLM API server starting\nApplication startup complete\n"
+        det = rules.detect_port_mismatch_hang(
+            job=job,
+            snapshots=snaps,
+            log_tail=tail,
+            min_runtime_min=10,
+            busy_threshold_pct=5.0,
+            progress_context={
+                "progress": 64,
+                "progress_source": "server output",
+                "progress_phase": "server_loading",
+                "progress_log_recent": True,
+                "main_waiting_for_server": True,
+            },
+        )
+        assert det is None
+
+    def test_abstains_when_main_run_progress_is_selected(self):
+        job = _gpu_server_job()
+        snaps = _snapshots_zero(6)
+        tail = "vLLM API server starting\nApplication startup complete\n"
+        det = rules.detect_port_mismatch_hang(
+            job=job,
+            snapshots=snaps,
+            log_tail=tail,
+            min_runtime_min=10,
+            busy_threshold_pct=5.0,
+            progress_context={
+                "progress": 24,
+                "progress_source": "main output",
+                "progress_phase": "run_progress",
+                "progress_log_recent": False,
+                "main_waiting_for_server": False,
+            },
+        )
+        assert det is None
+
 
 # ─── dead_server_before_client ──────────────────────────────────────────────
 
@@ -346,6 +386,48 @@ class TestIdleGpuSustained:
         )
         assert det is None
 
+    def test_abstains_when_progress_log_recent(self):
+        job = _gpu_server_job(started_min_ago=30)
+        snaps = _snapshots_zero(10)
+        det = rules.detect_idle_gpu_sustained(
+            job=job,
+            snapshots=snaps,
+            min_runtime_min=5,
+            suspicious_confirm_min=5,
+            busy_threshold_pct=5.0,
+            log_quiet_min=5,
+            log_age_min=None,
+            progress_context={
+                "progress": 31,
+                "progress_source": "server output",
+                "progress_phase": "server_loading",
+                "progress_log_recent": True,
+            },
+        )
+        assert det is None
+
+    def test_stale_server_loading_progress_can_still_flag_idle(self):
+        job = _gpu_server_job(started_min_ago=30)
+        snaps = _snapshots_zero(10)
+        det = rules.detect_idle_gpu_sustained(
+            job=job,
+            snapshots=snaps,
+            min_runtime_min=5,
+            suspicious_confirm_min=5,
+            busy_threshold_pct=5.0,
+            log_quiet_min=5,
+            log_age_min=8.0,
+            progress_context={
+                "progress": 31,
+                "progress_source": "server output",
+                "progress_phase": "server_loading",
+                "progress_log_recent": False,
+            },
+        )
+        assert det is not None
+        assert det.reason == rules.WASTE_REASON_IDLE_GPU
+        assert det.evidence["progress_phase"] == "server_loading"
+
 
 # ─── gpu_allocation_mismatch ────────────────────────────────────────────────
 
@@ -425,6 +507,25 @@ class TestGpuAllocationMismatch:
             log_tail="",
             min_runtime_min=5,
             busy_threshold_pct=5.0,
+        )
+        assert det is None
+
+    def test_abstains_while_server_loading(self):
+        job = _gpu_server_job(started_min_ago=30)
+        job["gres"] = "gres/gpu:8"
+        snaps = _snapshots_busy(3)
+        tail = "parallel_config={tensor_parallel_size=4, world_size=4}"
+        det = rules.detect_gpu_allocation_mismatch(
+            job=job,
+            snapshots=snaps,
+            log_tail=tail,
+            min_runtime_min=5,
+            busy_threshold_pct=5.0,
+            progress_context={
+                "progress": 72,
+                "progress_source": "server output",
+                "progress_phase": "server_loading",
+            },
         )
         assert det is None
 

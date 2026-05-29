@@ -264,6 +264,141 @@ def _read_log_tail(cluster: str, job_id: str, lines: int = 80) -> str:
         return ""
 
 
+def _read_progress_log_context(
+    cluster: str,
+    job_id: str,
+    *,
+    lines: int = 80,
+    allow_remote_discovery: bool = False,
+) -> dict:
+    """Read relevant main/server logs and classify current progress phase."""
+    import os
+
+    from .logs import (
+        _db_log_context,
+        _try_local_discovery,
+        fetch_log_tail,
+        is_main_log_source,
+        is_server_log_source,
+        label_log,
+        main_log_waiting_for_server,
+        select_progress_from_log_entries,
+        tail_local_file,
+    )
+    from .mounts import resolve_mounted_path
+
+    db_path = _db_log_context(cluster, job_id).get("log_path", "")
+    if db_path:
+        db_path = db_path.replace("%j", str(job_id))
+
+    files = []
+    seen_paths: set[str] = set()
+
+    def add_file(label: str, path: str) -> None:
+        if not path or path in seen_paths:
+            return
+        seen_paths.add(path)
+        files.append({"label": label or label_log(os.path.basename(path)), "path": path})
+
+    try:
+        local_result = _try_local_discovery(cluster, job_id, db_path)
+    except Exception:
+        local_result = None
+    for f in (local_result or {}).get("files", []):
+        add_file(f.get("label", ""), f.get("path", ""))
+
+    if allow_remote_discovery and not any(is_server_log_source(f.get("label"), f.get("path")) for f in files):
+        try:
+            from .logs import get_job_log_files_cached
+
+            remote_result = get_job_log_files_cached(cluster, job_id)
+            for f in (remote_result or {}).get("files", []):
+                add_file(f.get("label", ""), f.get("path", ""))
+        except Exception:
+            pass
+
+    if db_path:
+        add_file(label_log(os.path.basename(db_path)), db_path)
+
+    entries = []
+    log_error_prefixes = ("Could not read log:", "File not found on cluster:", "Invalid local process")
+    for f in files[:6]:
+        path = f.get("path", "")
+        label = f.get("label", "")
+        content = ""
+        try:
+            mt = resolve_mounted_path(cluster, path, want_dir=False)
+        except Exception:
+            mt = None
+        if mt:
+            try:
+                if os.path.isfile(mt):
+                    content = tail_local_file(mt, lines=lines) or ""
+            except Exception:
+                content = ""
+        if not content and (path == db_path or allow_remote_discovery):
+            try:
+                content = fetch_log_tail(cluster, path, lines=lines) or ""
+            except Exception:
+                content = ""
+        if not content or any(content.startswith(prefix) for prefix in log_error_prefixes):
+            continue
+        entries.append({"label": label, "path": path, "content": content})
+
+    pct, src = select_progress_from_log_entries(entries)
+    main_waiting = any(
+        is_main_log_source(e.get("label"), e.get("path"))
+        and main_log_waiting_for_server(e.get("content", ""))
+        for e in entries
+    )
+    if pct is None:
+        phase = ""
+    elif is_server_log_source(src, ""):
+        phase = "server_loading"
+    elif is_main_log_source(src, ""):
+        phase = "run_progress"
+    else:
+        phase = "other_progress"
+
+    combined_tail = "\n".join(
+        f"\n--- {e.get('label') or os.path.basename(e.get('path', ''))} ---\n{e.get('content', '')}"
+        for e in entries
+    ).strip()
+    return {
+        "tail": combined_tail,
+        "progress": pct,
+        "progress_source": src,
+        "progress_phase": phase,
+        "main_waiting_for_server": main_waiting,
+        "files_sampled": len(entries),
+    }
+
+
+def _progress_log_is_recent(progress_ctx: Mapping, log_age_min: Optional[float], cfg: Mapping) -> bool:
+    if progress_ctx.get("progress") is None:
+        return False
+    if log_age_min is None:
+        return True
+    return log_age_min < float(cfg["log_quiet_min"])
+
+
+def _progress_context_blocks_cancel(progress_ctx: Mapping) -> Optional[str]:
+    pct = progress_ctx.get("progress")
+    phase = progress_ctx.get("progress_phase") or ""
+    if pct is None:
+        return None
+    if phase == "server_loading":
+        try:
+            if float(pct) >= 100:
+                return None
+        except (TypeError, ValueError):
+            pass
+        return f"server_loading_progress_{pct}%"
+    if phase == "run_progress":
+        return f"main_run_progress_{pct}%"
+    return None
+
+
 def _sdk_heartbeat_age_min(job: Mapping) -> Optional[float]:
     """Minutes since the last SDK heartbeat for a job's run, or None.
 
@@ -399,12 +534,21 @@ def verify_wasteful(
             time.sleep(sleep_sec)
 
     # 2. Log tail freshness
-    tail_now = _read_log_tail(cluster, job_id, lines=80)
+    progress_ctx = _read_progress_log_context(
+        cluster,
+        job_id,
+        lines=120,
+        allow_remote_discovery=True,
+    )
+    tail_now = progress_ctx.get("tail") or _read_log_tail(cluster, job_id, lines=80)
     state = load_state(cluster, job_id)
     if state and state.last_log_hash and tail_now:
         new_hash = _hash_log_tail(tail_now)
         if new_hash != state.last_log_hash:
             return False, "log_still_growing"
+    progress_note = _progress_context_blocks_cancel(progress_ctx)
+    if progress_note:
+        return False, progress_note
 
     # 3. SDK heartbeat (best-effort; absence is not a veto)
     job_row = None
@@ -728,8 +872,14 @@ def _evaluate_job(job: dict, cfg: dict) -> Optional[Detection]:
 
     # Update log-hash cursor (used by verification + idle-gpu rule)
     log_age_min: Optional[float] = None
+    progress_ctx = _read_progress_log_context(
+        cluster,
+        jid,
+        lines=160 if is_idle else 80,
+        allow_remote_discovery=is_idle or state.state in (STATE_SUSPICIOUS, STATE_WASTEFUL),
+    )
     try:
-        tail = _read_log_tail(cluster, jid, lines=80)
+        tail = progress_ctx.get("tail") or _read_log_tail(cluster, jid, lines=80)
         if tail:
             new_hash = _hash_log_tail(tail)
             if not state.last_log_hash:
@@ -749,8 +899,12 @@ def _evaluate_job(job: dict, cfg: dict) -> Optional[Detection]:
     if heartbeat is not None:
         state.last_sdk_heartbeat_at = datetime.now() - timedelta(minutes=heartbeat)
 
+    progress_recent = _progress_log_is_recent(progress_ctx, log_age_min, cfg)
+    progress_ctx["progress_log_recent"] = progress_recent
+    effective_idle = is_idle and not progress_recent
+
     # Walk the state machine.
-    state = _transition_after_probe(state, is_idle=is_idle, log_age_min=log_age_min, cfg=cfg)
+    state = _transition_after_probe(state, is_idle=effective_idle, log_age_min=log_age_min, cfg=cfg)
 
     detection: Optional[Detection] = None
 
@@ -766,13 +920,22 @@ def _evaluate_job(job: dict, cfg: dict) -> Optional[Detection]:
     # so read the tail unconditionally — but cap the line count to keep
     # the SSH/tail call cheap for cold-state jobs.
     tail_lines = 160 if state.state in (STATE_SUSPICIOUS, STATE_WASTEFUL) else 60
-    tail = _read_log_tail(cluster, jid, lines=tail_lines)
+    if tail_lines > 80 and (progress_ctx.get("files_sampled") or 0) == 0:
+        progress_ctx = _read_progress_log_context(
+            cluster,
+            jid,
+            lines=tail_lines,
+            allow_remote_discovery=True,
+        )
+        progress_ctx["progress_log_recent"] = _progress_log_is_recent(progress_ctx, log_age_min, cfg)
+    tail = progress_ctx.get("tail") or _read_log_tail(cluster, jid, lines=tail_lines)
     detection = rules.detect_port_mismatch_hang(
         job={**job, "cluster": cluster},
         snapshots=snapshots,
         log_tail=tail,
         min_runtime_min=cfg["min_runtime_min"],
         busy_threshold_pct=cfg["util_busy_threshold"],
+        progress_context=progress_ctx,
     )
 
     if not detection:
@@ -803,6 +966,7 @@ def _evaluate_job(job: dict, cfg: dict) -> Optional[Detection]:
             log_tail=tail,
             min_runtime_min=cfg["min_runtime_min"],
             busy_threshold_pct=cfg["util_busy_threshold"],
+            progress_context=progress_ctx,
         )
 
     if not detection and state.state == STATE_WASTEFUL:
@@ -814,6 +978,7 @@ def _evaluate_job(job: dict, cfg: dict) -> Optional[Detection]:
             busy_threshold_pct=cfg["util_busy_threshold"],
             log_quiet_min=cfg["log_quiet_min"],
             log_age_min=log_age_min,
+            progress_context=progress_ctx,
         )
 
     if detection:
