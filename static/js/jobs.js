@@ -1184,7 +1184,63 @@ function renderGrid(data) {
     </div>`;
   }
 
-  grid.innerHTML = html;
+  _paintGrid(grid, html);
+}
+
+// Structural fingerprint of the board: ordered sections (by label text, which
+// encodes name + count + collapse) and the ordered card ids within each. If
+// this matches between the live grid and a freshly rendered one, only card
+// contents changed — never the layout — so we can reconcile card-by-card
+// instead of blowing away every cluster table.
+function _gridSig(root) {
+  const secs = [];
+  root.querySelectorAll(':scope > .section').forEach(sec => {
+    const label = sec.querySelector(':scope > .section-label');
+    const labelTxt = label ? label.textContent.replace(/\s+/g, ' ').trim() : '';
+    const ids = [];
+    sec.querySelectorAll('.card[id^="card-"]').forEach(c => ids.push(c.id));
+    secs.push(labelTxt + '::' + ids.join(','));
+  });
+  return secs.join('||');
+}
+
+// A card's content fingerprint, excluding the freshness badge — that badge is
+// ticked live every second by _tickFreshnessBadges, so comparing it would mark
+// every card "changed" on each render and defeat the whole optimization.
+function _cardContentSig(cardEl) {
+  const clone = cardEl.cloneNode(true);
+  clone.querySelectorAll('.card-freshness-group').forEach(n => n.remove());
+  return clone.outerHTML;
+}
+
+// Paint the grid with minimal DOM churn. When the layout is unchanged, replace
+// only the cards whose content actually differs and leave the rest untouched
+// (preserving their live freshness clocks, tooltips, and scroll state).
+function _paintGrid(grid, html) {
+  if (!grid.children.length) { grid.innerHTML = html; return; }
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  if (_gridSig(grid) !== _gridSig(tmp)) {
+    grid.innerHTML = html;
+    return;
+  }
+  const newCards = {};
+  tmp.querySelectorAll('.card[id^="card-"]').forEach(c => { newCards[c.id] = c; });
+  grid.querySelectorAll('.card[id^="card-"]').forEach(oldCard => {
+    const nc = newCards[oldCard.id];
+    if (!nc) return;
+    if (_cardContentSig(oldCard) !== _cardContentSig(nc)) {
+      oldCard.replaceWith(nc);
+      return;
+    }
+    // Content unchanged — keep the node, but re-anchor the freshness clock to
+    // the latest poll time so the live ticker stays accurate.
+    const oldFresh = oldCard.querySelector('.freshness-badge[data-fresh-base]');
+    const newFresh = nc.querySelector('.freshness-badge[data-fresh-base]');
+    if (oldFresh && newFresh) {
+      oldFresh.setAttribute('data-fresh-base', newFresh.getAttribute('data-fresh-base'));
+    }
+  });
 }
 
 function _collectVisibleJobs(data) {

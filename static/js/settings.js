@@ -772,6 +772,24 @@ function stopCountdown() {
   clearInterval(cdTimer);
 }
 
+// ── Baseline live sync ──
+// Keep the board in step with the backend poller without requiring the user to
+// enable auto-refresh or click ↻. /api/jobs is ETag-gated, so unchanged polls
+// return a cheap 304 (no SSH, no snapshot build) and fetchAll() bails early; a
+// full re-render only happens when the backend bumps the board version. This is
+// independent of the user-facing auto-refresh interval, which only controls the
+// visible countdown.
+const LIVE_SYNC_SEC = 4;
+let _liveSyncTimer = null;
+function startLiveSync() {
+  if (_liveSyncTimer) return;
+  _liveSyncTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (_isModalOpen()) return;
+    fetchAll();
+  }, LIVE_SYNC_SEC * 1000);
+}
+
 function _isModalOpen() {
   const overlay = document.getElementById('modal-overlay');
   return overlay && overlay.classList.contains('open');
@@ -1710,3 +1728,4 @@ loadProjectButtons();
 })();
 
 if (refreshIntervalSec > 0) startCountdown();
+startLiveSync();
