@@ -48,29 +48,31 @@ class TestApiLs:
         names = [e["name"] for e in data["entries"]]
         assert "file.txt" in names
 
-    def test_ls_hides_nemo_run_directory(self, client, mock_ssh, tmp_path):
+    def test_ls_keeps_run_root_nemo_run_directory(self, client, mock_ssh, tmp_path):
         (tmp_path / "nemo-run").mkdir()
         (tmp_path / "eval-results").mkdir()
         (tmp_path / "nemo-run_sbatch.sh").write_text("x")
         resp = client.get(f"/api/ls/local?path={tmp_path}")
         assert resp.status_code == 200
         names = [e["name"] for e in resp.get_json()["entries"]]
-        assert "nemo-run" not in names
+        assert "nemo-run" in names
         assert "eval-results" in names
         assert "nemo-run_sbatch.sh" in names
 
-    def test_ls_hides_nemo_launch_wrapper_files(self, client, mock_ssh, tmp_path):
+    def test_ls_shows_nemo_launch_wrapper_files(self, client, mock_ssh, tmp_path):
         for name in ("__main__.py", "_CONFIG", "_TASKS", "_VERSION"):
             (tmp_path / name).write_text("x")
+        (tmp_path / "nemo-run").mkdir()
         (tmp_path / "nemo-run_sbatch.sh").write_text("x")
         (tmp_path / "main_123_srun.log").write_text("log")
         resp = client.get(f"/api/ls/local?path={tmp_path}")
         assert resp.status_code == 200
         names = [e["name"] for e in resp.get_json()["entries"]]
-        assert "__main__.py" not in names
-        assert "_CONFIG" not in names
-        assert "_TASKS" not in names
-        assert "_VERSION" not in names
+        assert "nemo-run" in names
+        assert "__main__.py" in names
+        assert "_CONFIG" in names
+        assert "_TASKS" in names
+        assert "_VERSION" in names
         assert "nemo-run_sbatch.sh" in names
         assert "main_123_srun.log" in names
 

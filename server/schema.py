@@ -729,7 +729,7 @@ APP_SETTINGS_DEFAULTS: Dict[str, tuple[Any, Callable[[Any], Any], str]] = {
         "How long a polled cluster snapshot is considered fresh before re-polling.",
     ),
     "stats_interval_sec": (
-        1800,
+        60,
         int,
         "How often the GPU-stats scraper writes a job_stats_snapshots row.",
     ),

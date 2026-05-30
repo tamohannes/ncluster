@@ -151,12 +151,17 @@ function _renderRunBody(run, cluster) {
             onclick="_openRunLog(${_jsArg(cluster)},${_jsArg(logJob.jobId)},${_jsArg(logJob.name)})"
             title="Open the representative log for this run">Log</button>`
       : '';
+    const statsBtn = run.root_job_id
+      ? `<button type="button" class="run-page-action-btn"
+            onclick="openRunStats(${_jsArg(cluster)},${_jsArg(run.root_job_id)},${_jsArg(run.run_name || run.name || '')})"
+            title="Open GPU utilization for every job in this run">Stats</button>`
+      : '';
     const pageBtn = run.run_hash && !run.read_only
       ? `<button type="button" class="run-page-action-btn"
             onclick="_openRunPageFromModal('${escAttr(cluster)}','${escAttr(run.run_hash)}')"
             title="Open the full run metrics page">Run page</button>`
       : '';
-    pageSlot.innerHTML = `${logBtn}${pageBtn}`;
+    pageSlot.innerHTML = `${logBtn}${statsBtn}${pageBtn}`;
   }
 
   let overviewHtml = '';

@@ -67,6 +67,81 @@ class TestApiStats:
         data = resp.get_json()
         assert data["status"] == "ok"
 
+    def test_stale_stats_cache_refreshes_before_response(self, client, monkeypatch, mock_cluster):
+        from server.db import cache_db_put
+
+        cache_db_put("stats", f"{mock_cluster}:12345", {
+            "status": "ok",
+            "job_id": "12345",
+            "state": "RUNNING",
+            "elapsed": "00:01:00",
+            "gpus": [{"index": "0", "util": "5%", "mem": "10/100 MiB"}],
+        }, ttl_sec=-1)
+
+        monkeypatch.setattr("server.routes.get_job_stats_cached", lambda c, j, force=False: {
+            "status": "ok",
+            "job_id": j,
+            "state": "RUNNING",
+            "elapsed": "00:02:00",
+            "gpus": [{"index": "0", "util": "95%", "mem": "90/100 MiB"}],
+        })
+
+        resp = client.get(f"/api/stats/{mock_cluster}/12345")
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["elapsed"] == "00:02:00"
+        assert data["gpus"][0]["util"] == "95%"
+        assert not data.get("_stale")
+
+    def test_run_stats_returns_per_job_snapshot_series(self, client, mock_cluster, db_path):
+        from server.db import associate_jobs_to_run, get_db, upsert_job, upsert_run
+
+        run_id = upsert_run(mock_cluster, "100", "test_run", "test")
+        upsert_job(mock_cluster, {
+            "jobid": "100",
+            "name": "test_run-server",
+            "state": "RUNNING",
+            "nodes": "1",
+            "gres": "gpu:4",
+            "submitted": "2026-05-29T18:00:00",
+        })
+        upsert_job(mock_cluster, {
+            "jobid": "101",
+            "name": "test_run-client",
+            "state": "RUNNING",
+            "nodes": "1",
+            "gres": "gpu:4",
+            "submitted": "2026-05-29T18:00:01",
+        })
+        associate_jobs_to_run(mock_cluster, run_id, ["100", "101"])
+        con = get_db()
+        con.executemany(
+            """INSERT INTO job_stats_snapshots
+               (cluster, job_id, ts, gpu_util, gpu_mem_used, gpu_mem_total,
+                cpu_util, rss_used, max_rss, gpu_details)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (mock_cluster, "100", "2026-05-29T18:00:00", 80.0, 1000.0, 2000.0, "", None, None, ""),
+                (mock_cluster, "100", "2026-05-29T18:01:00", 90.0, 1200.0, 2000.0, "", None, None, ""),
+                (mock_cluster, "101", "2026-05-29T18:00:00", 40.0, 800.0, 2000.0, "", None, None, ""),
+            ],
+        )
+        con.commit()
+        con.close()
+
+        resp = client.get(f"/api/run_stats/{mock_cluster}/100")
+        data = resp.get_json()
+
+        assert data["status"] == "ok"
+        assert data["run"]["root_job_id"] == "100"
+        assert len(data["jobs"]) == 2
+        by_id = {job["job_id"]: job for job in data["jobs"]}
+        assert by_id["100"]["avg_gpu_util"] == 85.0
+        assert by_id["100"]["latest_gpu_util"] == 90.0
+        assert by_id["100"]["sample_count"] == 2
+        assert by_id["101"]["avg_gpu_util"] == 40.0
+        assert by_id["101"]["snapshots"][0]["gpu_mem_used"] == 800.0
+
 
 @pytest.mark.integration
 class TestApiMounts:

@@ -405,7 +405,10 @@ function _renderProjPage() {
       const _projDirBtn = (_projLogJobId || _projOutputDir)
         ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(cluster)}','${escAttr(_projLogJobId)}','${safeLabel}','${escAttr(_projOutputDir)}')">logs</button>`
         : '';
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}${gpuSuffix}</span>${_projDirBtn}</span>`;
+      const _projStatsBtn = rootJobId
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunStats('${cluster}','${rootJobId}','${safeLabel}')">stats</button>`
+        : '';
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}${gpuSuffix}</span>${_projDirBtn}${_projStatsBtn}</span>`;
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
       const _campaign = groupJobs[0]?.campaign || '';
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);

@@ -364,10 +364,60 @@ describe('live log viewer defaults', () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(rootDir));
   });
 
-  it('descends from a NeMo launch wrapper directory into useful logs', async () => {
+  it('shows a top-level nemo-run log directory beside run artifacts', async () => {
+    const rootDir = '/remote/mpsf/runs/demo-r3';
+    const logDir = `${rootDir}/nemo-run`;
+    const firstLog = `${logDir}/main_demo-r3_383026_srun.log`;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          files: [
+            { label: 'main output', path: firstLog },
+            { label: 'server output', path: `${logDir}/server_demo-r3_383026_srun.log` },
+          ],
+          dirs: [
+            { label: 'demo-r3', path: rootDir },
+          ],
+          first_content: 'hello log',
+          first_source: 'ssh',
+          first_resolved_path: firstLog,
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'artifacts', path: `${rootDir}/artifacts`, is_dir: true, size: 10 },
+            { name: 'nemo-run', path: logDir, is_dir: true, size: 10 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'main_demo-r3_383026_srun.log', path: firstLog, is_dir: false, size: 100 },
+            { name: 'server_demo-r3_383026_srun.log', path: `${logDir}/server_demo-r3_383026_srun.log`, is_dir: false, size: 100 },
+          ],
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openLog('h100', '383026', 'demo job');
+
+    const treeText = document.getElementById('tree-pane')?.textContent || '';
+    expect(treeText).toContain('artifacts');
+    expect(treeText).toContain('nemo-run');
+    expect(treeText).toContain('main_demo-r3_383026_srun.log');
+    expect(document.querySelector('.tree-item.active')?.textContent).toContain('main_demo-r3_383026_srun.log');
+    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(rootDir));
+    expect(String(fetchMock.mock.calls[2][0])).toContain(encodeURIComponent(logDir));
+  });
+
+  it('shows a NeMo launch wrapper directory without hiding internals', async () => {
     const launchDir = '/remote/nemo-run/demo/demo_1';
     const logDir = `${launchDir}/nemo-run`;
-    const mainLog = `${logDir}/main_demo_123_srun.log`;
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
         json: async () => ({
@@ -378,30 +428,9 @@ describe('live log viewer defaults', () => {
             { name: '_CONFIG', path: `${launchDir}/_CONFIG`, is_dir: false, size: 1000 },
             { name: '_TASKS', path: `${launchDir}/_TASKS`, is_dir: false, size: 9000 },
             { name: '_VERSION', path: `${launchDir}/_VERSION`, is_dir: false, size: 14 },
+            { name: 'nemo-run', path: logDir, is_dir: true, size: 4096 },
             { name: 'nemo-run_sbatch.sh', path: `${launchDir}/nemo-run_sbatch.sh`, is_dir: false, size: 5000 },
           ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          status: 'ok',
-          source: 'ssh',
-          entries: [
-            { name: 'code', path: `${logDir}/code`, is_dir: true, size: 0 },
-            { name: 'main_demo_123_srun.log', path: mainLog, is_dir: false, size: 8540 },
-            { name: 'server_demo_123_srun.log', path: `${logDir}/server_demo_123_srun.log`, is_dir: false, size: 62447 },
-            { name: 'demo_123_sbatch.log', path: `${logDir}/demo_123_sbatch.log`, is_dir: false, size: 15801 },
-          ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          status: 'ok',
-          content: 'real log content',
-          source: 'ssh',
-          resolved_path: mainLog,
-          total_pages: 1,
-          page: 0,
         }),
       });
 
@@ -410,17 +439,18 @@ describe('live log viewer defaults', () => {
     await openDir('h100', launchDir, 'demo job');
 
     const treeText = document.getElementById('tree-pane')?.textContent || '';
-    expect(treeText).toContain('main_demo_123_srun.log');
-    expect(treeText).not.toContain('__main__.py');
-    expect(treeText).not.toContain('_CONFIG');
-    expect(document.getElementById('content-path')?.textContent).toBe(mainLog);
-    expect(document.querySelector('.tree-item.active')?.textContent).toContain('main_demo_123_srun.log');
-    expect(document.getElementById('modal-content')?.textContent).toContain('real log content');
-    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(logDir));
-    expect(String(fetchMock.mock.calls[2][0])).toContain('/api/log_full/h100/__dir__');
+    expect(treeText).toContain('__main__.py');
+    expect(treeText).toContain('_CONFIG');
+    expect(treeText).toContain('_TASKS');
+    expect(treeText).toContain('_VERSION');
+    expect(treeText).toContain('nemo-run');
+    expect(treeText).toContain('nemo-run_sbatch.sh');
+    expect(document.getElementById('content-path')?.textContent).toBe(launchDir);
+    expect(document.getElementById('modal-content')?.textContent).toContain('Select a file');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('shows an empty log directory instead of launch wrapper internals', async () => {
+  it('does not replace a launch wrapper with an empty nested log directory', async () => {
     const launchDir = '/remote/nemo-run/demo/demo_1';
     const logDir = `${launchDir}/nemo-run`;
     const fetchMock = vi.fn()
@@ -433,15 +463,9 @@ describe('live log viewer defaults', () => {
             { name: '_CONFIG', path: `${launchDir}/_CONFIG`, is_dir: false, size: 1000 },
             { name: '_TASKS', path: `${launchDir}/_TASKS`, is_dir: false, size: 9000 },
             { name: '_VERSION', path: `${launchDir}/_VERSION`, is_dir: false, size: 14 },
+            { name: 'nemo-run', path: logDir, is_dir: true, size: 4096 },
             { name: 'nemo-run_sbatch.sh', path: `${launchDir}/nemo-run_sbatch.sh`, is_dir: false, size: 5000 },
           ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          status: 'ok',
-          source: 'ssh',
-          entries: [],
         }),
       });
 
@@ -450,17 +474,17 @@ describe('live log viewer defaults', () => {
     await openDir('h100', launchDir, 'demo job');
 
     const treeText = document.getElementById('tree-pane')?.textContent || '';
-    expect(treeText).toContain('(empty directory)');
-    expect(treeText).not.toContain('__main__.py');
-    expect(treeText).not.toContain('_CONFIG');
-    expect(treeText).not.toContain('nemo-run_sbatch.sh');
-    expect(document.getElementById('content-path')?.textContent).toBe(logDir);
+    expect(treeText).toContain('__main__.py');
+    expect(treeText).toContain('_CONFIG');
+    expect(treeText).toContain('nemo-run');
+    expect(treeText).toContain('nemo-run_sbatch.sh');
+    expect(treeText).not.toContain('(empty directory)');
+    expect(document.getElementById('content-path')?.textContent).toBe(launchDir);
     expect(document.getElementById('modal-content')?.textContent).toContain('Select a file');
-    expect(document.getElementById('modal-content')?.textContent).not.toContain('(empty file)');
-    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(logDir));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('normalizes an initially opened job directory before rendering tree entries', async () => {
+  it('renders an initially opened job directory without hiding wrapper files', async () => {
     const launchDir = '/remote/nemo-run/demo/demo_1';
     const logDir = `${launchDir}/nemo-run`;
     const fetchMock = vi.fn()
@@ -479,15 +503,9 @@ describe('live log viewer defaults', () => {
             { name: '_CONFIG', path: `${launchDir}/_CONFIG`, is_dir: false, size: 1000 },
             { name: '_TASKS', path: `${launchDir}/_TASKS`, is_dir: false, size: 9000 },
             { name: '_VERSION', path: `${launchDir}/_VERSION`, is_dir: false, size: 14 },
+            { name: 'nemo-run', path: logDir, is_dir: true, size: 4096 },
             { name: 'nemo-run_sbatch.sh', path: `${launchDir}/nemo-run_sbatch.sh`, is_dir: false, size: 5000 },
           ],
-        }),
-      })
-      .mockResolvedValueOnce({
-        json: async () => ({
-          status: 'ok',
-          source: 'ssh',
-          entries: [],
         }),
       });
 
@@ -496,13 +514,16 @@ describe('live log viewer defaults', () => {
     await openLog('h100', '357999', 'demo job');
 
     const treeText = document.getElementById('tree-pane')?.textContent || '';
-    expect(treeText).toContain('(empty directory)');
-    expect(treeText).not.toContain('__main__.py');
-    expect(treeText).not.toContain('_CONFIG');
-    expect(treeText).not.toContain('nemo-run_sbatch.sh');
+    expect(treeText).toContain('__main__.py');
+    expect(treeText).toContain('_CONFIG');
+    expect(treeText).toContain('_TASKS');
+    expect(treeText).toContain('_VERSION');
+    expect(treeText).toContain('nemo-run');
+    expect(treeText).toContain('nemo-run_sbatch.sh');
     expect(document.getElementById('modal-content')?.textContent).toContain('No direct log file found');
     expect(document.getElementById('modal-content')?.textContent).not.toContain('(empty file)');
-    expect(String(fetchMock.mock.calls[2][0])).toContain(encodeURIComponent(logDir));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(launchDir));
   });
 });
 

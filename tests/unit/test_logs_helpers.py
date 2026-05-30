@@ -360,7 +360,7 @@ class TestMountedLogDiscovery:
         assert result["dirs"] == [{"label": "mpsf_demo", "path": "/remote/nemo-run/mpsf_demo"}]
 
     @pytest.mark.unit
-    def test_hides_nemo_run_command_dir_when_stdout_dir_missing(self, db_path, monkeypatch, mock_cluster):
+    def test_keeps_nemo_run_command_dir_when_stdout_dir_missing(self, db_path, monkeypatch, mock_cluster):
         upsert_job(mock_cluster, {
             "jobid": "357999",
             "name": "mcp_ablation_kimi-k26-no-tool-r29-hle",
@@ -383,7 +383,9 @@ class TestMountedLogDiscovery:
         result = get_job_log_files(mock_cluster, "357999")
 
         assert result["files"] == []
-        assert result["dirs"] == []
+        assert result["dirs"] == [
+            {"label": "nemo-run", "path": "/lustre/fsw/portfolios/nemotron/users/test/nemo-run/demo/demo_1"}
+        ]
 
 
 class TestExtractCustomMetrics:

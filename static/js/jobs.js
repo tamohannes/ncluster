@@ -968,6 +968,9 @@ function renderCard(name, data) {
       const _dirBtn = (_grpLogJobId || _grpOutputDir) && name !== 'local'
         ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(name)}','${escAttr(_grpLogJobId)}','${safeGk}','${escAttr(_grpOutputDir)}')">logs</button>`
         : '';
+      const _runStatsBtn = name !== 'local' && rootJobId
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunStats('${name}','${rootJobId}','${safeGk}')">stats</button>`
+        : '';
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
       const _headStyleAttr = typeof styleAttr === 'function'
         ? styleAttr(_headTintStyle, _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '')
@@ -975,7 +978,7 @@ function renderCard(name, data) {
       return `${campaignDivider}<tr class="group-head-row${_isSmokeRun ? ' smoke-run-head' : ''}" onclick="toggleRunGroup('${groupId}')"${_headStyleAttr}>
         <td colspan="2"><span class="group-head-content">${groupLabel}</span></td>
         <td>${summaryHtml}</td>
-        <td>${_dirBtn}</td>
+        <td>${_dirBtn} ${_runStatsBtn}</td>
         <td class="dim">${_grpStart}</td>
         <td class="dim">${_grpEnd}</td>
         <td class="dim">${_grpElapsed}</td>

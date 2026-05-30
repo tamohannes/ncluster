@@ -220,7 +220,10 @@ function _renderHistPage() {
       const _histDirBtn = (_histLogJobId || _histOutputDir)
         ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunGroupLogs('${escAttr(g.cluster)}','${escAttr(_histLogJobId)}','${safeLabel}','${escAttr(_histOutputDir)}')">logs</button>`
         : '';
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span>${_histDirBtn}</span>`;
+      const _histStatsBtn = rootJobId
+        ? `<button class="action-btn log-btn" onclick="event.stopPropagation();openRunStats('${g.cluster}','${rootJobId}','${safeLabel}')">stats</button>`
+        : '';
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${identityBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}${gpuSuffix}</span>${_histDirBtn}${_histStatsBtn}</span>`;
       const _headTintStyle = campaignRowTintStyle(_projColor, _campaign);
       const _headStyleAttr = typeof styleAttr === 'function'
         ? styleAttr(_headTintStyle, _isSmokeRun && typeof smokeRunStyleDecls === 'function' ? smokeRunStyleDecls() : '')

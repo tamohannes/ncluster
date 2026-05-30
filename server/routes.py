@@ -61,6 +61,7 @@ from .logs import (
 from .jobs import (
     schedule_prefetch,
     get_job_stats_cached,
+    _save_stats_snapshot,
     create_run_on_demand,
     fetch_team_jobs,
     fetch_team_usage,
@@ -1427,17 +1428,192 @@ def api_stats(cluster, job_id):
     from .jobs import get_stats_snapshots
 
     db_val, is_fresh = cache_db_get_stale("stats", f"{cluster}:{job_id}")
-    if db_val:
+    if db_val and is_fresh:
         result = dict(db_val)
-        if not is_fresh:
-            result["_stale"] = True
     else:
-        result = get_job_stats_cached(cluster, job_id)
+        result = get_job_stats_cached(cluster, job_id, force=bool(db_val))
+        if (
+            isinstance(result, dict)
+            and result.get("status") != "ok"
+            and db_val
+        ):
+            result = dict(db_val)
+            result["_stale"] = True
+
+    if isinstance(result, dict) and result.get("status") == "ok":
+        try:
+            _save_stats_snapshot(cluster, job_id, result)
+        except Exception:
+            _log.debug("failed to persist stats snapshot for %s/%s", cluster, job_id, exc_info=True)
 
     snapshots = get_stats_snapshots(cluster, job_id)
     if isinstance(result, dict):
         result["snapshots"] = snapshots
     return jsonify(result)
+
+
+def _snapshot_gpu_util(snapshot):
+    val = snapshot.get("gpu_util")
+    if val is not None:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            pass
+    vals = []
+    for gpu in snapshot.get("per_gpu") or []:
+        raw = str((gpu or {}).get("util", "")).strip().rstrip("%")
+        if not raw:
+            continue
+        try:
+            vals.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _snapshot_gpu_mem_used(snapshot):
+    val = snapshot.get("gpu_mem_used")
+    if val is not None:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            pass
+    vals = []
+    for gpu in snapshot.get("per_gpu") or []:
+        raw = str((gpu or {}).get("mem", "")).replace("MiB", "").strip()
+        if "/" not in raw:
+            continue
+        try:
+            vals.append(float(raw.split("/", 1)[0].strip()))
+        except (TypeError, ValueError):
+            continue
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _avg_numeric(values):
+    nums = []
+    for value in values:
+        if value is None:
+            continue
+        try:
+            nums.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return round(sum(nums) / len(nums), 1) if nums else None
+
+
+def _stats_response_snapshot(stats):
+    if not isinstance(stats, dict) or stats.get("status") != "ok":
+        return None
+    gpus = stats.get("gpus") or []
+    if not gpus:
+        return None
+    snap = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "gpu_util": None,
+        "gpu_mem_used": None,
+        "gpu_mem_total": None,
+        "cpu_util": stats.get("ave_cpu", "") or "",
+        "rss_used": None,
+        "max_rss": None,
+        "per_gpu": gpus,
+    }
+    snap["gpu_util"] = _snapshot_gpu_util(snap)
+    snap["gpu_mem_used"] = _snapshot_gpu_mem_used(snap)
+    totals = []
+    for gpu in gpus:
+        raw = str((gpu or {}).get("mem", "")).replace("MiB", "").strip()
+        if "/" not in raw:
+            continue
+        try:
+            totals.append(float(raw.split("/", 1)[1].strip()))
+        except (TypeError, ValueError):
+            continue
+    snap["gpu_mem_total"] = round(sum(totals) / len(totals), 1) if totals else None
+    return snap
+
+
+def _append_current_stats_sample(snapshots, sample):
+    if not sample:
+        return snapshots
+    if snapshots:
+        try:
+            latest = datetime.fromisoformat(str(snapshots[-1].get("ts", "")))
+            current = datetime.fromisoformat(str(sample.get("ts", "")))
+            if abs((current - latest).total_seconds()) <= 2:
+                return snapshots
+        except Exception:
+            pass
+    return [*snapshots, sample]
+
+
+@api.route("/api/run_stats/<cluster>/<run_ref>")
+def api_run_stats(cluster, run_ref):
+    """Return stored GPU-utilization snapshots for every job in a run."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if cluster == "local":
+        return jsonify({"status": "error", "error": "Run stats are supported for Slurm clusters only."}), 400
+    from .jobs import get_stats_snapshots
+
+    run = _load_run_by_ref(cluster, run_ref)
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+
+    run_hash = get_run_hash(cluster, run.get("root_job_id", ""), run.get("run_uuid", ""))
+    jobs = []
+    refresh_requested = str(request.args.get("refresh", "")).lower() in {"1", "true", "yes"}
+    refreshed_jobs = 0
+    max_refresh_jobs = 6
+    for job in run.get("jobs", []):
+        job_id = str(job.get("job_id") or job.get("jobid") or "").strip()
+        if not job_id:
+            continue
+        current_sample = None
+        state = str(job.get("state") or "").upper()
+        if refresh_requested and state in {"RUNNING", "COMPLETING"} and refreshed_jobs < max_refresh_jobs:
+            stats = get_job_stats_cached(cluster, job_id)
+            refreshed_jobs += 1
+            if isinstance(stats, dict) and stats.get("status") == "ok":
+                try:
+                    _save_stats_snapshot(cluster, job_id, stats)
+                except Exception:
+                    _log.debug("failed to persist run stats snapshot for %s/%s", cluster, job_id, exc_info=True)
+                current_sample = _stats_response_snapshot(stats)
+        snapshots = get_stats_snapshots(cluster, job_id)
+        snapshots = _append_current_stats_sample(snapshots, current_sample)
+        util_vals = [_snapshot_gpu_util(s) for s in snapshots]
+        mem_vals = [_snapshot_gpu_mem_used(s) for s in snapshots]
+        latest_util = next((v for v in reversed(util_vals) if v is not None), None)
+        latest_mem = next((v for v in reversed(mem_vals) if v is not None), None)
+        jobs.append({
+            "job_id": job_id,
+            "name": job.get("job_name") or job.get("name") or job_id,
+            "state": job.get("state") or "",
+            "gres": job.get("gres") or "",
+            "nodes": job.get("nodes") or "",
+            "partition": job.get("partition") or "",
+            "started": job.get("started_local") or job.get("started") or "",
+            "ended_at": job.get("ended_local") or job.get("ended_at") or "",
+            "snapshots": snapshots,
+            "avg_gpu_util": _avg_numeric(util_vals),
+            "latest_gpu_util": latest_util,
+            "avg_gpu_mem_used": _avg_numeric(mem_vals),
+            "latest_gpu_mem_used": latest_mem,
+            "sample_count": len([v for v in util_vals if v is not None]),
+        })
+
+    return jsonify({
+        "status": "ok",
+        "run": {
+            "cluster": cluster,
+            "root_job_id": run.get("root_job_id") or run_ref,
+            "run_hash": run_hash,
+            "run_name": run.get("run_name") or run.get("name") or "",
+        },
+        "jobs": jobs,
+        "refreshed_jobs": refreshed_jobs,
+    })
 
 
 def _expand_slurm_nodelist(nodelist_str):
@@ -3076,18 +3252,18 @@ def api_ls(cluster):
         cached = _cache_get(_dir_list_cache, cache_key, DIR_LIST_TTL_SEC)
         if cached is not None:
             cached = dict(cached)
-            cached["entries"] = filter_log_explorer_entries(cached.get("entries", []))
+            cached["entries"] = filter_log_explorer_entries(cached.get("entries", []), path)
             return jsonify(cached)
     try:
         if cluster == "local":
-            entries = filter_log_explorer_entries(list_local_dir(path))
+            entries = filter_log_explorer_entries(list_local_dir(path), path)
             payload = {"status": "ok", "path": path, "entries": entries, "source": "local", "resolved_path": path}
             _cache_set(_dir_list_cache, cache_key, payload)
             prefetch_nested_dir_cache_local(cluster, path, path, entries)
             return jsonify(payload)
         mounted_dir = resolve_mounted_path(cluster, path, want_dir=True)
         if mounted_dir:
-            entries = filter_log_explorer_entries(list_local_dir(mounted_dir))
+            entries = filter_log_explorer_entries(list_local_dir(mounted_dir), path)
             for e in entries:
                 e["path"] = path.rstrip("/") + "/" + e["name"]
             payload = {"status": "ok", "path": path, "entries": entries, "source": "mount", "resolved_path": mounted_dir}
@@ -3109,7 +3285,7 @@ def api_ls(cluster):
             ftype, size, name = parts
             entries.append({"name": name, "path": path.rstrip("/") + "/" + name, "is_dir": ftype == "d",
                             "size": int(size) if size.isdigit() else None})
-        entries = filter_log_explorer_entries(entries)
+        entries = filter_log_explorer_entries(entries, path)
         entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
         payload = {"status": "ok", "path": path, "entries": entries, "source": "ssh", "resolved_path": path}
         _cache_set(_dir_list_cache, cache_key, payload)

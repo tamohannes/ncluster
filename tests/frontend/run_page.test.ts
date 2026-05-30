@@ -116,9 +116,13 @@ describe('run page routing', () => {
     const buttons = Array.from(document.querySelectorAll('.run-page-head-actions .btn'))
       .map((el) => el.textContent);
     expect(buttons).toContain('Log');
+    expect(buttons).toContain('Stats');
     const logButton = Array.from(document.querySelectorAll('.run-page-head-actions .btn'))
       .find((el) => el.textContent === 'Log') as HTMLButtonElement | undefined;
     expect(logButton?.getAttribute('onclick')).toContain('_openRunLog("eos","100","demo-run-root")');
+    const statsButton = Array.from(document.querySelectorAll('.run-page-head-actions .btn'))
+      .find((el) => el.textContent === 'Stats') as HTMLButtonElement | undefined;
+    expect(statsButton?.getAttribute('onclick')).toContain('openRunStats("eos","100","demo-run")');
   });
 });
 

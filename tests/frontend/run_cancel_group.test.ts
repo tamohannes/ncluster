@@ -102,7 +102,7 @@ describe('read-only job-history run popups', () => {
     expect(document.querySelector('.run-delete-btn')).toBeNull();
     const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
       .map((el) => el.textContent);
-    expect(actionLabels).toEqual(['Log']);
+    expect(actionLabels).toEqual(['Log', 'Stats']);
     expect(document.getElementById('run-body')!.textContent).toContain('No SDK metadata is attached');
   });
 });
@@ -133,7 +133,7 @@ describe('run popup settings tab', () => {
     expect(document.querySelector('#run-page-action-slot .run-delete-btn')).toBeNull();
     const actionLabels = Array.from(document.querySelectorAll('#run-page-action-slot .run-page-action-btn'))
       .map((el) => el.textContent);
-    expect(actionLabels).toEqual(['Log', 'Run page']);
+    expect(actionLabels).toEqual(['Log', 'Stats', 'Run page']);
     expect(document.querySelector('#run-tab-settings .run-delete-btn')?.textContent).toContain('Delete run');
   });
 

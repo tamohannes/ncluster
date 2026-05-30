@@ -466,6 +466,7 @@ function _runPageRender() {
       <div class="run-page-head-actions">
         <button class="btn" onclick="showTab('history')">Runs</button>
         ${logJob.jobId ? `<button class="btn" onclick="_openRunLog(${_jsArg(_runPageState.cluster)},${_jsArg(logJob.jobId)},${_jsArg(logJob.name || title)})">Log</button>` : ''}
+        ${run.root_job_id ? `<button class="btn" onclick="openRunStats(${_jsArg(_runPageState.cluster)},${_jsArg(run.root_job_id)},${_jsArg(title)})">Stats</button>` : ''}
         <button class="btn" onclick="openRunInfoByHash('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}','${escAttr(title)}')">quick peek</button>
         <button class="btn" onclick="openRunPage('${escAttr(_runPageState.cluster)}','${escAttr(_runPageState.runHash)}', true)">↻ refresh</button>
       </div>

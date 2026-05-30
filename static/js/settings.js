@@ -246,7 +246,59 @@ function _getGpuColors() {
   return isDark ? _gpuColorsDark : _gpuColorsLight;
 }
 
+const RUN_STATS_BUCKET_MS = 3 * 60 * 1000;
+const _runStatsColorsLight = [
+  '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2',
+  '#ca8a04', '#db2777', '#0d9488', '#4f46e5', '#65a30d', '#be123c',
+];
+const _runStatsColorsDark = [
+  '#60a5fa', '#fb7185', '#4ade80', '#c084fc', '#fbbf24', '#22d3ee',
+  '#f97316', '#f472b6', '#2dd4bf', '#a78bfa', '#bef264', '#f43f5e',
+];
+
+function _getRunStatsColors() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return isDark ? _runStatsColorsDark : _runStatsColorsLight;
+}
+
+function _statsChartTheme() {
+  const cs = getComputedStyle(document.documentElement);
+  return {
+    textColor: cs.getPropertyValue('--text').trim(),
+    mutedColor: cs.getPropertyValue('--muted').trim(),
+    gridColor: cs.getPropertyValue('--border').trim(),
+  };
+}
+
+function _statsChartOptions(title, yLabel, yMax, theme) {
+  const { textColor, mutedColor, gridColor } = theme || _statsChartTheme();
+  return {
+    responsive: true, maintainAspectRatio: false,
+    layout: { padding: { left: 8, right: 18, top: 8, bottom: 0 } },
+    elements: {
+      point: {
+        radius: 2.5,
+        hoverRadius: 5,
+        borderWidth: 1.5,
+        hoverBorderWidth: 2,
+      },
+      line: { borderCapStyle: 'round', borderJoinStyle: 'round' },
+    },
+    plugins: {
+      title: { display: true, text: title, font: { family: 'monospace', size: 11, weight: 'bold' }, color: textColor },
+      legend: { display: true, position: 'bottom', labels: { font: { family: 'monospace', size: 9 }, boxWidth: 10, padding: 6, color: mutedColor, usePointStyle: true, pointStyle: 'line' } },
+      tooltip: { mode: 'index', intersect: false, titleFont: { family: 'monospace', size: 10 }, bodyFont: { family: 'monospace', size: 10 } },
+    },
+    scales: {
+      x: { offset: true, ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
+      y: { min: 0, max: yMax != null ? yMax : undefined, grace: yMax != null ? 0 : '5%', ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, includeBounds: true }, grid: { color: gridColor }, title: { display: true, text: yLabel, font: { family: 'monospace', size: 9 }, color: mutedColor } },
+    },
+    interaction: { mode: 'index', intersect: false },
+  };
+}
+
 async function openStats(cluster, jobId, jobName) {
+  _stopStatsLiveUpdates();
   document.getElementById('stats-overlay').classList.add('open');
   document.getElementById('stats-title').textContent = jobName || `job ${jobId}`;
   document.getElementById('stats-sub').textContent = `${cluster} · ${jobId}`;
@@ -263,8 +315,11 @@ async function openStats(cluster, jobId, jobName) {
     if (d.status !== 'ok') {
       slurmHtml = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load stats.'}</div>`;
     } else {
-      snapshots = d.snapshots || [];
       liveGpus = d.gpus || [];
+      const liveState = _createStatsLiveState(cluster, jobId, d.snapshots || []);
+      _appendStatsLiveSample(liveState, _statsLiveSampleFromResponse(d));
+      _statsLiveState = liveState;
+      snapshots = _combinedStatsSamples(liveState);
       const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
       const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
       const hasRssData = snapshots.some(s => s.rss_used != null);
@@ -290,16 +345,182 @@ async function openStats(cluster, jobId, jobName) {
         ${chartsHtml}
       `;
       shouldRenderCharts = true;
+      if (['RUNNING', 'COMPLETING'].includes(String(d.state || '').toUpperCase())) {
+        _startStatsLiveUpdates(cluster, jobId, liveState);
+      }
     }
   } catch (e) {
     slurmHtml = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
   }
   document.getElementById('stats-body').innerHTML = slurmHtml + '<div id="custom-metrics-section"></div>';
-  if (shouldRenderCharts) _renderStatsCharts(snapshots, liveGpus);
+  if (shouldRenderCharts) _renderStatsCharts(snapshots, []);
   _loadCustomMetricsForStats(cluster, jobId);
 }
 
+async function openRunStats(cluster, runRef, runName) {
+  _stopStatsLiveUpdates();
+  document.getElementById('stats-overlay').classList.add('open');
+  document.getElementById('stats-title').textContent = runName || `run ${runRef}`;
+  document.getElementById('stats-sub').textContent = `${cluster} · run ${runRef}`;
+  document.getElementById('stats-body').innerHTML = '<div class="log-loading">Loading run stats…</div>';
+  _statsChartInstances.forEach(c => c.destroy());
+  _statsChartInstances = [];
+  try {
+    const res = await fetch(`/api/run_stats/${encodeURIComponent(cluster)}/${encodeURIComponent(runRef)}?refresh=1`);
+    const d = await res.json();
+    if (d.status !== 'ok') {
+      document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load run stats.'}</div>`;
+      return;
+    }
+    _renderRunStatsModal(d);
+    const hasRunning = (d.jobs || []).some(j => ['RUNNING', 'COMPLETING'].includes(String(j.state || '').toUpperCase()));
+    if (hasRunning) _startRunStatsLiveUpdates(cluster, runRef);
+  } catch (e) {
+    document.getElementById('stats-body').innerHTML = '<div class="log-loading" style="color:var(--red)">Failed to load run stats.</div>';
+  }
+}
+
 let _statsChartInstances = [];
+const STATS_MODAL_LIVE_MS = 3 * 60 * 1000;
+const STATS_MODAL_MIN_SAMPLE_GAP_MS = STATS_MODAL_LIVE_MS;
+const STATS_MODAL_MAX_LIVE_SAMPLES = 720;
+let _statsLiveTimer = null;
+let _statsLiveToken = 0;
+let _statsLiveState = null;
+
+function _stopStatsLiveUpdates() {
+  if (_statsLiveTimer) clearTimeout(_statsLiveTimer);
+  _statsLiveTimer = null;
+  _statsLiveToken += 1;
+  _statsLiveState = null;
+}
+
+function _createStatsLiveState(cluster, jobId, snapshots) {
+  return {
+    cluster,
+    jobId: String(jobId),
+    baseSnapshots: _normalizeStatsSnapshots(snapshots),
+    liveSamples: [],
+  };
+}
+
+function _normalizeStatsSnapshots(snapshots) {
+  return (snapshots || [])
+    .filter(s => s && s.ts)
+    .map(s => ({ ...s, _source: s._source || 'snapshot' }));
+}
+
+function _mergeStatsSnapshots(state, snapshots) {
+  if (!state) return;
+  const byTs = new Map();
+  for (const snap of state.baseSnapshots || []) {
+    if (snap && snap.ts) byTs.set(String(snap.ts), snap);
+  }
+  for (const snap of _normalizeStatsSnapshots(snapshots)) {
+    byTs.set(String(snap.ts), snap);
+  }
+  state.baseSnapshots = Array.from(byTs.values()).sort(_compareStatsSamplesByTs);
+}
+
+function _statsLiveSampleFromResponse(d) {
+  const gpus = d && Array.isArray(d.gpus) ? d.gpus : [];
+  if (!gpus.length) return null;
+  return {
+    ts: new Date().toISOString(),
+    per_gpu: gpus,
+    gpu_util: null,
+    gpu_mem_used: null,
+    gpu_mem_total: null,
+    cpu_util: '',
+    rss_used: null,
+    max_rss: null,
+    _source: 'live',
+  };
+}
+
+function _appendStatsLiveSample(state, sample) {
+  if (!state || !sample || !sample.ts) return;
+  const all = _combinedStatsSamples(state);
+  const last = all[all.length - 1];
+  if (last) {
+    const prev = Date.parse(last.ts);
+    const cur = Date.parse(sample.ts);
+    if (Number.isFinite(prev) && Number.isFinite(cur) && Math.abs(cur - prev) < STATS_MODAL_MIN_SAMPLE_GAP_MS) return;
+  }
+  state.liveSamples.push(sample);
+  if (state.liveSamples.length > STATS_MODAL_MAX_LIVE_SAMPLES) {
+    state.liveSamples.splice(0, state.liveSamples.length - STATS_MODAL_MAX_LIVE_SAMPLES);
+  }
+}
+
+function _compareStatsSamplesByTs(a, b) {
+  const ta = Date.parse(a && a.ts ? a.ts : '');
+  const tb = Date.parse(b && b.ts ? b.ts : '');
+  if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
+  return String((a && a.ts) || '').localeCompare(String((b && b.ts) || ''));
+}
+
+function _combinedStatsSamples(state) {
+  if (!state) return [];
+  return [...(state.baseSnapshots || []), ...(state.liveSamples || [])]
+    .filter(s => s && s.ts)
+    .sort(_compareStatsSamplesByTs);
+}
+
+function _startStatsLiveUpdates(cluster, jobId, state) {
+  const token = _statsLiveToken;
+  const tick = async () => {
+    if (token !== _statsLiveToken) return;
+    const overlay = document.getElementById('stats-overlay');
+    if (!overlay || !overlay.classList.contains('open')) return;
+    if (document.hidden) {
+      _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/stats/${cluster}/${jobId}`);
+      const d = await res.json();
+      if (d.status === 'ok') {
+        _mergeStatsSnapshots(state, d.snapshots || []);
+        _appendStatsLiveSample(state, _statsLiveSampleFromResponse(d));
+        _renderStatsCharts(_combinedStatsSamples(state), []);
+      }
+    } catch (_) {
+      // Keep the modal responsive; a transient stats fetch failure should not
+      // tear down an otherwise usable chart.
+    } finally {
+      if (token === _statsLiveToken) {
+        _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+      }
+    }
+  };
+  _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+}
+
+function _startRunStatsLiveUpdates(cluster, runRef) {
+  const token = _statsLiveToken;
+  const tick = async () => {
+    if (token !== _statsLiveToken) return;
+    const overlay = document.getElementById('stats-overlay');
+    if (!overlay || !overlay.classList.contains('open')) return;
+    if (document.hidden) {
+      _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/run_stats/${encodeURIComponent(cluster)}/${encodeURIComponent(runRef)}?refresh=1`);
+      const d = await res.json();
+      if (d.status === 'ok') _renderRunStatsModal(d);
+    } catch (_) {
+      // Keep the modal usable if one refresh misses.
+    } finally {
+      if (token === _statsLiveToken) {
+        _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+      }
+    }
+  };
+  _statsLiveTimer = setTimeout(tick, STATS_MODAL_LIVE_MS);
+}
 
 async function _loadCustomMetricsForStats(cluster, jobId) {
   const el = document.getElementById('custom-metrics-section');
@@ -346,6 +567,186 @@ async function _loadCustomMetricsForStats(cluster, jobId) {
   } catch (e) {
     const loadingEl = document.getElementById('custom-metrics-loading');
     if (loadingEl) loadingEl.textContent = 'failed';
+  }
+}
+
+function _runSnapshotGpuUtil(snapshot) {
+  if (!snapshot) return null;
+  if (snapshot.gpu_util != null && Number.isFinite(Number(snapshot.gpu_util))) {
+    return Number(snapshot.gpu_util);
+  }
+  const vals = (snapshot.per_gpu || [])
+    .map(g => _parseGpuUtil(g))
+    .filter(v => v != null && Number.isFinite(v));
+  if (!vals.length) return null;
+  return Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10;
+}
+
+function _runSnapshotGpuMemUsed(snapshot) {
+  if (!snapshot) return null;
+  if (snapshot.gpu_mem_used != null && Number.isFinite(Number(snapshot.gpu_mem_used))) {
+    return Number(snapshot.gpu_mem_used);
+  }
+  const vals = (snapshot.per_gpu || [])
+    .map(g => _parseGpuMemUsed(g))
+    .filter(v => v != null && Number.isFinite(v));
+  if (!vals.length) return null;
+  return Math.round((vals.reduce((s, v) => s + v, 0) / vals.length) * 10) / 10;
+}
+
+function _runStatsTimeLabel(ts) {
+  try { return new Date(String(ts || '').replace('T', ' ')).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+  catch (_) { return ts || ''; }
+}
+
+function _runStatsBucketKey(ts) {
+  const ms = Date.parse(String(ts || '').replace(' ', 'T'));
+  if (Number.isFinite(ms)) return String(Math.floor(ms / RUN_STATS_BUCKET_MS) * RUN_STATS_BUCKET_MS);
+  return String(ts || '');
+}
+
+function _runStatsBucketLabel(key) {
+  const ms = Number(key);
+  if (Number.isFinite(ms) && String(Math.trunc(ms)) === String(key)) {
+    return _runStatsTimeLabel(new Date(ms).toISOString());
+  }
+  return key;
+}
+
+function _compareRunStatsBucketKeys(a, b) {
+  const na = Number(a);
+  const nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+  return String(a || '').localeCompare(String(b || ''));
+}
+
+function _runStatsJobLabel(job) {
+  const jid = String(job.job_id || '').trim();
+  const name = String(job.name || jid || 'job').trim();
+  const short = name.length > 36 ? `${name.slice(0, 16)}…${name.slice(-17)}` : name;
+  return jid ? `${short} · ${jid}` : short;
+}
+
+function _runStatsColorKey(job, idx) {
+  return String(job.job_id || job.name || idx);
+}
+
+function _runStatsLineDatasets(jobs, bucketKeys, valueFn, colorsByJob, textColor) {
+  return (jobs || [])
+    .map((job, idx) => {
+      const pointsByBucket = new Map();
+      for (const snap of job.snapshots || []) {
+        const bucket = _runStatsBucketKey(snap.ts);
+        if (!bucket) continue;
+        const value = valueFn(snap);
+        if (value == null || !Number.isFinite(Number(value))) continue;
+        const agg = pointsByBucket.get(bucket) || { sum: 0, count: 0 };
+        agg.sum += Number(value);
+        agg.count += 1;
+        pointsByBucket.set(bucket, agg);
+      }
+      const color = colorsByJob.get(_runStatsColorKey(job, idx));
+      const data = bucketKeys.map(bucket => {
+        const agg = pointsByBucket.get(bucket);
+        return agg && agg.count ? Math.round((agg.sum / agg.count) * 10) / 10 : null;
+      });
+      if (!data.some(v => v != null)) return null;
+      return {
+        label: _runStatsJobLabel(job),
+        data,
+        borderColor: color,
+        backgroundColor: color + '18',
+        fill: false,
+        tension: 0.3,
+        clip: false,
+        pointRadius: bucketKeys.length < 120 ? 2.8 : 0,
+        pointHoverRadius: 5,
+        pointBackgroundColor: color,
+        pointBorderColor: textColor,
+        pointBorderWidth: 1,
+        borderWidth: 2,
+      };
+    })
+    .filter(Boolean);
+}
+
+function _renderRunStatsModal(payload) {
+  const jobs = payload.jobs || [];
+  const utilJobs = jobs.filter(j => (j.snapshots || []).some(s => _runSnapshotGpuUtil(s) != null));
+  const memJobs = jobs.filter(j => (j.snapshots || []).some(s => _runSnapshotGpuMemUsed(s) != null));
+  const bucketKeys = Array.from(new Set(jobs.flatMap(j => (j.snapshots || []).map(s => _runStatsBucketKey(s.ts)).filter(Boolean))))
+    .sort(_compareRunStatsBucketKeys);
+  const labelText = bucketKeys.map(_runStatsBucketLabel);
+  const samples = utilJobs.reduce((s, j) => s + (j.sample_count || 0), 0);
+  const avgValues = utilJobs.map(j => j.avg_gpu_util).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+  const latestValues = utilJobs.map(j => j.latest_gpu_util).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+  const runAvg = avgValues.length ? Math.round((avgValues.reduce((s, v) => s + v, 0) / avgValues.length) * 10) / 10 : null;
+  const runLatest = latestValues.length ? Math.round((latestValues.reduce((s, v) => s + v, 0) / latestValues.length) * 10) / 10 : null;
+
+  const kvs = [
+    ['Jobs with GPU samples', `${utilJobs.length} / ${jobs.length}`],
+    ['Samples', samples ? String(samples) : '—'],
+    ['Run avg GPU', runAvg != null ? `${runAvg}%` : '—'],
+    ['Latest avg GPU', runLatest != null ? `${runLatest}%` : '—'],
+  ].map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${_statsEsc(k)}</div><div class="stats-v">${_statsEsc(v)}</div></div>`).join('');
+
+  let chartsHtml = '';
+  if (utilJobs.length) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-run-gpu-util"></canvas></div>';
+  if (memJobs.length) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-run-gpu-mem"></canvas></div>';
+  chartsHtml = chartsHtml ? `<div class="stats-charts">${chartsHtml}</div>` : '<div class="run-empty-state">No GPU utilization snapshots have been captured for this run yet.</div>';
+
+  const runColors = _getRunStatsColors();
+  const colorsByJob = new Map(jobs.map((job, idx) => [_runStatsColorKey(job, idx), runColors[idx % runColors.length]]));
+  const rows = jobs.map((job, idx) => {
+    const color = colorsByJob.get(_runStatsColorKey(job, idx)) || '#999';
+    return `
+    <tr>
+      <td><span class="run-stats-color-swatch" style="--run-stats-color:${_statsEsc(color)}"></span></td>
+      <td class="dim">${_statsEsc(job.job_id || '')}</td>
+      <td>${_statsEsc(job.name || '')}</td>
+      <td>${_statsEsc(job.state || '—')}</td>
+      <td class="dim">${job.avg_gpu_util != null ? `${_statsEsc(String(job.avg_gpu_util))}%` : '—'}</td>
+      <td class="dim">${job.latest_gpu_util != null ? `${_statsEsc(String(job.latest_gpu_util))}%` : '—'}</td>
+      <td class="dim">${_statsEsc(String(job.sample_count || 0))}</td>
+    </tr>`;
+  }).join('');
+  const tableHtml = rows ? `
+    <table class="run-jobs-table">
+      <thead><tr><th></th><th>ID</th><th>Job</th><th>State</th><th>Avg GPU</th><th>Latest</th><th>Samples</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : '';
+
+  document.getElementById('stats-body').innerHTML = `
+    <div class="stats-grid">${kvs}</div>
+    ${chartsHtml}
+    ${tableHtml}
+  `;
+
+  _statsChartInstances.forEach(c => c.destroy());
+  _statsChartInstances = [];
+  if (!bucketKeys.length) return;
+  const theme = _statsChartTheme();
+  const utilCtx = document.getElementById('chart-run-gpu-util');
+  if (utilCtx) {
+    const datasets = _runStatsLineDatasets(utilJobs, bucketKeys, _runSnapshotGpuUtil, colorsByJob, theme.textColor);
+    if (datasets.length) {
+      _statsChartInstances.push(new Chart(utilCtx, {
+        type: 'line',
+        data: { labels: labelText, datasets },
+        options: _statsChartOptions('Run GPU Utilization (3-min avg/job)', '%', 100, theme),
+      }));
+    }
+  }
+  const memCtx = document.getElementById('chart-run-gpu-mem');
+  if (memCtx) {
+    const datasets = _runStatsLineDatasets(memJobs, bucketKeys, _runSnapshotGpuMemUsed, colorsByJob, theme.textColor);
+    if (datasets.length) {
+      _statsChartInstances.push(new Chart(memCtx, {
+        type: 'line',
+        data: { labels: labelText, datasets },
+        options: _statsChartOptions('Run GPU Memory (3-min avg/job)', 'MiB', null, theme),
+      }));
+    }
   }
 }
 
@@ -402,14 +803,24 @@ function _renderStatsCharts(snapshots, liveGpus) {
 
   const chartOpts = (title, yLabel, yMax) => ({
     responsive: true, maintainAspectRatio: false,
+    layout: { padding: { left: 8, right: 18, top: 8, bottom: 0 } },
+    elements: {
+      point: {
+        radius: 2.5,
+        hoverRadius: 5,
+        borderWidth: 1.5,
+        hoverBorderWidth: 2,
+      },
+      line: { borderCapStyle: 'round', borderJoinStyle: 'round' },
+    },
     plugins: {
       title: { display: true, text: title, font: { family: 'monospace', size: 11, weight: 'bold' }, color: textColor },
       legend: { display: true, position: 'bottom', labels: { font: { family: 'monospace', size: 9 }, boxWidth: 10, padding: 6, color: mutedColor, usePointStyle: true, pointStyle: 'line' } },
       tooltip: { mode: 'index', intersect: false, titleFont: { family: 'monospace', size: 10 }, bodyFont: { family: 'monospace', size: 10 } },
     },
     scales: {
-      x: { ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
-      y: { min: 0, max: yMax || undefined, ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor }, grid: { color: gridColor }, title: { display: true, text: yLabel, font: { family: 'monospace', size: 9 }, color: mutedColor } },
+      x: { offset: true, ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, maxTicksLimit: 10 }, grid: { color: gridColor } },
+      y: { min: 0, max: yMax != null ? yMax : undefined, grace: yMax != null ? 0 : '5%', ticks: { font: { family: 'monospace', size: 9 }, color: mutedColor, includeBounds: true }, grid: { color: gridColor }, title: { display: true, text: yLabel, font: { family: 'monospace', size: 9 }, color: mutedColor } },
     },
     interaction: { mode: 'index', intersect: false },
   });
@@ -426,12 +837,12 @@ function _renderStatsCharts(snapshots, liveGpus) {
       utilDatasets.push({
         label: lbl, borderColor: color, backgroundColor: color + '18',
         data: allSnaps.map(s => _parseGpuUtil((s.per_gpu || [])[gi])),
-        fill: false, tension: 0.3, pointRadius: allSnaps.length < 4 ? 3 : 1, borderWidth: 2,
+        fill: false, tension: 0.3, clip: false, pointRadius: allSnaps.length < 120 ? 2.5 : 0, pointHoverRadius: 5, pointBackgroundColor: color, pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2,
       });
       memDatasets.push({
         label: lbl, borderColor: color, backgroundColor: color + '18',
         data: allSnaps.map(s => _parseGpuMemUsed((s.per_gpu || [])[gi])),
-        fill: false, tension: 0.3, pointRadius: allSnaps.length < 4 ? 3 : 1, borderWidth: 2,
+        fill: false, tension: 0.3, clip: false, pointRadius: allSnaps.length < 120 ? 2.5 : 0, pointHoverRadius: 5, pointBackgroundColor: color, pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2,
       });
     }
 
@@ -450,7 +861,7 @@ function _renderStatsCharts(snapshots, liveGpus) {
         memDatasets.push({
           label: 'Total', borderColor: mutedColor, borderDash: [5, 3],
           data: allSnaps.map(() => totalVal),
-          fill: false, tension: 0, pointRadius: 0, borderWidth: 1,
+          fill: false, tension: 0, clip: false, pointRadius: 0, borderWidth: 1,
         });
       }
       _statsChartInstances.push(new Chart(ctxMem, {
@@ -463,14 +874,14 @@ function _renderStatsCharts(snapshots, liveGpus) {
     if (ctxUtil) {
       _statsChartInstances.push(new Chart(ctxUtil, {
         type: 'line',
-        data: { labels, datasets: [{ label: 'Avg', data: allSnaps.map(s => s.gpu_util), borderColor: colors[0], backgroundColor: colors[0] + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+        data: { labels, datasets: [{ label: 'Avg', data: allSnaps.map(s => s.gpu_util), borderColor: colors[0], backgroundColor: colors[0] + '33', fill: true, tension: 0.3, clip: false, pointRadius: 2.5, pointHoverRadius: 5, pointBackgroundColor: colors[0], pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2 }] },
         options: chartOpts('GPU Utilization (avg)', '%', 100),
       }));
     }
     const ctxMem = document.getElementById('chart-gpu-mem');
     if (ctxMem && allSnaps.some(s => s.gpu_mem_used != null)) {
-      const ds = [{ label: 'Used', data: allSnaps.map(s => s.gpu_mem_used), borderColor: colors[1], backgroundColor: colors[1] + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }];
-      if (allSnaps.some(s => s.gpu_mem_total != null)) ds.push({ label: 'Total', data: allSnaps.map(s => s.gpu_mem_total), borderColor: mutedColor, borderDash: [5, 3], fill: false, tension: 0, pointRadius: 0, borderWidth: 1 });
+      const ds = [{ label: 'Used', data: allSnaps.map(s => s.gpu_mem_used), borderColor: colors[1], backgroundColor: colors[1] + '33', fill: true, tension: 0.3, clip: false, pointRadius: 2.5, pointHoverRadius: 5, pointBackgroundColor: colors[1], pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2 }];
+      if (allSnaps.some(s => s.gpu_mem_total != null)) ds.push({ label: 'Total', data: allSnaps.map(s => s.gpu_mem_total), borderColor: mutedColor, borderDash: [5, 3], fill: false, tension: 0, clip: false, pointRadius: 0, borderWidth: 1 });
       _statsChartInstances.push(new Chart(ctxMem, { type: 'line', data: { labels, datasets: ds }, options: chartOpts('GPU Memory (avg)', 'MiB') }));
     }
   }
@@ -500,7 +911,7 @@ function _renderStatsCharts(snapshots, liveGpus) {
     if (ctxCpu && cpuUtilPct.some(v => v != null)) {
       _statsChartInstances.push(new Chart(ctxCpu, {
         type: 'line',
-        data: { labels: cpuLabels, datasets: [{ label: 'CPU', data: cpuUtilPct, borderColor: cpuColor, backgroundColor: cpuColor + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+        data: { labels: cpuLabels, datasets: [{ label: 'CPU', data: cpuUtilPct, borderColor: cpuColor, backgroundColor: cpuColor + '33', fill: true, tension: 0.3, clip: false, pointRadius: 2.5, pointHoverRadius: 5, pointBackgroundColor: cpuColor, pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2 }] },
         options: chartOpts('CPU Utilization', '%', 100),
       }));
     }
@@ -516,7 +927,7 @@ function _renderStatsCharts(snapshots, liveGpus) {
     const ctx = document.getElementById('chart-rss');
     if (ctx) _statsChartInstances.push(new Chart(ctx, {
       type: 'line',
-      data: { labels: rssLabels, datasets: [{ label: 'RSS', data: rssSnaps.map(s => s.rss_used), borderColor: rssColor, backgroundColor: rssColor + '33', fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 }] },
+      data: { labels: rssLabels, datasets: [{ label: 'RSS', data: rssSnaps.map(s => s.rss_used), borderColor: rssColor, backgroundColor: rssColor + '33', fill: true, tension: 0.3, clip: false, pointRadius: 2.5, pointHoverRadius: 5, pointBackgroundColor: rssColor, pointBorderColor: textColor, pointBorderWidth: 1, borderWidth: 2 }] },
       options: chartOpts('RSS Memory', 'MB'),
     }));
   }
@@ -530,6 +941,7 @@ function closeStats(e) {
   if (e.target === document.getElementById('stats-overlay')) closeStatsDirect();
 }
 function closeStatsDirect() {
+  _stopStatsLiveUpdates();
   document.getElementById('stats-overlay').classList.remove('open');
 }
 
@@ -935,7 +1347,7 @@ async function loadSettingsPanel() {
     const cfg = await res.json();
     document.getElementById('set-ssh-timeout').value = cfg.ssh_timeout || 8;
     document.getElementById('set-cache-fresh').value = cfg.cache_fresh_sec || 30;
-    document.getElementById('set-stats-interval').value = cfg.stats_interval_sec || 1800;
+    document.getElementById('set-stats-interval').value = cfg.stats_interval_sec || 60;
     document.getElementById('set-backup-interval').value = cfg.backup_interval_hours || 24;
     document.getElementById('set-backup-max').value = cfg.backup_max_keep || 7;
 
@@ -1558,7 +1970,7 @@ async function saveAdvancedSettings() {
   const updates = {
     ssh_timeout: parseInt(document.getElementById('set-ssh-timeout').value) || 8,
     cache_fresh_sec: parseInt(document.getElementById('set-cache-fresh').value) || 30,
-    stats_interval_sec: parseInt(document.getElementById('set-stats-interval').value) || 1800,
+    stats_interval_sec: parseInt(document.getElementById('set-stats-interval').value) || 60,
     backup_interval_hours: parseInt(document.getElementById('set-backup-interval').value) || 24,
     backup_max_keep: parseInt(document.getElementById('set-backup-max').value) || 7,
     custom_metrics_enabled: cmChecked,

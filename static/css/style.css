@@ -1508,6 +1508,15 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .run-jobs-table td {
   padding: 5px 10px; border-bottom: 1px solid var(--row-border);
 }
+.run-stats-color-swatch {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: var(--run-stats-color);
+  box-shadow: 0 0 0 1px var(--surface), 0 0 0 2px color-mix(in srgb, var(--run-stats-color) 65%, transparent);
+  vertical-align: -1px;
+}
 
 /* ── Run notes (mark control lives in #run-mark-slot in header) ── */
 .run-notes-block {
@@ -5746,11 +5755,11 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .stats-modal {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.15);
-  width: min(900px, 96vw); height: 72vh;
+  width: min(1280px, 96vw); height: 78vh;
   display: flex; flex-direction: column; overflow: hidden;
   resize: both;
-  min-width: 560px;
-  min-height: 360px;
+  min-width: min(720px, 96vw);
+  min-height: 460px;
   max-width: 98vw;
   max-height: 94vh;
 }
@@ -5761,7 +5770,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .stats-title { font-family: var(--mono); font-size: 12px; font-weight: 600; }
 .stats-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
-.stats-body { padding: 12px 14px; overflow-y: auto; }
+.stats-body { padding: 14px 16px 18px; overflow-y: auto; }
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -5783,15 +5792,42 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .gpu-table th { background: var(--surface2); color: var(--muted); font-size: 10px; text-transform: uppercase; }
 
-.stats-charts { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.stats-charts {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
 .stats-chart-wrap {
   border: 1px solid var(--border); border-radius: 8px;
-  background: var(--surface2); padding: 10px 12px;
-  height: 180px; position: relative;
+  background: var(--surface2); padding: 14px 16px 12px;
+  height: 260px; min-width: 0; position: relative;
+}
+.stats-chart-wrap canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 .stats-chart-note {
   font-family: var(--mono); font-size: 10px; color: var(--muted);
   margin-top: 12px; text-align: center;
+}
+
+@media (max-width: 760px) {
+  .stats-modal {
+    width: 96vw;
+    height: 86vh;
+    min-width: 0;
+    min-height: 360px;
+  }
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .stats-chart-wrap {
+    height: 240px;
+    padding: 12px 12px 10px;
+  }
 }
 
 /* ── Error banner ── */

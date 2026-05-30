@@ -29,14 +29,6 @@ _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
 _LOG_DISCOVERY_ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
 _LOG_ALLOWED_SUFFIXES = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 _DEFAULT_METRICS_FILE_GLOB = "*{job_id}*"
-_HIDDEN_LOG_EXPLORER_DIR_LABELS = {"nemo-run"}
-_HIDDEN_LOG_EXPLORER_ENTRY_NAMES = {
-    "nemo-run",
-    "__main__.py",
-    "_config",
-    "_tasks",
-    "_version",
-}
 _WAITING_FOR_SERVER_MARKERS = (
     "waiting for server to start",
     "waiting for the server to start",
@@ -47,27 +39,13 @@ _WAITING_FOR_SERVER_MARKERS = (
 
 
 def filter_log_explorer_dirs(dirs):
-    """Drop noisy implementation dirs from discovered log explorer roots."""
-    visible = []
-    for entry in dirs or []:
-        label = str(entry.get("label", "")).strip().lower()
-        if label in _HIDDEN_LOG_EXPLORER_DIR_LABELS:
-            continue
-        visible.append(entry)
-    return visible
+    """Return discovered explorer roots as-is."""
+    return list(dirs or [])
 
 
-def filter_log_explorer_entries(entries):
-    """Drop noisy implementation dirs from expanded log explorer listings."""
-    visible = []
-    for entry in entries or []:
-        name = str(entry.get("name", "")).strip().lower()
-        if entry.get("is_dir") and name == "nemo-run":
-            continue
-        if not entry.get("is_dir") and name in _HIDDEN_LOG_EXPLORER_ENTRY_NAMES:
-            continue
-        visible.append(entry)
-    return visible
+def filter_log_explorer_entries(entries, parent_path=""):
+    """Return directory listings as-is so the explorer is trustworthy."""
+    return list(entries or [])
 
 
 def _finalize_log_files_result(result):
