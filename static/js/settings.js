@@ -299,62 +299,102 @@ function _statsChartOptions(title, yLabel, yMax, theme) {
 
 async function openStats(cluster, jobId, jobName) {
   _stopStatsLiveUpdates();
+  const token = _statsLiveToken;
   document.getElementById('stats-overlay').classList.add('open');
   document.getElementById('stats-title').textContent = jobName || `job ${jobId}`;
   document.getElementById('stats-sub').textContent = `${cluster} · ${jobId}`;
-  document.getElementById('stats-body').innerHTML = '<div class="log-loading">Loading stats…</div>';
+  document.getElementById('stats-body').innerHTML =
+    '<div id="stats-main"><div class="log-loading">Loading stats…</div></div>'
+    + '<div id="custom-metrics-section"></div>';
   _statsChartInstances.forEach(c => c.destroy());
   _statsChartInstances = [];
-  let slurmHtml = '';
-  let snapshots = [];
-  let liveGpus = [];
-  let shouldRenderCharts = false;
+
+  // Phase 1 — instant paint from cache + stored snapshots (no SSH probe).
+  let painted = false;
+  try {
+    const res = await fetch(`/api/stats/${cluster}/${jobId}?cached=1`);
+    const d = await res.json();
+    if (token !== _statsLiveToken) return;
+    if (d && d.status === 'ok') {
+      painted = _renderStatsResponse(cluster, jobId, d, { token, startLive: false });
+    }
+  } catch (_) { /* fall through to the fresh fetch */ }
+
+  // Phase 2 — background refresh with the live GPU/CPU probe; updates in place.
+  // Awaited so the promise resolves "fully loaded", but the phase-1 paint above
+  // already rendered, so this does not delay anything the user sees.
+  _loadCustomMetricsForStats(cluster, jobId);
+  await _refreshStatsFresh(cluster, jobId, token, painted);
+}
+
+// Renders a /api/stats response into the open modal. Returns whether it painted
+// real content (vs. an empty/pending shell). `startLive` arms the periodic
+// live-update loop for running jobs.
+function _renderStatsResponse(cluster, jobId, d, opts = {}) {
+  const { token, startLive = false } = opts;
+  if (token != null && token !== _statsLiveToken) return false;
+  const main = document.getElementById('stats-main');
+  if (!main) return false;
+
+  const liveGpus = d.gpus || [];
+  const liveState = _createStatsLiveState(cluster, jobId, d.snapshots || []);
+  _appendStatsLiveSample(liveState, _statsLiveSampleFromResponse(d));
+  _statsLiveState = liveState;
+  const snapshots = _combinedStatsSamples(liveState);
+  const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
+  const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
+  const hasRssData = snapshots.some(s => s.rss_used != null);
+  const hasCpuData = snapshots.some(s => s.cpu_util && s.cpu_util !== '00:00:00');
+
+  let chartsHtml = '';
+  if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-util"></canvas></div>';
+  if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-mem"></canvas></div>';
+  if (hasCpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-cpu"></canvas></div>';
+  if (hasRssData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-rss"></canvas></div>';
+  if (chartsHtml) chartsHtml = `<div class="stats-charts">${chartsHtml}</div>`;
+
+  const kvs = [
+    ['State', d.state], ['Elapsed', d.elapsed],
+    ['Nodes', d.nodes], ['GPUs', d.gres],
+    ['CPU', d.cpus], ['RSS', `${d.ave_rss || '—'} / ${d.max_rss || '—'}`],
+  ].filter(([, v]) => v && v !== '—' && v !== 'N/A' && v !== '— / —')
+   .map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${k}</div><div class="stats-v">${v}</div></div>`)
+   .join('');
+
+  const hasContent = !!(kvs || chartsHtml);
+  if (!hasContent) return false;
+
+  _statsChartInstances.forEach(c => c.destroy());
+  _statsChartInstances = [];
+  main.innerHTML = `<div class="stats-grid">${kvs}</div>${chartsHtml}`;
+  _renderStatsCharts(snapshots, []);
+  if (startLive && ['RUNNING', 'COMPLETING'].includes(String(d.state || '').toUpperCase())) {
+    _startStatsLiveUpdates(cluster, jobId, liveState);
+  }
+  return true;
+}
+
+async function _refreshStatsFresh(cluster, jobId, token, alreadyPainted) {
   try {
     const res = await fetch(`/api/stats/${cluster}/${jobId}`);
     const d = await res.json();
-    if (d.status !== 'ok') {
-      slurmHtml = `<div class="log-loading" style="color:var(--red)">${d.error || 'Could not load stats.'}</div>`;
-    } else {
-      liveGpus = d.gpus || [];
-      const liveState = _createStatsLiveState(cluster, jobId, d.snapshots || []);
-      _appendStatsLiveSample(liveState, _statsLiveSampleFromResponse(d));
-      _statsLiveState = liveState;
-      snapshots = _combinedStatsSamples(liveState);
-      const hasPerGpu = snapshots.some(s => s.per_gpu && s.per_gpu.length > 0);
-      const hasGpuData = hasPerGpu || snapshots.some(s => s.gpu_util != null) || liveGpus.length > 0;
-      const hasRssData = snapshots.some(s => s.rss_used != null);
-      const hasCpuData = snapshots.some(s => s.cpu_util && s.cpu_util !== '00:00:00');
-
-      let chartsHtml = '';
-      if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-util"></canvas></div>';
-      if (hasGpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-gpu-mem"></canvas></div>';
-      if (hasCpuData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-cpu"></canvas></div>';
-      if (hasRssData) chartsHtml += '<div class="stats-chart-wrap"><canvas id="chart-rss"></canvas></div>';
-      if (chartsHtml) chartsHtml = `<div class="stats-charts">${chartsHtml}</div>`;
-
-      const kvs = [
-        ['State', d.state], ['Elapsed', d.elapsed],
-        ['Nodes', d.nodes], ['GPUs', d.gres],
-        ['CPU', d.cpus], ['RSS', `${d.ave_rss || '—'} / ${d.max_rss || '—'}`],
-      ].filter(([, v]) => v && v !== '—' && v !== 'N/A' && v !== '— / —')
-       .map(([k, v]) => `<div class="stats-kv"><div class="stats-k">${k}</div><div class="stats-v">${v}</div></div>`)
-       .join('');
-
-      slurmHtml = `
-        <div class="stats-grid">${kvs}</div>
-        ${chartsHtml}
-      `;
-      shouldRenderCharts = true;
-      if (['RUNNING', 'COMPLETING'].includes(String(d.state || '').toUpperCase())) {
-        _startStatsLiveUpdates(cluster, jobId, liveState);
+    if (token !== _statsLiveToken) return;
+    if (d && d.status === 'ok') {
+      const painted = _renderStatsResponse(cluster, jobId, d, { token, startLive: true });
+      if (!painted && !alreadyPainted) {
+        const main = document.getElementById('stats-main');
+        if (main) main.innerHTML = '<div class="log-loading">No stats available for this job.</div>';
       }
+    } else if (!alreadyPainted) {
+      const main = document.getElementById('stats-main');
+      if (main) main.innerHTML = `<div class="log-loading" style="color:var(--red)">${(d && d.error) || 'Could not load stats.'}</div>`;
     }
   } catch (e) {
-    slurmHtml = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
+    if (!alreadyPainted && token === _statsLiveToken) {
+      const main = document.getElementById('stats-main');
+      if (main) main.innerHTML = '<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>';
+    }
   }
-  document.getElementById('stats-body').innerHTML = slurmHtml + '<div id="custom-metrics-section"></div>';
-  if (shouldRenderCharts) _renderStatsCharts(snapshots, []);
-  _loadCustomMetricsForStats(cluster, jobId);
 }
 
 async function openRunStats(cluster, runRef, runName) {

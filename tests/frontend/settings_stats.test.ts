@@ -93,31 +93,43 @@ function latestRunGpuUtilChart() {
 describe('stats modal live charting', () => {
   it('appends live GPU samples while the stats modal is open', async () => {
     (globalThis as any).fetch = vi.fn()
+      // Phase 1: instant cached paint.
       .mockResolvedValueOnce({ json: async () => ({
         status: 'ok',
         state: 'RUNNING',
         snapshots: [],
         gpus: [{ index: '0', util: '50%', mem: '100/200 MiB' }],
       }) })
+      // Phase 2: immediate background refresh with the live probe.
       .mockResolvedValueOnce({ json: async () => ({
         status: 'ok',
         state: 'RUNNING',
         snapshots: [],
         gpus: [{ index: '0', util: '80%', mem: '150/200 MiB' }],
+      }) })
+      // Periodic live tick.
+      .mockResolvedValueOnce({ json: async () => ({
+        status: 'ok',
+        state: 'RUNNING',
+        snapshots: [],
+        gpus: [{ index: '0', util: '90%', mem: '160/200 MiB' }],
       }) });
 
     await openStats('eos', '42', 'job');
-    expect(latestGpuUtilChart().config.data.datasets[0].data).toEqual([50]);
+    // Cached-first: a ?cached=1 paint followed by the background refresh.
+    expect(String((globalThis as any).fetch.mock.calls[0][0])).toContain('cached=1');
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
+    expect(latestGpuUtilChart().config.data.datasets[0].data).toEqual([80]);
 
     await vi.advanceTimersByTimeAsync(179000);
     await Promise.resolve();
-    expect((globalThis as any).fetch).toHaveBeenCalledTimes(1);
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
 
     await vi.advanceTimersByTimeAsync(1000);
     await Promise.resolve();
 
-    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
-    expect(latestGpuUtilChart().config.data.datasets[0].data).toEqual([50, 80]);
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(3);
+    expect(latestGpuUtilChart().config.data.datasets[0].data).toEqual([80, 90]);
   });
 
   it('does not duplicate a fresh persisted snapshot with an immediate live sample', async () => {
@@ -145,10 +157,12 @@ describe('stats modal live charting', () => {
       }) });
 
     await openStats('eos', '42', 'job');
+    // Cached paint + background refresh = two fetches before any live tick.
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
     closeStatsDirect();
     await vi.advanceTimersByTimeAsync(180000);
 
-    expect((globalThis as any).fetch).toHaveBeenCalledTimes(1);
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
   });
 
   it('uses endpoint-safe chart options and renders paired GPU charts', async () => {

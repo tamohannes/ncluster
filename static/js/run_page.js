@@ -93,24 +93,37 @@ async function openRunPage(cluster, runHash, fromTab = false) {
     const tagDefsPromise = typeof loadRunTagDefinitions === 'function'
       ? loadRunTagDefinitions()
       : Promise.resolve();
-    const [infoRes, metricRes] = await Promise.all([
-      fetch(`/api/run_info_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`),
-      fetch(`/api/run_metrics_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`),
-      tagDefsPromise,
-    ]);
-    const info = await infoRes.json();
-    const metrics = await metricRes.json();
+    // Fire both in parallel, but don't make the page skeleton wait on the
+    // heavier metrics payload — only the Metrics/Metadata tabs consume it.
+    const infoP = fetch(`/api/run_info_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`).then(r => r.json());
+    const metricP = fetch(`/api/run_metrics_by_hash/${encodeURIComponent(c)}/${encodeURIComponent(h)}`).then(r => r.json());
+
+    await tagDefsPromise;
+    const info = await infoP;
     if (seq !== _runPageState.loadSeq) return;
     if (info.status !== 'ok' || !info.run) throw new Error(info.error || 'Run not found');
-    if (metrics.status !== 'ok') throw new Error(metrics.error || 'Metrics not found');
 
     _runPageState.run = info.run;
     if (info.run.run_hash) _runPageState.runHash = info.run.run_hash;
-    _runPageState.metrics = _runPageNormalizeMetrics(metrics);
-    _runPageApplyDefaultSelections();
+    // Placeholder so metric-consuming renderers stay safe until metrics land.
+    _runPageState.metrics = { ..._runPageNormalizeMetrics({}), loading: true };
     _runPageSyncTabLabel(info.run);
     _runPageRender();
     _runPageLoadCustomMetrics();
+
+    // Fold metrics in when they arrive; refresh the panel if it shows them.
+    metricP.then((metrics) => {
+      if (seq !== _runPageState.loadSeq) return;
+      if (!metrics || metrics.status !== 'ok') {
+        _runPageState.metrics = { ..._runPageNormalizeMetrics({}), loading: false };
+      } else {
+        _runPageState.metrics = _runPageNormalizeMetrics(metrics);
+        _runPageApplyDefaultSelections();
+      }
+      if (['metrics', 'metadata', 'provenance'].includes(_runPageState.pageTab)) {
+        _runPageRenderPanel();
+      }
+    }).catch(() => { /* leave the page usable without metrics */ });
   } catch (e) {
     if (seq !== _runPageState.loadSeq) return;
     _runPageRenderMessage(`Could not load run page: ${e.message || e}`);
@@ -654,7 +667,9 @@ function _runPageMetricsHtml() {
   const seriesCount = Object.keys(_runPageState.metrics.series || {}).length;
   const scalarCount = Object.keys(_runPageState.metrics.scalars || {}).length;
   if (!seriesCount && !scalarCount) {
-    return `<div class="run-page-empty">No tracked SDK metrics yet.</div>`;
+    return _runPageState.metrics.loading
+      ? `<div class="run-page-empty">Loading metrics…</div>`
+      : `<div class="run-page-empty">No tracked SDK metrics yet.</div>`;
   }
   return `<div class="run-page-metrics-layout">
     <section class="run-page-chart-stack">

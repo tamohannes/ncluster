@@ -1422,14 +1422,30 @@ def api_run_script(cluster):
 
 @api.route("/api/stats/<cluster>/<job_id>")
 def api_stats(cluster, job_id):
-    """Return cached stats — poller refreshes running job stats periodically."""
+    """Return cached stats — poller refreshes running job stats periodically.
+
+    ``?cached=1`` serves whatever is already in the cache/DB without ever
+    issuing the blocking SSH probe (sstat + ``srun nvidia-smi``). The stats
+    popup uses it for an instant first paint, then re-fetches without the flag
+    in the background to fill in live GPU/CPU values.
+    """
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     from .jobs import get_stats_snapshots
 
+    cached_only = request.args.get("cached") in ("1", "true", "yes")
     db_val, is_fresh = cache_db_get_stale("stats", f"{cluster}:{job_id}")
     if db_val and is_fresh:
         result = dict(db_val)
+    elif cached_only:
+        # Instant path: never block on SSH. Hand back the stale cache if we have
+        # one (flagged), otherwise an empty-but-ok shell so the popup can paint
+        # historical snapshots while the background refresh fetches live values.
+        if db_val:
+            result = dict(db_val)
+            result["_stale"] = True
+        else:
+            result = {"status": "ok", "_pending": True}
     else:
         result = get_job_stats_cached(cluster, job_id, force=bool(db_val))
         if (
@@ -1440,7 +1456,7 @@ def api_stats(cluster, job_id):
             result = dict(db_val)
             result["_stale"] = True
 
-    if isinstance(result, dict) and result.get("status") == "ok":
+    if isinstance(result, dict) and result.get("status") == "ok" and not cached_only:
         try:
             _save_stats_snapshot(cluster, job_id, result)
         except Exception:
