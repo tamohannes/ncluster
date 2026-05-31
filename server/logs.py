@@ -13,7 +13,7 @@ from glob import glob
 from .config import (
     APP_ROOT, CLUSTERS, LOG_SEARCH_BASES, RESULT_DIR_NAMES,
     _dir_label,
-    _cache_get, _cache_set,
+    _cache_get, _cache_get_stale, _cache_set,
     _log_index_cache, _log_content_cache, LOG_INDEX_TTL_SEC,
 )
 from .ssh import ssh_run, ssh_run_with_timeout
@@ -1054,6 +1054,20 @@ def get_job_log_files_cached(cluster_name, job_id, force=False):
     if not value.get("error"):
         _cache_set(_log_index_cache, key, value)
     return value
+
+
+def get_job_log_files_cached_only(cluster_name, job_id):
+    """Index from cache only — never issues the SSH discovery script.
+
+    Returns ``(result, is_fresh)`` when a (possibly stale) entry exists, or
+    ``(None, False)`` when nothing is cached. The log viewer uses this for an
+    instant first paint, then revalidates with the SSH-backed variant.
+    """
+    key = (cluster_name, str(job_id))
+    cached, is_fresh = _cache_get_stale(_log_index_cache, key, LOG_INDEX_TTL_SEC)
+    if cached is None:
+        return None, False
+    return _finalize_log_files_result(cached), is_fresh
 
 
 def normalize_metrics_config(cfg):

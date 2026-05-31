@@ -364,6 +364,52 @@ describe('live log viewer defaults', () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(rootDir));
   });
 
+  it('roots a job tree at the run dir (parent of eval-logs) and reveals the job file', async () => {
+    const runDir = '/lustre/run-x';
+    const firstLog = `${runDir}/eval-logs/main_999.log`;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          // A job's log lives under <run-dir>/eval-logs/. The tree should root
+          // at <run-dir>, not at the nemo-run dir the discovery also reports.
+          files: [{ label: 'main output', path: firstLog }],
+          dirs: [{ label: 'exp', path: `${runDir}/nemo-run/exp` }],
+          first_content: 'hi',
+          first_source: 'mount',
+          first_resolved_path: firstLog,
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'eval-logs', path: `${runDir}/eval-logs`, is_dir: true, size: 10 },
+            { name: 'eval-results', path: `${runDir}/eval-results`, is_dir: true, size: 10 },
+            { name: 'nemo-run', path: `${runDir}/nemo-run`, is_dir: true, size: 10 },
+          ],
+        }),
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          status: 'ok',
+          entries: [
+            { name: 'main_999.log', path: firstLog, is_dir: false, size: 100 },
+          ],
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openLog('h100', '999', 'run-x job');
+
+    // First /api/ls after the index must be the run dir — proving the root.
+    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(runDir));
+    const treeText = document.getElementById('tree-pane')?.textContent || '';
+    expect(treeText).toContain('eval-logs');
+    expect(treeText).toContain('main_999.log');
+    expect(document.querySelector('.tree-item.active')?.textContent).toContain('main_999.log');
+  });
+
   it('shows a top-level nemo-run log directory beside run artifacts', async () => {
     const rootDir = '/remote/mpsf/runs/demo-r3';
     const logDir = `${rootDir}/nemo-run`;

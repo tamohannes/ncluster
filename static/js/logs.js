@@ -2,7 +2,31 @@
 let _exCluster = null, _exJobId = null, _currentFilePath = null;
 let _currentRemotePath = null, _currentResolvedPath = null, _currentSource = null;
 let _exDirRoot = null;
+let _exLogToken = 0;     // bumped each openLog so stale phase-2 fetches no-op
 const _treeState = {};   // path -> { open, entries }
+
+// Word-wrap preference for the file viewer. Defaults ON so huge single-line
+// JSON/JSONL records wrap instead of forcing horizontal scroll. Controlled by a
+// single root class so it survives content re-renders that reset classNames.
+const LOG_WRAP_KEY = 'clausius_log_wrap';
+function _logWrapEnabled() {
+  try { return localStorage.getItem(LOG_WRAP_KEY) !== '0'; } catch (_) { return true; }
+}
+function _applyLogWrap(on) {
+  document.documentElement.classList.toggle('log-wrap', !!on);
+  const btn = document.getElementById('wrap-toggle');
+  if (btn) btn.classList.toggle('active', !!on);
+}
+function toggleWrap() {
+  const next = !_logWrapEnabled();
+  try { localStorage.setItem(LOG_WRAP_KEY, next ? '1' : '0'); } catch (_) {}
+  _applyLogWrap(next);
+}
+// Reflect the stored preference as soon as the script loads and on DOM ready.
+_applyLogWrap(_logWrapEnabled());
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => _applyLogWrap(_logWrapEnabled()));
+}
 const TREE_CACHE_TTL_MS = 30000;
 
 function _isSharedNemoRunRoot(path) {
@@ -15,6 +39,22 @@ function _selectPrimaryLogTreeDir(dirs) {
     || candidates.find(d => (d.label || '').toLowerCase() !== 'experiment output')
     || candidates[0]
     || null;
+}
+
+// NeMo-Skills runs lay logs out as <run-dir>/{eval-logs,eval-results,
+// tmp-eval-results}/…. We want the tree to always root at <run-dir> — the same
+// root the run-level "logs" button shows — so a specific job opens with its
+// file revealed inside the shared run tree rather than at a job-specific root.
+const _RESULT_SUBDIRS = new Set(['eval-logs', 'eval-results', 'tmp-eval-results']);
+function _runRootForPath(filePath) {
+  const parts = String(filePath || '').split('/');
+  for (let i = 1; i < parts.length; i++) {
+    if (_RESULT_SUBDIRS.has(parts[i])) {
+      const root = parts.slice(0, i).join('/');
+      return root.startsWith('/') ? root : '';
+    }
+  }
+  return '';
 }
 
 function _logEntryPriority(entry) {
@@ -69,6 +109,8 @@ function _childTreeContainerForDir(path) {
   subContainer.classList.add('open');
   const icon = dirItem.querySelector('.item-icon');
   if (icon) icon.textContent = '📂';
+  const twisty = dirItem.querySelector('.tree-twisty');
+  if (twisty) twisty.classList.add('open');
   return subContainer;
 }
 
@@ -342,12 +384,21 @@ let _popupFullLoaded = false;
 let _popupRawContent = '';
 const _POPUP_PAGE_SIZE = 500;
 
+// Stable signature of an index payload's file/dir set — lets us skip a
+// disruptive re-render when a revalidation returns the same tree.
+function _logIndexSig(data) {
+  const fp = (data.files || []).map(f => f && f.path).filter(Boolean).sort();
+  const dp = (data.dirs || []).map(d => d && d.path).filter(Boolean).sort();
+  return JSON.stringify([fp, dp]);
+}
+
 async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
   _exDirRoot = null;
   _currentFilePath = null;
   stopLive();
+  const token = ++_exLogToken;
 
   document.getElementById('modal-overlay').classList.add('open');
   if (jobName) document.getElementById('modal-title').textContent = jobName;
@@ -367,88 +418,58 @@ async function openLog(cluster, jobId, jobName, force) {
   if (cmEnabled) _loadMetricsConfig();
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
+  // Phase 1 — instant paint from the cached index (no SSH discovery). Skipped
+  // on an explicit force-refresh.
+  let painted = false;
+  let fresh = false;
+  let phase1Sig = null;
+  if (!force) {
+    try {
+      const res = await fetchWithTimeout(`/api/log_files/${cluster}/${jobId}?cached=1`, {}, 8000);
+      const data = await res.json();
+      if (token !== _exLogToken) return;
+      if (data && !data._pending
+          && ((data.files || []).length || (data.dirs || []).length)) {
+        await _renderLogIndex(cluster, jobId, data, { token });
+        if (token !== _exLogToken) return;
+        painted = true;
+        fresh = !data._stale;
+        phase1Sig = _logIndexSig(data);
+      }
+    } catch (_) { /* fall through to SSH-backed discovery */ }
+  }
+
+  // A fresh cached index is current — skip the SSH round-trip entirely.
+  if (fresh) return;
+
+  // Phase 2 — SSH-backed discovery (first open, stale cache, or force).
   try {
+    if (token !== _exLogToken) return;
+    if (!painted) {
+      document.getElementById('modal-content').textContent = 'Discovering log directories…';
+    }
     const qs = force ? '?force=1&include_first=1' : '?include_first=1';
     const res = await fetchWithTimeout(`/api/log_files/${cluster}/${jobId}${qs}`, {}, 15000);
     const data = await res.json();
-
-    _syncCustomLogInput(data.custom_log_dir || '');
+    if (token !== _exLogToken) return;
 
     if (data.files && data.files[0] && data.files[0].error) {
-      document.getElementById('modal-content').textContent = `SSH error: ${data.files[0].error}`;
+      if (!painted) document.getElementById('modal-content').textContent = `SSH error: ${data.files[0].error}`;
       return;
     }
     if (data.error) {
-      document.getElementById('modal-content').className = 'placeholder';
-      document.getElementById('modal-content').textContent = data.error;
-      document.getElementById('content-path').textContent = 'no logs available';
+      if (!painted) {
+        document.getElementById('modal-content').className = 'placeholder';
+        document.getElementById('modal-content').textContent = data.error;
+        document.getElementById('content-path').textContent = 'no logs available';
+      }
       return;
     }
-
-    const files = (data.files || []).filter(f => f.path);
-    const dirs  = data.dirs || [];
-    const primaryDir = _selectPrimaryLogTreeDir(dirs);
-    if (primaryDir) _exDirRoot = primaryDir.path;
-    const first = files[0] || null;
-    if (first) _currentFilePath = first.path;
-
-    const tree = document.getElementById('tree-pane');
-    tree.innerHTML = '';
-
-    if (primaryDir) {
-      await expandDir(primaryDir.path, tree);
-      if (first) await _revealFileInTree(primaryDir.path, first.path, tree);
-    } else {
-      if (files.length) {
-        tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
-          name: f.label, path: f.path, is_dir: false,
-          icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
-          job_id: _extractJobId(f.path.split('/').pop() || ''),
-        })), true));
-      }
-      for (const dir of dirs) {
-        const startOpen = dir.label === 'custom logs';
-        tree.appendChild(makeTreeSection('📁 ' + dir.label, [], startOpen, dir.path));
-      }
-    }
-
-    if (files.length) {
-      if (data.first_content != null) {
-        _currentFilePath = first.path;
-        _currentRemotePath = first.path;
-        _currentResolvedPath = data.first_resolved_path || first.path;
-        _currentSource = data.first_source || 'ssh';
-        document.getElementById('content-path').textContent = first.path;
-        const el = document.getElementById('modal-content');
-        const rendered = renderFileContentByType(first.path, data.first_content);
-        el.className = rendered.cls;
-        el.innerHTML = rendered.html;
-        el.parentElement.scrollTop = el.parentElement.scrollHeight;
-        const sourceEl = document.getElementById('content-source');
-        sourceEl.textContent = `source: ${_currentSource}`;
-        sourceEl.className = `source-pill ${_currentSource}`;
-        _liveLastHash = data.first_hash || null;
-        _markCurrentTreeFile(first.path, true);
-      } else {
-        await viewFile(first.path);
-        _markCurrentTreeFile(first.path, true);
-      }
-    } else if (primaryDir) {
-      document.getElementById('modal-content').className = 'placeholder';
-      document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
-      document.getElementById('content-path').textContent = primaryDir.path || 'browse discovered directory';
-    } else if (dirs.length) {
-      document.getElementById('modal-content').className = 'placeholder';
-      document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
-      document.getElementById('content-path').textContent = dirs[0].path || 'browse discovered directory';
-      await expandDir(dirs[0].path, tree.querySelector('.tree-items'));
-    } else {
-      document.getElementById('modal-content').className = 'placeholder';
-      document.getElementById('modal-content').textContent = 'No log files found for this job. It may not have started yet, or was killed before producing output.';
-      document.getElementById('content-path').textContent = 'no logs available';
-      document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">no files</div>';
-    }
+    // Avoid yanking the already-painted tree when nothing changed.
+    if (painted && phase1Sig && _logIndexSig(data) === phase1Sig) return;
+    await _renderLogIndex(cluster, jobId, data, { token });
   } catch (e) {
+    if (painted) return;  // keep the stale-but-usable view on revalidation failure
     const msg = e.name === 'TimeoutError' || e.name === 'AbortError'
       ? 'Timed out discovering log files — the cluster may be slow or unreachable.'
       : 'Failed: ' + e;
@@ -456,6 +477,95 @@ async function openLog(cluster, jobId, jobName, force) {
     document.getElementById('modal-content').textContent = msg;
     document.getElementById('content-path').textContent = 'error';
     document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
+  }
+}
+
+// Renders a /api/log_files index payload into the modal: builds the tree and
+// shows the first file's content (inline if the payload carried it, otherwise
+// via a separate viewFile fetch so the tree paints without waiting on content).
+async function _renderLogIndex(cluster, jobId, data, opts = {}) {
+  const { token } = opts;
+  if (token != null && token !== _exLogToken) return;
+  _syncCustomLogInput(data.custom_log_dir || '');
+
+  const files = (data.files || []).filter(f => f.path);
+  const dirs  = data.dirs || [];
+  const first = files[0] || null;
+  if (first) _currentFilePath = first.path;
+  // Prefer the run directory as the tree root (parent of eval-logs/…), so a
+  // job's logs share the same root as the run's logs; fall back to the
+  // discovered dir when the layout isn't a NeMo-Skills run.
+  const runRoot = first ? _runRootForPath(first.path) : '';
+  const primaryDir = runRoot
+    ? { path: runRoot, label: runRoot.split('/').filter(Boolean).pop() || runRoot }
+    : _selectPrimaryLogTreeDir(dirs);
+  if (primaryDir) _exDirRoot = primaryDir.path;
+
+  const tree = document.getElementById('tree-pane');
+  tree.innerHTML = '';
+
+  if (primaryDir) {
+    await expandDir(primaryDir.path, tree);
+    if (token != null && token !== _exLogToken) return;
+    if (first) await _revealFileInTree(primaryDir.path, first.path, tree);
+  } else {
+    if (files.length) {
+      tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
+        name: f.label, path: f.path, is_dir: false,
+        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
+        job_id: _extractJobId(f.path.split('/').pop() || ''),
+      })), true));
+    }
+    for (const dir of dirs) {
+      const startOpen = dir.label === 'custom logs';
+      tree.appendChild(makeTreeSection('📁 ' + dir.label, [], startOpen, dir.path));
+    }
+  }
+  if (token != null && token !== _exLogToken) return;
+
+  if (files.length) {
+    if (data.first_content != null) {
+      _currentFilePath = first.path;
+      _currentRemotePath = first.path;
+      _currentResolvedPath = data.first_resolved_path || first.path;
+      _currentSource = data.first_source || 'ssh';
+      document.getElementById('content-path').textContent = first.path;
+      const el = document.getElementById('modal-content');
+      const rendered = renderFileContentByType(first.path, data.first_content);
+      el.className = rendered.cls;
+      el.innerHTML = rendered.html;
+      el.parentElement.scrollTop = el.parentElement.scrollHeight;
+      const sourceEl = document.getElementById('content-source');
+      sourceEl.textContent = `source: ${_currentSource}`;
+      sourceEl.className = `source-pill ${_currentSource}`;
+      _liveLastHash = data.first_hash || null;
+      _markCurrentTreeFile(first.path, true);
+    } else {
+      await viewFile(first.path);
+      _markCurrentTreeFile(first.path, true);
+    }
+  } else if (primaryDir) {
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
+    document.getElementById('content-path').textContent = primaryDir.path || 'browse discovered directory';
+  } else if (dirs.length) {
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = 'No direct log file found. Browse the discovered job directory on the left.';
+    document.getElementById('content-path').textContent = dirs[0].path || 'browse discovered directory';
+    await expandDir(dirs[0].path, tree.querySelector('.tree-items'));
+  } else {
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = 'No log files found for this job. It may not have started yet, or was killed before producing output.';
+    document.getElementById('content-path').textContent = 'no logs available';
+    document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">no files</div>';
+  }
+
+  // Warm the directory tree in the background so expanding folders is instant.
+  // Fire-and-forget; bails itself on SSH-backed clusters and when the tab hides.
+  if (primaryDir) {
+    _prefetchLogTree(primaryDir.path);
+  } else if (dirs.length) {
+    for (const d of dirs.slice(0, 4)) if (d.path) _prefetchLogTree(d.path);
   }
 }
 
@@ -475,6 +585,7 @@ async function openDir(cluster, dirPath, label) {
   _exDirRoot = dirPath;
   _currentFilePath = null;
   stopLive();
+  _exLogToken++;   // invalidate any in-flight background tree prefetch
 
   document.getElementById('modal-overlay').classList.add('open');
   if (label) document.getElementById('modal-title').textContent = label;
@@ -535,6 +646,12 @@ async function openDir(cluster, dirPath, label) {
     } else {
       tree.innerHTML = '<div class="tree-loading" style="color:var(--muted)">(empty directory)</div>';
     }
+
+    // Seed the root into the tree cache so the background prefetch reuses it
+    // (rather than re-fetching) and can read its source to gate spidering.
+    _treeState[`${cluster}:${activeDirPath}`] = { ts: Date.now(), items: entries, source: data.source };
+    // Warm the tree in the background (mount-backed clusters only).
+    _prefetchLogTree(activeDirPath);
 
     const sourceEl = document.getElementById('content-source');
     sourceEl.textContent = `source: ${data.source || 'ssh'}`;
@@ -604,19 +721,32 @@ function renderTreeItems(container, items, depth, onFileClick) {
     const el = document.createElement('div');
     el.className = 'tree-item' + (item.is_dir ? ' is-dir' : '');
     el.dataset.path = item.path || '';
+    el.dataset.depth = depth;
     if (!item.is_dir) {
       const n = (item.name || '').toLowerCase();
       if (n.endsWith('.err') || n.includes('error') || n.includes('traceback') || n.includes('failed')) {
-        el.style.color = 'var(--red)';
+        el.classList.add('tone-error');
       } else if (n.includes('warn')) {
-        el.style.color = 'var(--amber)';
+        el.classList.add('tone-warn');
       }
       if (_samePath(item.path, _currentFilePath)) {
         el.classList.add('active');
       }
     }
-    el.style.paddingLeft = (22 + depth * 14) + 'px';
     el.title = item.path;
+
+    // VSCode-style indent guides: one vertical rule per ancestor level.
+    for (let i = 0; i < depth; i++) {
+      const g = document.createElement('span');
+      g.className = 'tree-indent';
+      el.appendChild(g);
+    }
+
+    // Twisty (folder chevron); files get an invisible one to keep names aligned.
+    const twisty = document.createElement('span');
+    twisty.className = 'tree-twisty' + (item.is_dir ? '' : ' leaf');
+    twisty.textContent = item.is_dir ? '›' : '';
+    el.appendChild(twisty);
 
     const icon = document.createElement('span');
     icon.className = 'item-icon';
@@ -673,6 +803,7 @@ function renderTreeItems(container, items, depth, onFileClick) {
       el.addEventListener('click', async (e) => {
         e.stopPropagation();
         const isOpen = subContainer.classList.toggle('open');
+        twisty.classList.toggle('open', isOpen);
         icon.textContent = isOpen ? '📂' : '📁';
         if (isOpen) {
           await expandDir(item.path, subContainer, depth + 1, onFileClick);
@@ -730,10 +861,76 @@ async function expandDir(path, container, depth, onFileClick) {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
-    _treeState[cacheKey] = { ts: Date.now(), items };
+    _treeState[cacheKey] = { ts: Date.now(), items, source: data.source };
     renderTreeItems(container, items, depth || 0, onFileClick);
   } catch (e) {
     container.innerHTML = `<div class="tree-loading" style="color:var(--red)">Error: ${e}</div>`;
+  }
+}
+
+// Background tree prefetch: BFS-walk the directory tree into _treeState so
+// expanding any folder is instant (expandDir reads _treeState first). Only runs
+// when the backing store is a fast local mount — it bails the moment /api/ls
+// reports `source: ssh` so we never spider a cluster over SSH.
+function _treeItemsFromEntries(entries) {
+  const items = (entries || []).map(e => ({
+    name: e.name, path: e.path, is_dir: e.is_dir, size: e.size,
+    icon: e.is_dir ? '📁' : guessIcon(e.name),
+    job_id: e.is_dir ? '' : _extractJobId(e.name),
+  }));
+  items.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+  return items;
+}
+
+async function _prefetchLogTree(rootPath, opts = {}) {
+  const cluster = _exCluster;
+  const token = _exLogToken;
+  if (!cluster || !rootPath || cluster === 'local') return;
+  const maxDepth = opts.maxDepth ?? 3;
+  const budget = opts.budget ?? 80;        // cap total directory listings
+  const concurrency = opts.concurrency ?? 4;
+
+  // Fetch one directory (cache-first via _treeState, then the mount-backed
+  // /api/ls). Returns {items, source} or null. Populates _treeState.
+  const isFast = (src) => src === 'mount' || src === 'local';
+  const loadDir = async (path) => {
+    if (token !== _exLogToken || document.hidden) return null;
+    const cacheKey = `${cluster}:${path}`;
+    const cached = _treeState[cacheKey];
+    if (cached && (Date.now() - cached.ts) < TREE_CACHE_TTL_MS) {
+      return { items: cached.items, source: cached.source };
+    }
+    try {
+      const res = await fetchWithTimeout(`/api/ls/${cluster}?path=${encodeURIComponent(path)}`, {}, 12000);
+      const data = await res.json();
+      if (token !== _exLogToken || data.status !== 'ok') return null;
+      const items = _treeItemsFromEntries(data.entries);
+      _treeState[cacheKey] = { ts: Date.now(), items, source: data.source };
+      return { items, source: data.source };
+    } catch (_) { return null; }
+  };
+
+  // Probe the root first; only spider when the backing is a fast local mount.
+  const root = await loadDir(rootPath);
+  if (!root || token !== _exLogToken || !isFast(root.source)) return;
+
+  let used = 1;
+  let queue = root.items.filter(e => e.is_dir).map(e => ({ path: e.path, depth: 1 }));
+  while (queue.length && used < budget && token === _exLogToken && !document.hidden) {
+    const batch = queue.splice(0, concurrency);
+    used += batch.length;
+    const results = await Promise.all(batch.map(b => loadDir(b.path).then(r => ({ r, depth: b.depth }))));
+    if (token !== _exLogToken) return;
+    const next = [];
+    for (const { r, depth } of results) {
+      if (!r || !isFast(r.source) || depth + 1 > maxDepth) continue;
+      for (const e of r.items) if (e.is_dir) next.push({ path: e.path, depth: depth + 1 });
+    }
+    queue = queue.concat(next);
+    await new Promise(r => setTimeout(r, 0));   // yield to keep the UI responsive
   }
 }
 

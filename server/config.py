@@ -621,6 +621,20 @@ def _cache_get(store, key, ttl_sec):
     return rec["value"]
 
 
+def _cache_get_stale(store, key, ttl_sec):
+    """Like _cache_get but also returns expired entries.
+
+    Returns ``(value, is_fresh)``; ``value`` is ``None`` only when the key is
+    absent (or already swept). Lets callers paint a stale value instantly and
+    revalidate in the background. Entries survive until the 2x-TTL sweep.
+    """
+    with _warm_lock:
+        rec = store.get(key)
+    if not rec:
+        return None, False
+    return rec["value"], (time.monotonic() - rec["ts"] <= ttl_sec)
+
+
 def _cache_set(store, key, value):
     with _warm_lock:
         store[key] = {"ts": time.monotonic(), "value": value}

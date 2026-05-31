@@ -53,6 +53,7 @@ from .mounts import (
 from .logs import (
     fetch_log_tail, tail_local_file, extract_progress,
     get_job_log_files_cached,
+    get_job_log_files_cached_only,
     read_jsonl_index, read_jsonl_record,
     extract_custom_metrics, normalize_metrics_config,
     filter_log_explorer_entries, is_main_log_source, is_server_log_source,
@@ -3199,7 +3200,17 @@ def api_log_files(cluster, job_id):
         return jsonify({"status": "error", "files": [], "dirs": [], "error": "Unknown cluster"}), 404
     force = request.args.get("force", "0") == "1"
     include_first = request.args.get("include_first", "0") == "1"
-    result = get_job_log_files_cached(cluster, job_id, force=force)
+    # ?cached=1 — instant path for the log viewer's first paint. Returns the
+    # cached index (possibly stale) without ever running the SSH discovery
+    # script; the viewer then revalidates with a normal (SSH-backed) request.
+    cached_only = request.args.get("cached", "0") == "1"
+    is_fresh = True
+    if cached_only:
+        result, is_fresh = get_job_log_files_cached_only(cluster, job_id)
+        if result is None:
+            return jsonify({"status": "ok", "_pending": True, "files": [], "dirs": []})
+    else:
+        result = get_job_log_files_cached(cluster, job_id, force=force)
     files = []
     for f in result.get("files", []):
         p = f.get("path", "")
@@ -3219,6 +3230,8 @@ def api_log_files(cluster, job_id):
         "error": result.get("error", ""),
         "custom_log_dir": result.get("custom_log_dir", ""),
     }
+    if cached_only and not is_fresh:
+        resp["_stale"] = True
 
     if include_first and files and not files[0].get("path", "").endswith((".jsonl", ".jsonl-async")):
         first_path = files[0]["path"]
@@ -3228,6 +3241,10 @@ def api_log_files(cluster, job_id):
             resp["first_content"] = cached
             resp["first_source"] = "cache"
             resp["first_resolved_path"] = first_path
+        elif cached_only:
+            # Instant path must not block on a file/SSH read; the viewer fetches
+            # the first file's content separately once the tree is shown.
+            pass
         else:
             source = "ssh"
             resolved = first_path

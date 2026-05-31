@@ -5420,6 +5420,9 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 .modal-head-actions .explore-btn:hover {
   border-color: var(--accent); color: var(--accent);
 }
+.modal-head-actions .wrap-btn.active {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-bg);
+}
 .custom-log-bar {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 16px; border-bottom: 1px solid var(--border);
@@ -5571,43 +5574,65 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
 }
 .tree-section-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 8px 12px; cursor: pointer;
-  font-family: var(--mono); font-size: 11px; font-weight: 600;
-  color: var(--text); user-select: none;
+  padding: 6px 10px; cursor: pointer;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--muted); user-select: none;
   position: sticky; top: 0; background: var(--surface2); z-index: 1;
 }
-.tree-section-head:hover { background: var(--border); }
+.tree-section-head:hover { background: var(--surface-hover); color: var(--text); }
 .tree-chevron { font-size: 9px; color: var(--muted); transition: transform 0.15s; }
 .tree-chevron.open { transform: rotate(90deg); }
 .tree-icon { font-size: 12px; }
 .tree-items { display: none; }
 .tree-items.open { display: block; }
+
+/* VSCode-style file tree: compact rows, per-level indent guides, twisty
+   chevrons, full-row hover/selection. */
 .tree-item {
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 12px 5px 22px;
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
-  cursor: pointer; transition: background 0.1s; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center;
+  height: 22px; padding-left: 4px; padding-right: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--text);
+  cursor: pointer; white-space: nowrap; overflow: hidden;
+  user-select: none;
 }
-.tree-item:hover { background: var(--border); color: var(--text); }
+.tree-item:hover { background: var(--accent-bg); }
 .tree-item.active { background: var(--accent-bg); color: var(--accent); }
-.tree-item.is-dir { font-weight: 500; color: var(--text); }
-.tree-item .item-icon { flex-shrink: 0; font-size: 11px; }
-.tree-item .item-name { overflow: hidden; text-overflow: ellipsis; flex: 1; }
-.tree-item .item-size { color: var(--muted); font-size: 9px; flex-shrink: 0; }
+.tree-item.is-dir { font-weight: 500; }
+.tree-item.tone-error { color: var(--red); }
+.tree-item.tone-warn  { color: var(--amber); }
+.tree-item.active.tone-error,
+.tree-item.active.tone-warn { color: var(--accent); }
+
+.tree-indent {
+  flex: 0 0 14px; align-self: stretch;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 22%, transparent);
+}
+.tree-twisty {
+  flex: 0 0 16px; text-align: center; line-height: 1;
+  font-size: 11px; color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.tree-twisty.open { transform: rotate(90deg); }
+.tree-twisty.leaf { visibility: hidden; }
+
+.tree-item .item-icon { flex: 0 0 auto; font-size: 12px; margin-right: 5px; }
+.tree-item .item-name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.tree-item .item-size { color: var(--muted); font-size: 9px; flex-shrink: 0; margin-left: 6px; }
 .tree-item .item-jobid {
   font-family: var(--mono); font-size: 9px;
-  color: var(--muted); flex-shrink: 0; opacity: 0.7;
+  color: var(--muted); flex-shrink: 0; opacity: 0.7; margin-left: 6px;
 }
 .tree-item:hover .item-jobid { opacity: 1; }
 .tree-item .item-badge {
   font-family: var(--mono);
   font-size: 9px;
-  padding: 1px 5px;
+  padding: 0 5px;
   border-radius: 10px;
   border: 1px solid var(--border);
   color: var(--muted);
   flex-shrink: 0;
+  margin-left: 6px;
 }
 .tree-item .item-badge.current {
   color: var(--pill-mount-text);
@@ -5619,7 +5644,7 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   border-color: var(--pill-ssh-bd);
   background: var(--pill-ssh-bg);
 }
-.tree-loading { padding: 8px 22px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.tree-loading { padding: 6px 12px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
 
 /* Content pane */
 .content-pane {
@@ -5736,6 +5761,20 @@ tr.group-bg-3:hover td { background-color: var(--group-hover); }
   overflow-x: auto;
   overflow-y: hidden;
 }
+
+/* Word-wrap mode (toggled via the modal's "wrap" button; default on). Gated on
+   a single root class so it survives content re-renders that reset element
+   classNames, and applies to both the log popup and the file explorer. */
+:root.log-wrap .log-content,
+:root.log-wrap .log-line,
+:root.log-wrap .json-view .log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+:root.log-wrap .log-content { overflow-x: hidden; }
+:root.log-wrap .jsonl-body.json-view .log-line { min-width: 0; }
+:root.log-wrap .jsonl-body.json-view { overflow-x: hidden; }
 .md-view { line-height: 1.6; color: var(--md-text); }
 .md-view h1, .md-view h2, .md-view h3 { margin: 10px 0 6px; font-family: var(--sans); color: var(--md-heading); }
 .md-view p { margin: 6px 0; }
@@ -7885,12 +7924,15 @@ body::before {
 .settings-nav-item:hover,
 .settings-nav-item.active,
 .spotlight-item:hover,
-.spotlight-item.active,
-.tree-item:hover,
-.tree-item.active {
+.spotlight-item.active {
   background: color-mix(in srgb, var(--glass-surface-strong) 72%, var(--accent-bg));
   box-shadow: inset 0 1px 0 var(--glass-highlight);
 }
+
+/* File tree: full-row accent-tinted hover (same background as the active/open
+   file); the active row keeps the accent text colour so it stays distinct. */
+.tree-item:hover { background: var(--accent-bg); box-shadow: none; }
+.tree-item.active { background: var(--accent-bg); box-shadow: none; }
 
 .nav-project-btn.active {
   border-left-color: color-mix(in srgb, var(--proj-color, var(--accent)) 76%, var(--accent));
