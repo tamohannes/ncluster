@@ -72,37 +72,61 @@ mount_cluster() {
   local port; port="$(_cluster_field "$c" port 22)"
   local ssh_cmd
   ssh_cmd="ssh -F ${HOME}/.ssh/config -o BatchMode=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new -p ${port}"
+  # Shell ssh (not the sftp ssh_command) for the pre-mount path probe below.
+  local probe_ssh="ssh -F ${HOME}/.ssh/config -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o PreferredAuthentications=publickey -o StrictHostKeyChecking=accept-new -o IdentityFile=${KEY_PATH} -p ${port}"
 
   local idx=0
+  local rc=0
   while IFS= read -r remote_path; do
     [[ -z "$remote_path" ]] && continue
     local target="${BASE}/${c}/${idx}"
-    mkdir -p "$target"
 
-    if mountpoint -q "$target"; then
+    # Skip only if the mount is actually alive. A prior sshfs that was SIGKILLed
+    # (e.g. on `systemctl restart`, which kills the service cgroup) leaves a dead
+    # "Transport endpoint is not connected" FUSE stub here; sshfs then refuses to
+    # mount over it. Detect that and force-clean before (re)mounting. `ls -d` is
+    # an O(1) getattr, so this stays fast even for huge home directories.
+    if timeout 5 mountpoint -q "$target" 2>/dev/null && timeout 6 ls -d "$target" >/dev/null 2>&1; then
       echo "[${c}/${idx}] already mounted at ${target}"
       idx=$((idx + 1))
       continue
     fi
+    fusermount -uz "$target" 2>/dev/null || umount -l "$target" 2>/dev/null || true
+    mkdir -p "$target" 2>/dev/null || true
+
+    # Resolve symlinks remotely: sshfs cannot use a symlink as its mount root
+    # ("Not a directory"), and resolving also survives portfolio reorganizations
+    # where the canonical user path is a symlink to the real location.
+    local resolved
+    resolved="$(${probe_ssh} "${USER_NAME}@${host}" "readlink -f -- '${remote_path}'" 2>/dev/null | head -n1)"
+    if [[ -n "$resolved" && "$resolved" != "$remote_path" ]]; then
+      echo "[${c}/${idx}] resolved ${remote_path} -> ${resolved}"
+      remote_path="$resolved"
+    fi
 
     echo "[${c}/${idx}] mounting ${host}:${remote_path} -> ${target}"
+    local err_file; err_file="$(mktemp)"
     if sshfs "${USER_NAME}@${host}:${remote_path}" "$target" \
       -o ssh_command="${ssh_cmd}" \
       -o IdentityFile="${KEY_PATH}" \
       -o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3 \
       -o cache=yes,kernel_cache,auto_cache \
-      -o attr_timeout=60,entry_timeout=60,negative_timeout=15 2>/dev/null; then
+      -o attr_timeout=60,entry_timeout=60,negative_timeout=15 2>"$err_file"; then
       echo "[${c}/${idx}] ok"
     else
-      echo "[${c}/${idx}] mount failed (${remote_path})"
+      local reason; reason="$(tail -n1 "$err_file" 2>/dev/null)"
+      echo "[${c}/${idx}] mount failed (${remote_path})${reason:+: ${reason}}"
       rmdir "$target" 2>/dev/null || true
+      rc=1
     fi
+    rm -f "$err_file"
     idx=$((idx + 1))
   done < <(_cluster_mount_paths "$c")
 
   if [[ "$idx" -eq 0 ]]; then
     echo "[${c}] no mount_paths configured"
   fi
+  return "$rc"
 }
 
 unmount_cluster() {

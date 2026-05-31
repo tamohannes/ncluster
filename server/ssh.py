@@ -26,7 +26,10 @@ _thread_ctx = threading.local()
 _ssh_semaphore = threading.Semaphore(8)
 
 # Per-cluster concurrency cap so one dead cluster cannot monopolize SSH work.
-_MAX_PER_CLUSTER = 2
+# Kept modest (and bounded by the global semaphore above) but >2 so a single
+# log-open burst — discovery + first-file tail + a tree listing — does not
+# fail-fast with "concurrency limit reached" while a poller holds a slot.
+_MAX_PER_CLUSTER = 4
 _per_cluster_sem_lock = threading.Lock()
 _per_cluster_sems = {}  # cluster -> Semaphore
 

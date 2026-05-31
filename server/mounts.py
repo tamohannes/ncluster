@@ -536,12 +536,28 @@ def run_mount_script(action, cluster="all"):
 
 MOUNT_HEALTH_INTERVAL = 120  # check every 2 minutes
 
+# Auto-mount backoff: when a configured cluster has no active mount, the health
+# check tries to establish it. A genuinely unreachable cluster (down login node,
+# missing remote path) must not be retried every cycle, so back off
+# exponentially per cluster, capped, and reset on success.
+_mount_attempt_ts = {}     # cluster -> last auto-mount attempt (monotonic)
+_mount_attempt_fails = {}  # cluster -> consecutive failed attempts
+_MOUNT_RETRY_BASE = 120    # seconds; first retry ~2 min after a failure
+_MOUNT_RETRY_MAX = 1800    # cap backoff at 30 min
 
-def _test_mount_alive(mount_path, timeout_sec=4):
-    """Test if a FUSE mount is responsive by listing it in a subprocess with timeout."""
+
+def _test_mount_alive(mount_path, timeout_sec=8):
+    """Test if a FUSE mount is responsive, in a subprocess with a timeout.
+
+    Uses ``ls -d`` (a single getattr on the mount root) rather than a full
+    ``ls`` of its contents: listing a large home directory over SSHFS can take
+    many seconds under load and was producing false "stale" verdicts, which
+    flipped the whole cluster onto the slow SSH path. ``-d`` still detects a
+    hung mount (the getattr round-trip blocks until the timeout) but is O(1).
+    """
     try:
         proc = subprocess.run(
-            ["ls", mount_path],
+            ["ls", "-d", "--", mount_path],
             capture_output=True, timeout=timeout_sec,
         )
         return proc.returncode == 0
@@ -593,6 +609,40 @@ def mount_health_check():
             remounted += 1
         else:
             log.warning("Remount failed for %s: %s", cluster_name, msg)
+
+    # Self-heal: establish mounts for configured clusters that are entirely down
+    # (not just stale). Without this, a cluster that fails to mount once — e.g. a
+    # transient login-node outage or a since-fixed config — stays unmounted
+    # forever, since the loop above only revives already-mounted roots.
+    now = time.monotonic()
+    for cluster_name in list(CLUSTERS.keys()):
+        if cluster_name == "local":
+            continue
+        if not MOUNT_MAP.get(cluster_name, []):
+            continue  # no mount_paths configured for this cluster
+        if any(f"/mounts/{cluster_name}/" in mp for mp in mps):
+            continue  # already mounted (handled above)
+
+        fails = _mount_attempt_fails.get(cluster_name, 0)
+        delay = min(_MOUNT_RETRY_BASE * (2 ** fails), _MOUNT_RETRY_MAX) if fails else 0
+        if now - _mount_attempt_ts.get(cluster_name, 0) < delay:
+            continue  # still backing off after a recent failure
+
+        _mount_attempt_ts[cluster_name] = now
+        log.info("Cluster %s has no active mount; attempting to mount…", cluster_name)
+        ok, msg = run_mount_script("mount", cluster_name)
+        mounted_now = any(f"/mounts/{cluster_name}/" in mp for mp in _proc_mount_points())
+        if mounted_now:
+            _mount_attempt_fails[cluster_name] = 0
+            _mount_ok[cluster_name] = True
+            _mount_ok_ts[cluster_name] = time.monotonic()
+            remounted += 1
+            log.info("Mounted %s: %s", cluster_name, msg)
+        else:
+            _mount_attempt_fails[cluster_name] = fails + 1
+            next_delay = min(_MOUNT_RETRY_BASE * (2 ** (fails + 1)), _MOUNT_RETRY_MAX)
+            log.warning("Mount attempt for %s failed (retry in ~%ds): %s",
+                        cluster_name, next_delay, msg)
 
     return checked, remounted
 
