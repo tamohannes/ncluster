@@ -3518,6 +3518,51 @@ def api_health():
     })
 
 
+def _detect_routable_ip() -> str:
+    """Best-effort routable IPv4 of this host — the address other machines
+    (e.g. Slurm compute nodes) use to reach us, not loopback.
+
+    Uses the standard UDP-connect trick: opening a datagram socket toward an
+    off-host address makes the kernel pick the egress interface; no packets
+    are actually sent. Falls back to FQDN resolution, then loopback.
+    """
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 1))
+        return s.getsockname()[0]
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.getfqdn())
+        except Exception:
+            return "127.0.0.1"
+    finally:
+        s.close()
+
+
+@api.route("/api/sdk/remote_url")
+def api_sdk_remote_url():
+    """Cluster-reachable base URL for this Clausius instance.
+
+    Slurm jobs (summarize/eval) post SDK metrics to ``CLAUSIUS_URL``;
+    ``localhost`` points at the compute node, so launchers fetch this endpoint
+    and forward the returned URL instead (nemo-skills KP #666). The value is
+    the ``sdk_remote_url`` app setting when set, otherwise auto-detected from
+    this host's routable IP + the configured port. Keeping it server-side
+    means no internal hostname/IP needs to live in committed launcher code.
+    """
+    from .config import APP_PORT
+    from .settings import get_setting
+    override = (get_setting("sdk_remote_url", "") or "").strip()
+    if override:
+        return jsonify({"status": "ok", "remote_url": override.rstrip("/"), "source": "setting"})
+    return jsonify({
+        "status": "ok",
+        "remote_url": f"http://{_detect_routable_ip()}:{APP_PORT}",
+        "source": "detected",
+    })
+
+
 @api.route("/api/settings")
 def api_settings_get():
     return jsonify(settings_response())
