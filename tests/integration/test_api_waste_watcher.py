@@ -236,6 +236,8 @@ class TestPortMismatchEndToEnd:
              "per_gpu": [{"util": "0%"}, {"util": "0%"}]},
             {"ts": "2026-01-01T00:01:00", "gpu_util": 0,
              "per_gpu": [{"util": "0%"}, {"util": "0%"}]},
+            {"ts": "2026-01-01T00:02:00", "gpu_util": 0,
+             "per_gpu": [{"util": "0%"}, {"util": "0%"}]},
         ])
         monkeypatch.setattr(ww, "_read_log_tail", lambda c, j, lines=80:
                             "Server hostname written: pool0-0010\nApplication startup complete\n")
@@ -258,3 +260,46 @@ class TestPortMismatchEndToEnd:
         con.close()
         assert int(run_row["wasteful"]) == 1
         assert run_row["waste_reason"] == "port_mismatch_hang"
+
+    def test_verification_rejection_does_not_stamp_wasteful(
+        self, client, mock_cluster, db_path, monkeypatch,
+    ):
+        run_id = upsert_run(mock_cluster, "1000", "mpsf_pipeline_y", "hle")
+        from server.db import upsert_job
+        upsert_job(mock_cluster, {
+            "jobid": "1000",
+            "state": "RUNNING",
+            "gres": "gpu:4",
+            "name": "mpsf_pipeline_y-r1-path_server",
+            "started_at": (datetime.now() - timedelta(minutes=30)).isoformat(),
+        }, terminal=False)
+        with db_write() as con:
+            con.execute("UPDATE job_history SET run_id=? WHERE job_id=?", (run_id, "1000"))
+
+        from server.settings import set_setting
+        set_setting("waste_watcher_cancel_enabled", True)
+        monkeypatch.setattr(ww, "verify_wasteful", lambda **kwargs: (False, "log_still_growing"))
+
+        det = ww.Detection(
+            reason="port_mismatch_hang",
+            confidence="high",
+            target_jobs=[(mock_cluster, "1000")],
+            summary="candidate rejected by verification",
+            evidence={"verification": {"1000": "log_still_growing"}},
+        )
+        ww._act_on_detection({"cluster": mock_cluster, "jobid": "1000"}, det, ww._settings_snapshot())
+
+        from server.db import get_db
+        con = get_db()
+        run_row = con.execute(
+            "SELECT wasteful, waste_reason FROM runs WHERE id=?",
+            (run_id,),
+        ).fetchone()
+        job_row = con.execute(
+            "SELECT waste_reason FROM job_history WHERE cluster=? AND job_id=?",
+            (mock_cluster, "1000"),
+        ).fetchone()
+        con.close()
+        assert int(run_row["wasteful"]) == 0
+        assert run_row["waste_reason"] == ""
+        assert job_row["waste_reason"] == ""

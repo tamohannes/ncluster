@@ -101,6 +101,60 @@ class TestPortMismatchHang:
         )
         assert det is None
 
+    def test_abstains_when_litellm_client_activity_observed(self):
+        job = _gpu_server_job()
+        snaps = _snapshots_zero(6)
+        tail = (
+            "Server hostname written: pool0-0010\n"
+            "Application startup complete\n"
+            "Processing request of type ListToolsRequest\n"
+            "LiteLLM completion() model= /hf_models/gpt-oss-120b\n"
+            "Remaining generations: 100%|##########| 2/2\n"
+        )
+        det = rules.detect_port_mismatch_hang(
+            job=job, snapshots=snaps, log_tail=tail,
+            min_runtime_min=10, busy_threshold_pct=5.0,
+        )
+        assert det is None
+
+    def test_abstains_with_only_one_zero_util_snapshot(self):
+        job = _gpu_server_job()
+        snaps = _snapshots_zero(1)
+        tail = (
+            "vLLM API server starting\n"
+            "Application startup complete\n"
+            "Server hostname written: pool0-0010\n"
+        )
+        det = rules.detect_port_mismatch_hang(
+            job=job, snapshots=snaps, log_tail=tail,
+            min_runtime_min=10, busy_threshold_pct=5.0,
+        )
+        assert det is None
+
+    def test_abstains_when_progress_log_recent(self):
+        job = _gpu_server_job()
+        snaps = _snapshots_zero(6)
+        tail = (
+            "vLLM API server starting\n"
+            "Application startup complete\n"
+            "Server hostname written: pool0-0010\n"
+        )
+        det = rules.detect_port_mismatch_hang(
+            job=job,
+            snapshots=snaps,
+            log_tail=tail,
+            min_runtime_min=10,
+            busy_threshold_pct=5.0,
+            progress_context={
+                "progress": 100,
+                "progress_source": "server output",
+                "progress_phase": "server_loading",
+                "progress_log_recent": True,
+                "main_waiting_for_server": True,
+            },
+        )
+        assert det is None
+
     def test_abstains_when_too_young(self):
         # Just started running — vLLM weight loading; don't flag yet.
         job = _gpu_server_job(started_min_ago=2)

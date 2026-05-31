@@ -340,6 +340,14 @@ def detect_port_mismatch_hang(
         return None
     if _progress_is_run_progress(progress_context):
         return None
+    if _progress_is_recent(progress_context):
+        return None
+
+    # One early zero-util sample after the server reports "ready" is a normal
+    # handoff gap for short GPU client jobs. Keep this rule high-confidence by
+    # requiring multiple independent probes before declaring a hang.
+    if len(snapshots) < 3:
+        return None
 
     # Every snapshot must show zero-ish GPU util on every GPU.
     for snap in snapshots:
@@ -356,7 +364,9 @@ def detect_port_mismatch_hang(
     server_markers = ("Server hostname written", "Application startup complete",
                       "Uvicorn running on", "vLLM API server")
     client_markers = ("POST /v1", "inference.generate", "model_request",
-                      "completion request", "generate_async")
+                      "completion request", "generate_async",
+                      "LiteLLM completion()", "Processing request of type",
+                      "ListToolsRequest", "Remaining generations:")
     has_server_up = any(m in log_tail for m in server_markers)
     has_client_call = any(m in log_tail for m in client_markers)
     if not has_server_up or has_client_call:

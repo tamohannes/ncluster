@@ -791,6 +791,40 @@ def flag_only(
     return {"flagged": list(job_ids), "run_ids": sorted(affected_runs)}
 
 
+def audit_rejected_detection(
+    *,
+    cluster: str,
+    job_ids: Sequence[str],
+    reason: str,
+    confidence: str,
+    summary: str,
+    evidence: Mapping,
+    audit_project: str,
+) -> dict:
+    """Record a verification-rejected detection without stamping waste fields.
+
+    A rejected verification is useful operator telemetry, but it is not a
+    WasteWatcher finding. Persisting it as ``runs.wasteful=1`` creates false
+    positives for jobs that are demonstrably alive, for example a server
+    handoff window whose log keeps growing during the verification burst.
+    """
+    try:
+        from .logbooks import create_entry
+        body = (
+            f"**Cluster:** `{cluster}`\n"
+            f"**Reason:** `{reason}` (confidence: `{confidence}`)\n"
+            f"**Cancelled by watcher:** no (verification rejected all targets)\n"
+            f"**Target jobs:** `{', '.join(str(j) for j in job_ids)}`\n\n"
+            f"**Summary:** {summary}\n\n"
+            f"```json\n{_safe_json(evidence)}\n```"
+        )
+        title = f"WasteWatcher: rejected {reason} on {cluster}"
+        create_entry(audit_project, title, body=body, entry_type="note")
+    except Exception as exc:
+        log.warning("waste-watcher rejected-detection audit failed: %s", exc)
+    return {"rejected": list(job_ids), "run_ids": []}
+
+
 # ─── Detection orchestration ────────────────────────────────────────────────
 
 def _settings_snapshot() -> dict:
@@ -1050,7 +1084,7 @@ def _act_on_detection(
             set_exempt(tgt_cluster, tgt_job, duration_min=30,
                        note=f"verify_failed:{note}")
     if not verified_targets:
-        flag_only(
+        audit_rejected_detection(
             cluster=cluster,
             job_ids=[jid for _, jid in detection.target_jobs],
             reason=detection.reason,
